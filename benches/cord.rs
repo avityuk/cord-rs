@@ -3,6 +3,13 @@
 //! Run with `cargo bench`. Groups cover construction, cloning, append /
 //! prepend growth, slicing, iteration, comparison, search, flattening and
 //! hashing, with `Vec<u8>` baselines where a comparison is meaningful.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    reason = "benchmarks juggle small integers freely"
+)]
 
 use std::hash::{Hash, Hasher};
 use std::hint::black_box;
@@ -32,13 +39,13 @@ fn bench_construct(c: &mut Criterion) {
         let bytes = data(size);
         g.throughput(Throughput::Bytes(size as u64));
         g.bench_with_input(BenchmarkId::new("from_slice", size), &bytes, |b, bytes| {
-            b.iter(|| Cord::from(black_box(&bytes[..])))
+            b.iter(|| Cord::from(black_box(&bytes[..])));
         });
         g.bench_with_input(BenchmarkId::new("from_vec", size), &bytes, |b, bytes| {
-            b.iter_batched(|| bytes.clone(), |v| Cord::from(black_box(v)), criterion::BatchSize::SmallInput)
+            b.iter_batched(|| bytes.clone(), |v| Cord::from(black_box(v)), criterion::BatchSize::SmallInput);
         });
         g.bench_with_input(BenchmarkId::new("vec_from_slice", size), &bytes, |b, bytes| {
-            b.iter(|| black_box(&bytes[..]).to_vec())
+            b.iter(|| black_box(&bytes[..]).to_vec());
         });
     }
     g.finish();
@@ -68,7 +75,7 @@ fn bench_append(c: &mut Criterion) {
                     cord.append(black_box(piece));
                 }
                 cord
-            })
+            });
         });
         g.bench_with_input(BenchmarkId::new("vec_extend_to_1MiB", chunk), &bytes, |b, bytes| {
             b.iter(|| {
@@ -77,7 +84,7 @@ fn bench_append(c: &mut Criterion) {
                     v.extend_from_slice(black_box(piece));
                 }
                 v
-            })
+            });
         });
     }
     // Appending cords: shared vs owned.
@@ -90,7 +97,7 @@ fn bench_append(c: &mut Criterion) {
                 cord.append(black_box(&piece));
             }
             cord
-        })
+        });
     });
     g.bench_function("cords_owned_16x64KiB", |b| {
         b.iter(|| {
@@ -99,7 +106,7 @@ fn bench_append(c: &mut Criterion) {
                 cord.append(black_box(piece.clone()));
             }
             cord
-        })
+        });
     });
     // Zero-copy building through CordBuffer.
     let total = 1 << 20;
@@ -116,7 +123,7 @@ fn bench_append(c: &mut Criterion) {
                 cord.append(buffer);
             }
             cord
-        })
+        });
     });
     g.finish();
 }
@@ -134,7 +141,7 @@ fn bench_prepend(c: &mut Criterion) {
                     cord.prepend(black_box(piece));
                 }
                 cord
-            })
+            });
         });
     }
     g.finish();
@@ -147,16 +154,16 @@ fn bench_slice(c: &mut Criterion) {
     g.bench_function("flat_middle", |b| b.iter(|| black_box(&flat).slice(1000..3000)));
     g.bench_function("btree_small_inline", |b| b.iter(|| black_box(&tree).slice(500_000..500_010)));
     g.bench_function("btree_middle_64KiB", |b| {
-        b.iter(|| black_box(&tree).slice(500_000..(500_000 + (64 << 10))))
+        b.iter(|| black_box(&tree).slice(500_000..(500_000 + (64 << 10))));
     });
     g.bench_function("btree_advance_1KiB", |b| {
-        b.iter_batched(|| tree.clone(), |mut c| c.advance(1024), criterion::BatchSize::SmallInput)
+        b.iter_batched(|| tree.clone(), |mut c| c.advance(1024), criterion::BatchSize::SmallInput);
     });
     g.bench_function("btree_truncate_1KiB", |b| {
-        b.iter_batched(|| tree.clone(), |mut c| c.truncate(c.len() - 1024), criterion::BatchSize::SmallInput)
+        b.iter_batched(|| tree.clone(), |mut c| c.truncate(c.len() - 1024), criterion::BatchSize::SmallInput);
     });
     g.bench_function("btree_split_off_middle", |b| {
-        b.iter_batched(|| tree.clone(), |mut c| c.split_off(500_000), criterion::BatchSize::SmallInput)
+        b.iter_batched(|| tree.clone(), |mut c| c.split_off(500_000), criterion::BatchSize::SmallInput);
     });
     g.finish();
 }
@@ -167,11 +174,13 @@ fn bench_iterate(c: &mut Criterion) {
     let vec = tree.to_vec();
     g.throughput(Throughput::Bytes(vec.len() as u64));
     g.bench_function("chunks_sum", |b| {
-        b.iter(|| black_box(&tree).chunks().map(|c| c.iter().map(|&x| x as u64).sum::<u64>()).sum::<u64>())
+        b.iter(|| {
+            black_box(&tree).chunks().map(|c| c.iter().map(|&x| u64::from(x)).sum::<u64>()).sum::<u64>()
+        });
     });
-    g.bench_function("bytes_sum", |b| b.iter(|| black_box(&tree).bytes().map(|x| x as u64).sum::<u64>()));
+    g.bench_function("bytes_sum", |b| b.iter(|| black_box(&tree).bytes().map(u64::from).sum::<u64>()));
     g.bench_function("index_every_4KiB", |b| {
-        b.iter(|| (0..tree.len()).step_by(4096).map(|i| tree[i] as u64).sum::<u64>())
+        b.iter(|| (0..tree.len()).step_by(4096).map(|i| u64::from(tree[i])).sum::<u64>());
     });
     g.bench_function("cursor_read_4KiB_pieces", |b| {
         b.iter(|| {
@@ -181,10 +190,10 @@ fn bench_iterate(c: &mut Criterion) {
                 n += cursor.read(4096.min(cursor.remaining())).len();
             }
             n
-        })
+        });
     });
     g.bench_function("vec_sum_baseline", |b| {
-        b.iter(|| black_box(&vec).iter().map(|&x| x as u64).sum::<u64>())
+        b.iter(|| black_box(&vec).iter().map(|&x| u64::from(x)).sum::<u64>());
     });
     g.bench_function("to_vec", |b| b.iter(|| black_box(&tree).to_vec()));
     g.finish();
@@ -202,7 +211,7 @@ fn bench_compare(c: &mut Criterion) {
     g.bench_function("eq_fragmented_vs_slice", |b| b.iter(|| black_box(&a) == black_box(&vec[..])));
     g.bench_function("cmp_shared_clone", |b| {
         let clone = a.clone();
-        b.iter(|| black_box(&a).cmp(black_box(&clone)))
+        b.iter(|| black_box(&a).cmp(black_box(&clone)));
     });
     g.bench_function("vec_eq_baseline", |b| b.iter(|| black_box(&vec) == black_box(&vec)));
     g.finish();
@@ -217,10 +226,10 @@ fn bench_find(c: &mut Criterion) {
     g.bench_function("find_at_end", |b| b.iter(|| black_box(&tree).find("needle")));
     g.bench_function("find_cord_needle_at_end", |b| {
         let needle = Cord::from("needle");
-        b.iter(|| black_box(&tree).find(&needle))
+        b.iter(|| black_box(&tree).find(&needle));
     });
     g.bench_function("vec_windows_baseline", |b| {
-        b.iter(|| black_box(&vec).windows(6).position(|w| w == b"needle"))
+        b.iter(|| black_box(&vec).windows(6).position(|w| w == b"needle"));
     });
     g.finish();
 }
@@ -237,7 +246,7 @@ fn bench_flatten(c: &mut Criterion) {
                     c
                 },
                 criterion::BatchSize::SmallInput,
-            )
+            );
         });
     }
     g.finish();
@@ -254,21 +263,21 @@ fn bench_hash(c: &mut Criterion) {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             black_box(&tree).hash(&mut h);
             h.finish()
-        })
+        });
     });
     g.bench_function("flat_64KiB", |b| {
         b.iter(|| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             black_box(&flat).hash(&mut h);
             h.finish()
-        })
+        });
     });
     g.bench_function("vec_64KiB_baseline", |b| {
         b.iter(|| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             black_box(&vec).hash(&mut h);
             h.finish()
-        })
+        });
     });
     g.finish();
 }
@@ -285,7 +294,7 @@ fn bench_diabolical(c: &mut Criterion) {
                 cord.append(&[(i % 256) as u8][..]);
             }
             cord
-        })
+        });
     });
     // Repeated split / overwrite / join, hostile to btrees.
     g.bench_function("split_insert_join_x100_on_1MiB", |b| {
@@ -296,7 +305,8 @@ fn bench_diabolical(c: &mut Criterion) {
             |mut cord| {
                 let mut seed = 12345u64;
                 for _ in 0..100 {
-                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    seed =
+                        seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
                     let offset = (seed >> 33) as usize % (cord.len() - patch.len());
                     let mut suffix = cord.clone();
                     suffix.advance(offset + patch.len());
@@ -307,7 +317,7 @@ fn bench_diabolical(c: &mut Criterion) {
                 cord
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
     g.finish();
 }

@@ -11,7 +11,7 @@
 
 use core::cmp::Ordering;
 
-use crate::rep::{CordRep, MAX_INLINE, small_memmove};
+use crate::rep::{CordRep, MAX_INLINE, small_memmove, small_u8};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -112,7 +112,7 @@ impl InlineData {
     #[inline]
     pub(crate) fn set_inline_size(&mut self, size: usize) {
         debug_assert!(size <= MAX_INLINE);
-        self.set_tag((size << 1) as u8);
+        self.set_tag(small_u8(size << 1));
     }
 
     /// Read-only pointer to the inline character data. Requires `!is_tree()`.
@@ -138,14 +138,14 @@ impl InlineData {
     pub(crate) fn inline_slice(&self) -> &[u8] {
         let n = self.inline_size();
         // SAFETY: `n <= 15` and the bytes are initialized.
-        unsafe { &self.bytes[1..1 + n] }
+        unsafe { &self.bytes[1..=n] }
     }
 
     /// Sets the inline data and size, zero padding the tail.
     #[inline]
     pub(crate) fn set_inline_data(&mut self, data: &[u8]) {
         debug_assert!(data.len() <= MAX_INLINE);
-        self.set_tag((data.len() << 1) as u8);
+        self.set_tag(small_u8(data.len() << 1));
         // SAFETY: destination has room for 15 bytes; source has `data.len()`.
         unsafe { small_memmove::<true>(self.as_chars_mut(), data.as_ptr(), data.len()) }
     }

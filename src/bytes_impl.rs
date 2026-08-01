@@ -137,6 +137,7 @@ impl<'a> CordWriter<'a> {
     }
 
     /// Flushes and returns the underlying cord.
+    #[must_use]
     pub fn into_inner(mut self) -> &'a mut Cord {
         self.flush();
         debug_assert!(self.buffer.is_none());

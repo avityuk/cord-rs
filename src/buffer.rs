@@ -6,7 +6,7 @@ use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 
 use crate::rep::flat::{self, FLAT_OVERHEAD, MAX_FLAT_LENGTH, MAX_LARGE_FLAT_SIZE};
-use crate::rep::{CordRep, RepPtr};
+use crate::rep::{CordRep, RepPtr, small_u8};
 
 /// Inline (small buffer) capacity of a `CordBuffer`.
 const INLINE_CAPACITY: usize = core::mem::size_of::<usize>() * 2 - 1;
@@ -87,7 +87,7 @@ impl Rep {
     #[inline]
     fn set_short_length(&mut self, length: usize) {
         debug_assert!(length <= INLINE_CAPACITY);
-        self.short.raw_size = ((length << 1) + 1) as u8;
+        self.short.raw_size = small_u8((length << 1) + 1);
     }
 
     #[inline]
@@ -195,6 +195,7 @@ impl CordBuffer {
     /// Creates an empty buffer with a small inline capacity. Does not
     /// allocate.
     #[inline]
+    #[must_use]
     pub const fn new() -> Self {
         Self { rep: Rep::new_short() }
     }
@@ -203,6 +204,7 @@ impl CordBuffer {
     /// [`with_default_limit`](Self::with_default_limit). Useful to estimate
     /// the number of buffers needed for a given size.
     #[inline]
+    #[must_use]
     pub const fn maximum_payload() -> usize {
         MAX_FLAT_LENGTH
     }
@@ -210,6 +212,7 @@ impl CordBuffer {
     /// The maximum payload of a buffer created with
     /// [`with_custom_limit`](Self::with_custom_limit) for `block_size`.
     #[inline]
+    #[must_use]
     pub const fn maximum_payload_for(block_size: usize) -> usize {
         let limit = if block_size < Self::CUSTOM_LIMIT { block_size } else { Self::CUSTOM_LIMIT };
         limit - FLAT_OVERHEAD
@@ -218,6 +221,7 @@ impl CordBuffer {
     /// Creates a buffer of the desired `capacity`, capped at
     /// [`DEFAULT_LIMIT`](Self::DEFAULT_LIMIT). The returned buffer has a
     /// capacity of at least `min(DEFAULT_LIMIT, capacity)`.
+    #[must_use]
     pub fn with_default_limit(capacity: usize) -> Self {
         if capacity > INLINE_CAPACITY {
             // SAFETY: a fresh flat with length 0.
@@ -247,6 +251,7 @@ impl CordBuffer {
     /// # Panics
     ///
     /// Panics if `block_size` is not a power of two.
+    #[must_use]
     pub fn with_custom_limit(block_size: usize, capacity: usize) -> Self {
         assert!(block_size.is_power_of_two(), "block_size must be a power of two, got {block_size}");
         let mut capacity = capacity.min(Self::CUSTOM_LIMIT);
@@ -295,6 +300,7 @@ impl CordBuffer {
 
     /// Number of initialized bytes.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         // SAFETY: the rep is live.
         if self.rep.is_short() { self.rep.short_length() } else { unsafe { self.rep.rep().length() } }
@@ -302,6 +308,7 @@ impl CordBuffer {
 
     /// Returns `true` if the buffer holds no initialized bytes.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -309,6 +316,7 @@ impl CordBuffer {
     /// Total capacity. Always non-zero: even default buffers have a small
     /// inline capacity.
     #[inline]
+    #[must_use]
     pub fn capacity(&self) -> usize {
         // SAFETY: the rep is live.
         if self.rep.is_short() { INLINE_CAPACITY } else { unsafe { flat::capacity(self.rep.rep()) } }
@@ -316,6 +324,7 @@ impl CordBuffer {
 
     /// Number of bytes that can still be written: `capacity() - len()`.
     #[inline]
+    #[must_use]
     pub fn available(&self) -> usize {
         self.capacity() - self.len()
     }
@@ -342,6 +351,7 @@ impl CordBuffer {
 
     /// The initialized bytes.
     #[inline]
+    #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         // SAFETY: the first `len` bytes are initialized.
         unsafe { core::slice::from_raw_parts(self.data_ptr(), self.len()) }

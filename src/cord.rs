@@ -666,6 +666,7 @@ impl Cord {
     /// assert!(cord.is_empty());
     /// ```
     #[inline]
+    #[must_use]
     pub const fn new() -> Self {
         Self { data: InlineData::new() }
     }
@@ -692,6 +693,7 @@ impl Cord {
     /// Creates a cord by copying `data`.
     ///
     /// Equivalent to `Cord::from(data)`.
+    #[must_use]
     pub fn copy_from_slice(data: &[u8]) -> Self {
         if data.len() <= MAX_INLINE {
             return Self::from_inline(data);
@@ -702,6 +704,7 @@ impl Cord {
 
     /// Returns the number of bytes in the cord.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         match self.tree() {
             // SAFETY: the tree is live.
@@ -712,6 +715,7 @@ impl Cord {
 
     /// Returns `true` if the cord holds no bytes.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -974,6 +978,7 @@ impl Cord {
     /// assert_eq!(cord.slice(2..=3), "ll");
     /// ```
     #[track_caller]
+    #[must_use]
     pub fn slice(&self, range: impl RangeBounds<usize>) -> Cord {
         let (pos, new_size) = resolve_range(range, self.len());
         self.subcord(pos, new_size)
@@ -1040,6 +1045,7 @@ impl Cord {
     ///
     /// Panics if `at > self.len()`.
     #[track_caller]
+    #[must_use = "the split off tail is dropped if unused; use `truncate` to just shorten"]
     pub fn split_off(&mut self, at: usize) -> Cord {
         let len = self.len();
         assert!(at <= len, "split_off index out of bounds: at = {at}, len = {len}");
@@ -1061,6 +1067,7 @@ impl Cord {
     ///
     /// Panics if `at > self.len()`.
     #[track_caller]
+    #[must_use = "the split off head is dropped if unused; use `advance` to just skip"]
     pub fn split_to(&mut self, at: usize) -> Cord {
         let len = self.len();
         assert!(at <= len, "split_to index out of bounds: at = {at}, len = {len}");
@@ -1084,6 +1091,7 @@ impl Cord {
     /// assert_eq!(cord.as_flat(), Some(&b"contiguous"[..]));
     /// ```
     #[inline]
+    #[must_use]
     pub fn as_flat(&self) -> Option<&[u8]> {
         match self.tree() {
             None => Some(self.data.inline_slice()),
@@ -1107,10 +1115,11 @@ impl Cord {
         if self.as_flat().is_none() {
             self.flatten_slow_path();
         }
-        self.as_flat().expect("flattened cord is flat")
+        self.as_flat().unwrap_or_default()
     }
 
     /// Copies the cord's bytes into a new `Vec<u8>`.
+    #[must_use]
     pub fn to_vec(&self) -> Vec<u8> {
         let mut vec = Vec::with_capacity(self.len());
         // SAFETY: the vector has capacity for `len()` bytes which we fully
@@ -1158,14 +1167,25 @@ impl Cord {
     /// assert_eq!(joined, b"hello");
     /// ```
     #[inline]
+    #[must_use]
     pub fn chunks(&self) -> Chunks<'_> {
         Chunks::new(self)
+    }
+
+    /// Returns an iterator over the contiguous chunks of the cord; the same
+    /// as [`chunks`](Self::chunks) (provided so `&Cord` iteration has the
+    /// conventional `iter` spelling).
+    #[inline]
+    #[must_use]
+    pub fn iter(&self) -> Chunks<'_> {
+        self.chunks()
     }
 
     /// Returns an iterator over the bytes of the cord.
     ///
     /// Prefer [`chunks`](Self::chunks) for bulk processing.
     #[inline]
+    #[must_use]
     pub fn bytes(&self) -> Bytes<'_> {
         Bytes::new(self)
     }
@@ -1173,6 +1193,7 @@ impl Cord {
     /// Returns a [`Cursor`] positioned at the start of the cord, supporting
     /// byte-wise and chunk-wise reading, skipping and sub-cord extraction.
     #[inline]
+    #[must_use]
     pub fn cursor(&self) -> Cursor<'_> {
         Cursor::new(self)
     }
@@ -1181,6 +1202,7 @@ impl Cord {
     ///
     /// Random access is O(log n) in the number of chunks; use iteration for
     /// sequential access.
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<u8> {
         if index >= self.len() {
             return None;
@@ -1420,6 +1442,7 @@ impl Cord {
 
     /// Returns the *approximate* number of bytes held by this cord, including
     /// the cord itself. See [`MemoryAccounting`].
+    #[must_use]
     pub fn estimated_memory_usage(&self, accounting: MemoryAccounting) -> usize {
         let mut result = core::mem::size_of::<Cord>();
         if let Some(rep) = self.tree() {

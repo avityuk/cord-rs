@@ -12,7 +12,7 @@
 use core::alloc::Layout;
 use core::mem::{align_of, offset_of};
 
-use super::{CordRep, FLAT, MAX_FLAT_TAG, RepPtr};
+use super::{CordRep, FLAT, MAX_FLAT_TAG, RepPtr, small_u8};
 
 /// Size of the header preceding the payload of a flat.
 pub(crate) const FLAT_OVERHEAD: usize = offset_of!(CordRep, storage);
@@ -42,7 +42,7 @@ pub(crate) const fn allocated_size_to_tag_unchecked(size: usize) -> u8 {
     } else {
         TAG_BASE + 512 / 8 + ((8192 - 512) / 64) + size / 4096 - 8192 / 4096
     };
-    tag as u8
+    small_u8(tag)
 }
 
 /// Converts a tag to the corresponding allocated size.
@@ -105,6 +105,7 @@ fn layout_for(size: usize) -> Layout {
 }
 
 #[inline]
+#[expect(clippy::cast_ptr_alignment, reason = "the layout requests align_of::<CordRep>()")]
 unsafe fn new_impl<const MAX_SIZE: usize>(mut len: usize) -> *mut CordRep {
     if len <= MIN_FLAT_LENGTH {
         len = MIN_FLAT_LENGTH;

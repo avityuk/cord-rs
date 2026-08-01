@@ -33,9 +33,10 @@ struct RepRef {
 
 impl RepRef {
     #[inline]
+    #[expect(clippy::cast_precision_loss, reason = "fair share accounting is an approximation by design")]
     unsafe fn new(mode: Mode, rep: *const CordRep, frac: f64) -> Self {
         let fraction = if mode == Mode::FairShare {
-            let refcount = (rep as *mut CordRep).refcount().get();
+            let refcount = rep.cast_mut().refcount().get();
             if refcount == 1 { frac } else { frac / refcount as f64 }
         } else {
             1.0
@@ -50,6 +51,7 @@ impl RepRef {
 }
 
 impl Analysis {
+    #[expect(clippy::cast_precision_loss, reason = "fair share accounting is an approximation by design")]
     fn add(&mut self, size: usize, rep: RepRef) {
         match self.mode {
             Mode::Total => self.total += size as f64,
@@ -70,7 +72,7 @@ impl Analysis {
             rep = rep.child(self.mode, (*rep.rep.cast::<CordRepSubstring>()).child);
         }
         let size = if (*rep.rep).tag >= FLAT {
-            flat::allocated_size(rep.rep as *mut CordRep)
+            flat::allocated_size(rep.rep.cast_mut())
         } else {
             (*rep.rep).length + EXTERNAL_REP_SIZE
         };
@@ -79,7 +81,7 @@ impl Analysis {
 
     unsafe fn analyze_btree(&mut self, rep: RepRef) {
         self.add(core::mem::size_of::<super::btree::CordRepBtree>(), rep);
-        let tree = as_btree(rep.rep as *mut CordRep);
+        let tree = as_btree(rep.rep.cast_mut());
         if tree.height() > 0 {
             for edge in tree.edges() {
                 self.analyze_btree(rep.child(self.mode, edge));
@@ -91,13 +93,18 @@ impl Analysis {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the total is a non-negative approximation of a byte count"
+    )]
     unsafe fn run(mode: Mode, rep: *const CordRep) -> usize {
         let mut analysis = Analysis { mode, total: 0.0, counted: HashSet::new() };
         let repref = RepRef::new(mode, rep, 1.0);
         if is_data_edge(repref.rep) {
             analysis.analyze_data_edge(repref);
         } else {
-            debug_assert!((*repref.rep).tag == BTREE);
+            debug_assert_eq!((*repref.rep).tag, BTREE);
             analysis.analyze_btree(repref);
         }
         analysis.total as usize

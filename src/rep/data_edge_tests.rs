@@ -104,7 +104,7 @@ fn edge_data_on_substring_of_external() {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic]
+#[should_panic(expected = "assertion failed: is_data_edge(edge)")]
 fn edge_data_on_btree_death() {
     unsafe {
         let mut refs = AutoUnref::new();
@@ -116,7 +116,7 @@ fn edge_data_on_btree_death() {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic]
+#[should_panic(expected = "assertion failed: is_data_edge(edge)")]
 fn edge_data_on_bad_substr_death() {
     unsafe {
         let mut refs = AutoUnref::new();

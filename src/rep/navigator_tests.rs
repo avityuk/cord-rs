@@ -61,7 +61,7 @@ fn uninitialized() {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic]
+#[should_panic(expected = "assertion failed: self.height.is_some()")]
 fn uninitialized_current_death() {
     let nav = CordRepBtreeNavigator::new();
     unsafe {

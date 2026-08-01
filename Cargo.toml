@@ -42,4 +42,5 @@ unsafe_op_in_unsafe_fn = "allow"
 missing_docs = "warn"
 
 [lints.clippy]
-undocumented_unsafe_blocks = "allow"
+# Strict: the whole pedantic group is enabled; CI runs clippy with -D warnings.
+pedantic = { level = "warn", priority = -1 }

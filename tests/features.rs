@@ -1,9 +1,16 @@
 //! Tests for the optional `bytes` and `serde` integrations.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    reason = "tests juggle small integers freely"
+)]
 
-#![allow(unused_imports)]
+#[cfg(any(feature = "bytes", feature = "serde"))]
+use cord_rs::Cord;
 
-use cord_rs::{Cord, CordBuffer, internal};
-
+#[cfg(any(feature = "bytes", feature = "serde"))]
 fn fragmented(n: usize, chunk: usize) -> Cord {
     let bytes: Vec<u8> = (0..n).map(|i| (i * 7 % 251) as u8).collect();
     let mut cord = Cord::new();
@@ -18,6 +25,7 @@ mod bytes_feature {
     use super::*;
     use bytes::{Buf, BufMut, Bytes};
     use cord_rs::CordWriter;
+    use cord_rs::internal;
 
     #[test]
     fn buf_for_cord() {
@@ -118,7 +126,7 @@ mod bytes_feature {
             for i in 0..10_000u32 {
                 writer.put_u8((i % 256) as u8);
             }
-            writer.put_slice(&[b'z'; 50_000]);
+            writer.put_slice(&vec![b'z'; 50_000]);
             writer.put_u16_le(0x1234);
             writer.flush();
             writer.put_slice(b"after flush");
@@ -127,7 +135,7 @@ mod bytes_feature {
         expected.extend_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
         expected.extend_from_slice(b" middle ");
         expected.extend((0..10_000u32).map(|i| (i % 256) as u8));
-        expected.extend_from_slice(&[b'z'; 50_000]);
+        expected.extend(std::iter::repeat_n(b'z', 50_000));
         expected.extend_from_slice(&0x1234u16.to_le_bytes());
         expected.extend_from_slice(b"after flush");
         assert_eq!(cord, expected);

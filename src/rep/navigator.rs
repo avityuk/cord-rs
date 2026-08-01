@@ -6,7 +6,7 @@
 //! `cord_rep_btree_navigator.{h,cc}`.
 
 use super::btree::{BACK, BtreePtr, CordRepBtree, FRONT, MAX_DEPTH, MAX_HEIGHT, as_btree};
-use super::{CordRep, CordRepSubstring, RepPtr, SUBSTRING, is_data_edge, ref_rep, unref};
+use super::{CordRep, CordRepSubstring, RepPtr, SUBSTRING, is_data_edge, ref_rep, small_u8, unref};
 
 /// A data edge and an offset inside it, as returned by `seek` / `skip`.
 #[derive(Clone, Copy, Debug)]
@@ -62,8 +62,8 @@ unsafe fn substring_from(rep: *mut CordRep, offset: usize) -> *mut CordRep {
 /// See the [module documentation](self).
 #[derive(Clone, Copy)]
 pub(crate) struct CordRepBtreeNavigator {
-    /// Height of the current tree, or -1 if empty.
-    height: isize,
+    /// Height of the current tree, or `None` if empty.
+    height: Option<usize>,
     /// Path to the current data edge: `node[0].edge(index[0])`. Undefined
     /// until initialized (`height >= 0`).
     index: [u8; MAX_DEPTH],
@@ -79,32 +79,39 @@ impl Default for CordRepBtreeNavigator {
 impl CordRepBtreeNavigator {
     /// An empty navigator.
     pub(crate) const fn new() -> Self {
-        Self { height: -1, index: [0; MAX_DEPTH], node: [core::ptr::null_mut(); MAX_DEPTH] }
+        Self { height: None, index: [0; MAX_DEPTH], node: [core::ptr::null_mut(); MAX_DEPTH] }
     }
 
     /// Returns `true` if not empty.
     #[inline]
     pub(crate) fn is_some(&self) -> bool {
-        self.height >= 0
+        self.height.is_some()
+    }
+
+    /// Height of the current tree. Requires a non-empty navigator.
+    #[inline]
+    fn tree_height(&self) -> usize {
+        debug_assert!(self.height.is_some());
+        self.height.unwrap_or(0)
     }
 
     /// The tree being navigated, or null if empty.
     #[inline]
     pub(crate) fn btree(&self) -> *mut CordRepBtree {
-        if self.height >= 0 { self.node[self.height as usize] } else { core::ptr::null_mut() }
+        self.height.map_or(core::ptr::null_mut(), |height| self.node[height])
     }
 
     /// The data edge at the current position. Requires a non-empty navigator.
     #[inline]
     pub(crate) unsafe fn current(&self) -> *mut CordRep {
-        debug_assert!(self.height >= 0);
+        debug_assert!(self.height.is_some());
         self.node[0].edge(self.index[0] as usize)
     }
 
     /// Resets to the empty state.
     #[inline]
     pub(crate) fn reset(&mut self) {
-        self.height = -1;
+        self.height = None;
     }
 
     /// Resets to `tree`, returning its first data edge.
@@ -124,16 +131,16 @@ impl CordRepBtreeNavigator {
         debug_assert!(tree.size() > 0);
         debug_assert!(tree.height() <= MAX_HEIGHT);
         let mut height = tree.height();
-        self.height = height as isize;
+        self.height = Some(height);
         let mut index = tree.index::<IS_BACK>();
         self.node[height] = tree;
-        self.index[height] = index as u8;
+        self.index[height] = small_u8(index);
         while height > 0 {
             height -= 1;
             tree = as_btree(tree.edge(index));
             self.node[height] = tree;
             index = tree.index::<IS_BACK>();
-            self.index[height] = index as u8;
+            self.index[height] = small_u8(index);
         }
         self.node[0].edge(index)
     }
@@ -149,8 +156,9 @@ impl CordRepBtreeNavigator {
             core::hint::cold_path();
             return NavPosition { edge: core::ptr::null_mut(), offset: 0 };
         }
-        self.height = tree.height() as isize;
-        self.node[self.height as usize] = tree;
+        let height = tree.height();
+        self.height = Some(height);
+        self.node[height] = tree;
         self.seek(offset)
     }
 
@@ -159,20 +167,20 @@ impl CordRepBtreeNavigator {
     #[inline]
     pub(crate) unsafe fn seek(&mut self, offset: usize) -> NavPosition {
         debug_assert!(!self.btree().is_null());
-        let mut height = self.height as usize;
+        let mut height = self.tree_height();
         let mut edge = self.node[height];
         if offset >= edge.length() {
             core::hint::cold_path();
             return NavPosition { edge: core::ptr::null_mut(), offset: 0 };
         }
         let mut index = edge.index_of(offset);
-        self.index[height] = index.index as u8;
+        self.index[height] = small_u8(index.index);
         while height > 0 {
             height -= 1;
             edge = as_btree(edge.edge(index.index));
             self.node[height] = edge;
             index = edge.index_of(index.n);
-            self.index[height] = index.index as u8;
+            self.index[height] = small_u8(index.index);
         }
         NavPosition { edge: edge.edge(index.index), offset: index.n }
     }
@@ -204,13 +212,13 @@ impl CordRepBtreeNavigator {
     }
 
     unsafe fn next_up(&mut self) -> *mut CordRep {
-        debug_assert!(self.index[0] as usize == self.node[0].back());
+        debug_assert_eq!(self.index[0] as usize, self.node[0].back());
         let mut height = 0usize;
         let mut edge;
         let mut index;
         loop {
             height += 1;
-            if height as isize > self.height {
+            if height > self.tree_height() {
                 return core::ptr::null_mut();
             }
             edge = self.node[height];
@@ -219,13 +227,13 @@ impl CordRepBtreeNavigator {
                 break;
             }
         }
-        self.index[height] = index as u8;
+        self.index[height] = small_u8(index);
         loop {
             height -= 1;
             edge = as_btree(edge.edge(index));
             self.node[height] = edge;
             index = edge.begin();
-            self.index[height] = index as u8;
+            self.index[height] = small_u8(index);
             if height == 0 {
                 break;
             }
@@ -234,13 +242,13 @@ impl CordRepBtreeNavigator {
     }
 
     unsafe fn previous_up(&mut self) -> *mut CordRep {
-        debug_assert!(self.index[0] as usize == self.node[0].begin());
+        debug_assert_eq!(self.index[0] as usize, self.node[0].begin());
         let mut height = 0usize;
         let mut edge;
         let mut index;
         loop {
             height += 1;
-            if height as isize > self.height {
+            if height > self.tree_height() {
                 return core::ptr::null_mut();
             }
             edge = self.node[height];
@@ -250,13 +258,13 @@ impl CordRepBtreeNavigator {
             }
         }
         index -= 1;
-        self.index[height] = index as u8;
+        self.index[height] = small_u8(index);
         loop {
             height -= 1;
             edge = as_btree(edge.edge(index));
             self.node[height] = edge;
             index = edge.back();
-            self.index[height] = index as u8;
+            self.index[height] = small_u8(index);
             if height == 0 {
                 break;
             }
@@ -282,7 +290,7 @@ impl CordRepBtreeNavigator {
             index += 1;
             while index == node.end() {
                 height += 1;
-                if height as isize > self.height {
+                if height > self.tree_height() {
                     return NavPosition { edge: core::ptr::null_mut(), offset: n };
                 }
                 node = self.node[height];
@@ -295,7 +303,7 @@ impl CordRepBtreeNavigator {
         // If we moved up, descend to the leaf level consuming skipped edges.
         while height > 0 {
             node = as_btree(edge);
-            self.index[height] = index as u8;
+            self.index[height] = small_u8(index);
             height -= 1;
             self.node[height] = node;
             index = node.begin();
@@ -303,11 +311,11 @@ impl CordRepBtreeNavigator {
             while n >= edge.length() {
                 n -= edge.length();
                 index += 1;
-                debug_assert!(index != node.end());
+                debug_assert_ne!(index, node.end());
                 edge = node.edge(index);
             }
         }
-        self.index[0] = index as u8;
+        self.index[0] = small_u8(index);
         NavPosition { edge, offset: n }
     }
 
@@ -335,9 +343,9 @@ impl CordRepBtreeNavigator {
             length -= edge.length();
             index += 1;
             while index == node.end() {
-                self.index[height] = index as u8;
+                self.index[height] = small_u8(index);
                 height += 1;
-                if height as isize > self.height {
+                if height > self.tree_height() {
                     subtree.set_end(subtree_end);
                     if length == 0 {
                         return ReadResult { tree: subtree.as_rep(), n: 0 };
@@ -371,7 +379,7 @@ impl CordRepBtreeNavigator {
         // read, adding "down" nodes to `subtree`.
         while height > 0 {
             node = as_btree(edge);
-            self.index[height] = index as u8;
+            self.index[height] = small_u8(index);
             height -= 1;
             self.node[height] = node;
             index = node.begin();
@@ -400,7 +408,7 @@ impl CordRepBtreeNavigator {
             subtree_end += 1;
         }
         subtree.set_end(subtree_end);
-        self.index[0] = index as u8;
+        self.index[0] = small_u8(index);
         ReadResult { tree: tree.as_rep(), n: length }
     }
 }

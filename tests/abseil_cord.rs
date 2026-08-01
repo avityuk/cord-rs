@@ -4,8 +4,15 @@
 //! CRC node was not ported so every test runs once. Tests that exist only to
 //! exercise C++ releaser plumbing, `absl::Format`, Cordz or CRC semantics are
 //! omitted or reduced to their observable Rust equivalents (noted inline).
-//! Names mirror the C++ tests in snake_case.
+//! Names mirror the C++ tests in `snake_case`.
 #![allow(unused_assignments)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    reason = "tests juggle small integers freely"
+)]
 
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as _;
@@ -19,7 +26,7 @@ const MAX_FLAT_LENGTH: usize = internal::MAX_FLAT_LENGTH;
 
 // --- Helpers ----------------------------------------------------------------
 
-/// A small deterministic PRNG (SplitMix64) standing in for `std::mt19937_64`.
+/// A small deterministic PRNG (`SplitMix64`) standing in for `std::mt19937_64`.
 struct Rng(u64);
 
 impl Rng {
@@ -198,7 +205,7 @@ fn assignment() {
     let y = x.clone();
     assert_eq!(x.to_vec(), b"hi there");
     assert_eq!(y.to_vec(), b"hi there");
-    assert!(x == y);
+    assert_eq!(x, y);
     assert!(x <= y);
     assert!(y <= x);
 
@@ -207,7 +214,7 @@ fn assignment() {
     assert_eq!(y.to_vec(), b"hi there");
     assert!(x < y);
     assert!(y > x);
-    assert!(x != y);
+    assert_ne!(x, y);
     assert!(x <= y);
     assert!(y >= x);
 
@@ -238,8 +245,8 @@ fn assignment() {
         // Self clone_from must not crash or leak.
         let mut small = Cord::from("foo");
         let mut big = Cord::from("loooooong coooooord");
-        let small_alias = &mut small as *mut Cord;
-        let big_alias = &mut big as *mut Cord;
+        let small_alias = &raw mut small;
+        let big_alias = &raw mut big;
         // SAFETY: aliasing the same cord for a self assignment test.
         unsafe {
             (*small_alias).clone_from(&*small_alias);
@@ -409,8 +416,8 @@ fn subcord() {
     }
 
     // Asking for too much is an error in Rust (abseil clamps).
-    assert!(a.try_slice(0..a.len() + 1).is_none());
-    assert!(a.try_slice(a.len() + 1..a.len() + 1).is_none());
+    assert!(a.try_slice(0..=a.len()).is_none());
+    assert!(a.try_slice((a.len() + 1)..=a.len()).is_none());
     assert!(a.try_slice(a.len()..a.len()).unwrap().is_empty());
 }
 
@@ -575,6 +582,8 @@ fn append_small_buffer() {
 
 #[test]
 fn append_and_prepend_buffer_are_precise() {
+    // Allow a 32 byte flat and 128 bytes for glue nodes.
+    const MAX_DELTA: usize = 128 + 32;
     // Create a cord large enough to force 40KB of flats.
     let test_data = vec![b'x'; MAX_FLAT_LENGTH * 10];
     let mut cord1 = Cord::from(&test_data[..]);
@@ -590,8 +599,6 @@ fn append_and_prepend_buffer_are_precise() {
     buffer.put_slice(b"Abc");
     cord2.prepend(buffer);
 
-    // Allow a 32 byte flat and 128 bytes for glue nodes.
-    const MAX_DELTA: usize = 128 + 32;
     assert!(cord1.estimated_memory_usage(MemoryAccounting::Total) - size1 <= MAX_DELTA);
     assert!(cord2.estimated_memory_usage(MemoryAccounting::Total) - size2 <= MAX_DELTA);
 
@@ -956,14 +963,14 @@ impl TestData {
     }
 
     fn new() -> Self {
+        // Strings around half of the maximum flat length.
+        const MAX_FLAT: usize = 4096 - 9;
+        const HALF: usize = MAX_FLAT / 2;
         let mut data = Vec::new();
         // Short strings increasing in length by one.
         for i in 0..30 {
             data.push(Self::make_string(i));
         }
-        // Strings around half of the maximum flat length.
-        const MAX_FLAT: usize = 4096 - 9;
-        const HALF: usize = MAX_FLAT / 2;
         for i in -10i64..=10 {
             data.push(Self::make_string((HALF as i64 + i) as usize));
         }
@@ -1277,7 +1284,7 @@ fn compare_random_comparisons() {
     for i in 0..iters {
         let mut c = Cord::new();
         let mut d = Cord::new();
-        for _ in 0..(i % 7) + 1 {
+        for _ in 0..=(i % 7) {
             c.append(&a[rng.up_to(a.len())]);
             d.append(&a[rng.up_to(a.len())]);
         }
@@ -1290,35 +1297,35 @@ fn compare_random_comparisons() {
 #[test]
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn comparison_operators() {
-    fn check<L, R>(a: L, b: R, a2: L)
+    fn check<L, R>(a: &L, b: &R, a2: &L)
     where
         L: PartialEq<R> + PartialOrd<R> + PartialEq<L> + PartialOrd<L>,
         R: PartialEq<L> + PartialOrd<L>,
     {
-        assert!(a == a2);
-        assert!(!(a == b));
-        assert!(a != b);
-        assert!(!(a != a2));
-        assert!(a < b);
-        assert!(!(b < a));
-        assert!(b > a);
-        assert!(!(a > b));
-        assert!(a >= a2);
-        assert!(b >= a);
-        assert!(!(a >= b));
-        assert!(a <= a2);
-        assert!(a <= b);
-        assert!(!(b <= a));
+        assert!(*a == *a2);
+        assert!(!(*a == *b));
+        assert!(*a != *b);
+        assert!(!(*a != *a2));
+        assert!(*a < *b);
+        assert!(!(*b < *a));
+        assert!(*b > *a);
+        assert!(!(*a > *b));
+        assert!(*a >= *a2);
+        assert!(*b >= *a);
+        assert!(!(*a >= *b));
+        assert!(*a <= *a2);
+        assert!(*a <= *b);
+        assert!(!(*b <= *a));
     }
-    check(Cord::from("a"), Cord::from("b"), Cord::from("a"));
-    check(Cord::from("a"), "b", Cord::from("a"));
-    check("a", Cord::from("b"), "a");
-    check(Cord::from("a"), String::from("b"), Cord::from("a"));
-    check(String::from("a"), Cord::from("b"), String::from("a"));
-    check(Cord::from("a"), &b"b"[..], Cord::from("a"));
-    check(&b"a"[..], Cord::from("b"), &b"a"[..]);
-    check(Cord::from("a"), b"b".to_vec(), Cord::from("a"));
-    check(b"a".to_vec(), Cord::from("b"), b"a".to_vec());
+    check(&Cord::from("a"), &Cord::from("b"), &Cord::from("a"));
+    check(&Cord::from("a"), &"b", &Cord::from("a"));
+    check(&"a", &Cord::from("b"), &"a");
+    check(&Cord::from("a"), &String::from("b"), &Cord::from("a"));
+    check(&String::from("a"), &Cord::from("b"), &String::from("a"));
+    check(&Cord::from("a"), &&b"b"[..], &Cord::from("a"));
+    check(&&b"a"[..], &Cord::from("b"), &&b"a"[..]);
+    check(&Cord::from("a"), &b"b".to_vec(), &Cord::from("a"));
+    check(&b"a".to_vec(), &Cord::from("b"), &b"a".to_vec());
 }
 
 // --- External memory ---------------------------------------------------------------
@@ -2084,10 +2091,10 @@ fn test_after_exit(cord: &Cord, expected: &'static str) {
 
 #[test]
 fn after_exit() {
+    static DATA: [u8; 64] = [b'q'; 64];
     test_after_exit(&SHORT_CORD, "SSO string");
     test_after_exit(&LONG_CORD, "String that does not fit SSO.");
     // Static data is referenced, not copied.
-    static DATA: [u8; 64] = [b'q'; 64];
     let c = Cord::from_static(&DATA);
     assert_eq!(c.as_flat().unwrap().as_ptr(), DATA.as_ptr());
 }
@@ -2164,7 +2171,7 @@ const CORD_MUTATORS: &[CordMutator] = &[
         name: "append self",
         mutate: |c| {
             let copy = c.clone();
-            c.append(copy)
+            c.append(copy);
         },
         undo: Some(|c| c.truncate(c.len() / 2)),
     },
@@ -2186,7 +2193,7 @@ const CORD_MUTATORS: &[CordMutator] = &[
         name: "prepend self",
         mutate: |c| {
             let copy = c.clone();
-            c.prepend(copy)
+            c.prepend(copy);
         },
         undo: Some(|c| c.advance(c.len() / 2)),
     },

@@ -138,7 +138,7 @@ impl Refcount {
     /// Returns the current reference count (acquire semantics).
     #[inline]
     pub(crate) fn get(&self) -> usize {
-        (self.0.load(Ordering::Acquire) >> NUM_FLAGS) as usize
+        usize::try_from(self.0.load(Ordering::Acquire) >> NUM_FLAGS).unwrap_or(0)
     }
 
     /// Returns `true` if the count is exactly one, i.e. the caller owns the
@@ -162,6 +162,16 @@ fn increment_overflow() -> ! {
     // Mirrors `Arc`: a refcount this large can only be the result of a leak
     // loop and continuing risks a use-after-free on wrap around.
     std::process::abort()
+}
+
+/// Narrows a small value to a `u8`, as stored in the `storage` bytes of reps
+/// (values bounded by `MAX_FLAT_TAG`, `btree::MAX_CAPACITY` or `MAX_INLINE`).
+#[inline]
+pub(crate) const fn small_u8(value: usize) -> u8 {
+    debug_assert!(value <= u8::MAX as usize);
+    #[expect(clippy::cast_possible_truncation, reason = "bounded by the assertion above")]
+    let narrowed = value as u8;
+    narrowed
 }
 
 // --- CordRep ---------------------------------------------------------------
@@ -383,7 +393,7 @@ pub(crate) unsafe fn edge_data<'a>(mut edge: *const CordRep) -> &'a [u8] {
         edge = (*sub).child;
     }
     let base = if (*edge).tag >= FLAT {
-        flat::data(edge as *mut CordRep) as *const u8
+        flat::data(edge.cast_mut()).cast_const()
     } else {
         (*edge.cast::<external::CordRepExternal>()).base
     };

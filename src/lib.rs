@@ -113,41 +113,48 @@ pub mod internal {
     pub const BTREE_MAX_CAPACITY: usize = rep::btree::MAX_CAPACITY;
 
     /// Whether `cord` holds a tree (as opposed to inline data).
+    #[must_use]
     pub fn is_tree(cord: &Cord) -> bool {
         cord.is_tree()
     }
 
     /// Whether `cord` holds a btree.
+    #[must_use]
     pub fn is_btree(cord: &Cord) -> bool {
         // SAFETY: the tree is live.
         cord.tree().is_some_and(|t| unsafe { t.is_btree() })
     }
 
     /// Whether `cord` holds a single flat node.
+    #[must_use]
     pub fn is_flat(cord: &Cord) -> bool {
         // SAFETY: the tree is live.
         cord.tree().is_some_and(|t| unsafe { t.is_flat() })
     }
 
     /// Whether `cord` holds a single external node.
+    #[must_use]
     pub fn is_external(cord: &Cord) -> bool {
         // SAFETY: the tree is live.
         cord.tree().is_some_and(|t| unsafe { t.is_external() })
     }
 
     /// Whether `cord` holds a single substring node.
+    #[must_use]
     pub fn is_substring(cord: &Cord) -> bool {
         // SAFETY: the tree is live.
         cord.tree().is_some_and(|t| unsafe { t.is_substring() })
     }
 
     /// Height of the btree, if any.
+    #[must_use]
     pub fn btree_height(cord: &Cord) -> Option<usize> {
         // SAFETY: the tree is live.
         cord.tree().and_then(|t| unsafe { t.is_btree().then(|| as_btree(t).height()) })
     }
 
     /// Reference count of the root node (0 if inline).
+    #[must_use]
     pub fn root_refcount(cord: &Cord) -> usize {
         // SAFETY: the tree is live.
         cord.tree().map_or(0, |t| unsafe { t.refcount().get() })
@@ -169,6 +176,7 @@ pub mod internal {
     }
 
     /// Dumps the tree structure.
+    #[must_use]
     pub fn dump(cord: &Cord, include_contents: bool) -> String {
         let mut out = String::new();
         match cord.tree() {
@@ -196,6 +204,7 @@ pub mod internal {
     /// Creates a cord holding `data` in a single external node regardless of
     /// its size (mirrors abseil's `MakeCordFromExternal` in tests). An empty
     /// `data` yields an empty cord.
+    #[must_use]
     pub fn make_external(data: &[u8]) -> Cord {
         if data.is_empty() {
             return Cord::new();
@@ -207,6 +216,7 @@ pub mod internal {
     /// Creates a cord holding a substring node over the flat or external node
     /// of `src` (mirrors abseil's `CordTestPeer::MakeSubstring`). Requires
     /// `src` to hold a single flat or external node and `0 < len < src.len()`.
+    #[must_use]
     pub fn make_substring(src: &Cord, offset: usize, len: usize) -> Cord {
         let tree = src.tree().expect("make_substring: src must not be inline");
         // SAFETY: `create` adopts the added reference; preconditions checked
@@ -222,6 +232,7 @@ pub mod internal {
     }
 
     /// The allocated size of the flat node held by `cord`, if it holds one.
+    #[must_use]
     pub fn flat_allocated_size(cord: &Cord) -> Option<usize> {
         // SAFETY: the tree is live.
         cord.tree().and_then(|t| unsafe { t.is_flat().then(|| rep::flat::allocated_size(t)) })

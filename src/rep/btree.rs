@@ -19,8 +19,27 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
     BTREE, CordRep, CordRepSubstring, EXTERNAL, FLAT, RepPtr, SUBSTRING, edge_data, external, flat,
-    is_data_edge, ref_rep, unref,
+    is_data_edge, ref_rep, small_u8, unref,
 };
+
+/// Converts a node height to the signed form used by the copy / sub-tree
+/// algorithms, where `-1` denotes a data edge below the leaf level.
+#[inline]
+fn height_to_isize(height: usize) -> isize {
+    debug_assert!(height <= MAX_HEIGHT);
+    #[expect(clippy::cast_possible_wrap, reason = "heights are bounded by MAX_HEIGHT")]
+    let signed = height as isize;
+    signed
+}
+
+/// Inverse of [`height_to_isize`]. Requires `height >= 0`.
+#[inline]
+fn height_from_isize(height: isize) -> usize {
+    debug_assert!(height >= 0);
+    #[expect(clippy::cast_sign_loss, reason = "callers only convert non-negative heights")]
+    let unsigned = height as usize;
+    unsigned
+}
 
 /// Maximum number of edges per node. Chosen so a node is exactly 64 bytes on
 /// 64-bit platforms (16 byte header + 6 pointers).
@@ -191,7 +210,7 @@ unsafe fn delete_substring(substring: *mut CordRepSubstring) {
         if rep.tag() >= FLAT {
             flat::delete(rep);
         } else {
-            debug_assert!(rep.tag() == EXTERNAL);
+            debug_assert_eq!(rep.tag(), EXTERNAL);
             external::CordRepExternal::delete(rep);
         }
     }
@@ -230,15 +249,15 @@ pub(crate) trait BtreePtr: Copy {
     }
     #[inline]
     unsafe fn set_length(self, length: usize) {
-        self.as_rep().set_length(length)
+        self.as_rep().set_length(length);
     }
     #[inline]
     unsafe fn add_length(self, delta: usize) {
-        self.set_length(self.length() + delta)
+        self.set_length(self.length() + delta);
     }
     #[inline]
     unsafe fn sub_length(self, delta: usize) {
-        self.set_length(self.length() - delta)
+        self.set_length(self.length() - delta);
     }
     #[inline]
     unsafe fn refcount<'a>(self) -> &'a super::Refcount {
@@ -296,7 +315,7 @@ pub(crate) trait BtreePtr: Copy {
     /// The data of the edge at `index`. Requires a leaf node.
     #[inline]
     unsafe fn data<'a>(self, index: usize) -> &'a [u8] {
-        debug_assert!(self.height() == 0);
+        debug_assert_eq!(self.height(), 0);
         edge_data(self.edge(index))
     }
 
@@ -386,11 +405,11 @@ impl BtreePtr for *mut CordRepBtree {
     }
     #[inline]
     unsafe fn set_begin(self, begin: usize) {
-        (*self).rep.storage[1] = begin as u8;
+        (*self).rep.storage[1] = small_u8(begin);
     }
     #[inline]
     unsafe fn set_end(self, end: usize) {
-        (*self).rep.storage[2] = end as u8;
+        (*self).rep.storage[2] = small_u8(end);
     }
     #[inline]
     unsafe fn edge(self, index: usize) -> *mut CordRep {
@@ -560,7 +579,7 @@ impl CordRepBtree {
     #[inline]
     unsafe fn alloc(length: usize, height: usize, begin: usize, end: usize) -> *mut CordRepBtree {
         let mut rep = CordRep::new(length, BTREE);
-        rep.storage = [height as u8, begin as u8, end as u8];
+        rep.storage = [small_u8(height), small_u8(begin), small_u8(end)];
         Box::into_raw(Box::new(CordRepBtree { rep, edges: [core::ptr::null_mut(); MAX_CAPACITY] }))
     }
 
@@ -584,7 +603,7 @@ impl CordRepBtree {
     /// equal height.
     #[inline]
     pub(crate) unsafe fn new_pair(front: *mut CordRepBtree, back: *mut CordRepBtree) -> *mut CordRepBtree {
-        debug_assert!(front.height() == back.height());
+        debug_assert_eq!(front.height(), back.height());
         let tree = Self::alloc(front.length() + back.length(), front.height() + 1, 0, 2);
         (*tree).edges[0] = front.as_rep();
         (*tree).edges[1] = back.as_rep();
@@ -662,9 +681,9 @@ impl CordRepBtree {
     /// without adding references to the edges.
     #[inline]
     unsafe fn copy_raw(this: *mut CordRepBtree, new_length: usize) -> *mut CordRepBtree {
-        let tree = Self::alloc(new_length, 0, 0, 0);
         // Everything from `tag` onwards is plain data: copy it in one go.
         const OFFSET: usize = offset_of!(CordRep, tag);
+        let tree = Self::alloc(new_length, 0, 0, 0);
         core::ptr::copy_nonoverlapping(
             this.cast::<u8>().add(OFFSET),
             tree.cast::<u8>().add(OFFSET),
@@ -1105,7 +1124,7 @@ impl CordRepBtree {
         // As long as `offset` starts inside the last edge we can drop the
         // current depth: if it references the last data edge there is only a
         // single path from the root to that edge.
-        let mut height = this.height() as isize;
+        let mut height = height_to_isize(this.height());
         let mut node = this;
         let mut len = node.length() - offset;
         let mut back = node.edge_at::<BACK>();
@@ -1167,7 +1186,7 @@ impl CordRepBtree {
 
         // As long as `n` does not exceed the length of the first edge we can
         // drop the current depth.
-        let mut height = this.height() as isize;
+        let mut height = height_to_isize(this.height());
         let mut node = this;
         let mut front = node.edge_at::<FRONT>();
         if allow_folding {
@@ -1235,7 +1254,7 @@ impl CordRepBtree {
         }
 
         let mut node = this;
-        let mut height = node.height() as isize;
+        let mut height = height_to_isize(node.height());
         let mut front = node.index_of(offset);
         let mut left = (*node).edges[front.index];
         while front.n + n <= left.length() {
@@ -1281,7 +1300,7 @@ impl CordRepBtree {
         }
 
         // Compose the resulting tree.
-        let sub = Self::new_node(height as usize);
+        let sub = Self::new_node(height_from_isize(height));
         let mut end = 0;
         (*sub).edges[end] = prefix.edge;
         end += 1;
@@ -1313,7 +1332,7 @@ impl CordRepBtree {
         }
 
         let mut length = len - n;
-        let mut height = tree.height() as isize;
+        let mut height = height_to_isize(tree.height());
         let mut is_mutable = tree.refcount().is_one();
 
         // Extract all top nodes which are reduced to size = 1.
@@ -1614,7 +1633,7 @@ impl CordRepBtree {
                 }
             };
         }
-        let tree = tree as *mut CordRepBtree;
+        let tree = tree.cast_mut();
         check!(!tree.is_null());
         check!(tree.as_rep().is_btree());
         check!(tree.height() <= MAX_HEIGHT);
@@ -1688,7 +1707,7 @@ impl CordRepBtree {
         depth: usize,
     ) -> fmt::Result {
         debug_assert!(depth <= MAX_DEPTH + 2);
-        let rep = rep as *mut CordRep;
+        let rep = rep.cast_mut();
         let sharing = if rep.refcount().is_one() {
             "Private".to_string()
         } else {

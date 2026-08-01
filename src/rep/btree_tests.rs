@@ -1,8 +1,9 @@
 //! Port of abseil's `cord_rep_btree_test.cc`.
 //!
-//! Test names mirror the C++ tests in snake_case. Parametrized C++ fixtures
+//! Test names mirror the C++ tests in `snake_case`. Parametrized C++ fixtures
 //! (`shared` / `first_shared, second_shared` / `height`) are ported as loops
 //! over all parameter values inside one test.
+#![allow(clippy::cast_possible_truncation, reason = "tests pack small known values into bytes")]
 
 use std::collections::VecDeque;
 
@@ -119,7 +120,7 @@ fn btree() {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic]
+#[should_panic(expected = "assertion failed: rep.is_btree()")]
 fn btree_death_on_flat() {
     unsafe {
         let mut refs = AutoUnref::new();
@@ -138,7 +139,7 @@ fn edge_data_test() {
         let bad_substr = make_substring(1, 2, ref_rep(substr1));
 
         assert!(is_data_edge(f));
-        assert_eq!(edge_data(f).as_ptr(), flat::data(f) as *const u8);
+        assert_eq!(edge_data(f).as_ptr(), flat::data(f).cast_const());
         assert_eq!(edge_data(f), b"Hello world");
 
         assert!(is_data_edge(external));
@@ -146,7 +147,7 @@ fn edge_data_test() {
         assert_eq!(edge_data(external), b"Hello external");
 
         assert!(is_data_edge(substr1));
-        assert_eq!(edge_data(substr1).as_ptr(), flat::data(f).add(1) as *const u8);
+        assert_eq!(edge_data(substr1).as_ptr(), flat::data(f).add(1).cast_const());
         assert_eq!(edge_data(substr1), b"ello w");
 
         assert!(is_data_edge(substr2));
@@ -168,7 +169,7 @@ fn edge_data_test() {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic]
+#[should_panic(expected = "assertion failed: is_data_edge(edge)")]
 fn edge_data_death_on_bad_substr() {
     unsafe {
         let mut refs = AutoUnref::new();
@@ -984,7 +985,7 @@ fn is_flat_multi_flat() {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic]
+#[should_panic(expected = "assertion failed: this.refcount().is_one()")]
 fn get_append_buffer_not_private() {
     unsafe {
         let mut refs = AutoUnref::new();
@@ -1142,13 +1143,13 @@ fn dump() {
                 "data = \"ello w\"",
                 "data = \"llo ext\"",
             ];
-            if api != 2 {
+            if api == 2 {
                 for needle in contents {
-                    assert!(!s.contains(needle), "api {api}: unexpected {needle}");
+                    assert!(s.contains(needle), "api {api}: missing {needle}:\n{s}");
                 }
             } else {
                 for needle in contents {
-                    assert!(s.contains(needle), "api {api}: missing {needle}:\n{s}");
+                    assert!(!s.contains(needle), "api {api}: unexpected {needle}");
                 }
             }
         }
@@ -1254,7 +1255,7 @@ fn assert_valid() {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic]
+#[should_panic(expected = "check_valid() FAILED")]
 fn assert_valid_death_on_null() {
     unsafe {
         let _ = CordRepBtree::assert_valid(core::ptr::null_mut(), true);
@@ -1263,18 +1264,18 @@ fn assert_valid_death_on_null() {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic]
+#[should_panic(expected = "check_valid() FAILED")]
 fn assert_valid_death_on_bad_length() {
+    struct Restore(*mut CordRepBtree);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            unsafe { (*self.0).rep.length += 1 };
+        }
+    }
     unsafe {
         let mut refs = AutoUnref::new();
         let tree = refs.add(CordRepBtree::create(make_flat(b"abc")));
         (*tree).rep.length -= 1;
-        struct Restore(*mut CordRepBtree);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                unsafe { (*self.0).rep.length += 1 };
-            }
-        }
         let _restore = Restore(tree);
         let _ = CordRepBtree::assert_valid(tree, true);
     }
@@ -1285,7 +1286,6 @@ static VALIDATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn check_assert_valid_shallow_vs_deep() {
-    let _guard = VALIDATION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Restore exhaustive validation on any exit.
     struct Cleanup(bool);
     impl Drop for Cleanup {
@@ -1293,6 +1293,7 @@ fn check_assert_valid_shallow_vs_deep() {
             super::btree::set_exhaustive_validation(self.0);
         }
     }
+    let _guard = VALIDATION_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let _cleanup = Cleanup(super::btree::is_exhaustive_validation_enabled());
 
     unsafe {

@@ -345,18 +345,21 @@ impl<'a> Cursor<'a> {
 
     /// Number of bytes remaining after the cursor.
     #[inline]
+    #[must_use]
     pub fn remaining(&self) -> usize {
         self.chunks.bytes_remaining
     }
 
     /// Offset of the cursor from the start of the cord.
     #[inline]
+    #[must_use]
     pub fn position(&self) -> usize {
         self.len - self.chunks.bytes_remaining
     }
 
     /// Returns `true` if the cursor is at the end.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.chunks.bytes_remaining == 0
     }
@@ -364,12 +367,14 @@ impl<'a> Cursor<'a> {
     /// The longest contiguous run of bytes starting at the cursor (empty at
     /// the end).
     #[inline]
+    #[must_use]
     pub fn chunk(&self) -> &'a [u8] {
         self.chunks.current_chunk
     }
 
     /// The byte at the cursor, if any, without advancing.
     #[inline]
+    #[must_use]
     pub fn peek(&self) -> Option<u8> {
         self.chunks.current_chunk.first().copied()
     }
@@ -420,6 +425,7 @@ impl<'a> Cursor<'a> {
 
     /// Returns an iterator over the remaining chunks, starting at the cursor.
     #[inline]
+    #[must_use]
     pub fn chunks(&self) -> Chunks<'a> {
         self.chunks.clone()
     }

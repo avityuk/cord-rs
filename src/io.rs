@@ -109,18 +109,15 @@ pub(crate) fn fmt_lossy(chunks: Chunks<'_>, f: &mut fmt::Formatter<'_>) -> fmt::
                     let valid = e.valid_up_to();
                     // SAFETY: `from_utf8` validated this prefix.
                     f.write_str(unsafe { core::str::from_utf8_unchecked(&buf[..valid]) })?;
-                    match e.error_len() {
-                        Some(n) => {
-                            f.write_char(char::REPLACEMENT_CHARACTER)?;
-                            buf = &buf[valid + n..];
-                        }
-                        None => {
-                            // Incomplete sequence at the end: keep it.
-                            let tail = &buf[valid..];
-                            carry[..tail.len()].copy_from_slice(tail);
-                            *carry_len = tail.len();
-                            return Ok(());
-                        }
+                    if let Some(n) = e.error_len() {
+                        f.write_char(char::REPLACEMENT_CHARACTER)?;
+                        buf = &buf[valid + n..];
+                    } else {
+                        // Incomplete sequence at the end: keep it.
+                        let tail = &buf[valid..];
+                        carry[..tail.len()].copy_from_slice(tail);
+                        *carry_len = tail.len();
+                        return Ok(());
                     }
                 }
             }
@@ -146,7 +143,7 @@ pub(crate) fn fmt_lossy(chunks: Chunks<'_>, f: &mut fmt::Formatter<'_>) -> fmt::
             decode(&tmp[..tmp_len], &mut carry, &mut carry_len, f)?;
         }
         if !rest.is_empty() {
-            debug_assert!(carry_len == 0);
+            debug_assert_eq!(carry_len, 0);
             decode(rest, &mut carry, &mut carry_len, f)?;
         }
     }

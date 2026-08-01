@@ -1,4 +1,11 @@
 //! Deterministic end-to-end tests of the public API.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    reason = "tests juggle small integers freely"
+)]
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -44,6 +51,7 @@ fn empty_and_inline() {
 
 #[test]
 fn construction_from_various_sources() {
+    static STATIC: [u8; 100] = [9; 100];
     let big: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
     check(&Cord::from(&big[..]), &big);
     check(&Cord::from(big.clone()), &big);
@@ -62,8 +70,7 @@ fn construction_from_various_sources() {
         v.extend_from_slice(&big);
         v
     };
-    assert!(internal::is_flat(&Cord::from(wasteful)) || true, "wasteful vec is copied (btree or flat)");
-    static STATIC: [u8; 100] = [9; 100];
+    assert!(!internal::is_external(&Cord::from(wasteful)), "wasteful vec is copied, not adopted");
     let s = Cord::from_static(&STATIC);
     check(&s, &STATIC);
     assert!(internal::is_external(&s));
@@ -260,7 +267,7 @@ fn comparison_and_search() {
     assert_eq!(a, b"the quick brown fox jumps over the lazy dog");
     assert_eq!(a, b"the quick brown fox jumps over the lazy dog".to_vec());
     assert!(a != "the quick brown fox jumps over the lazy dog!");
-    assert!("the quick brown fox jumps over the lazy dog" == a);
+    assert_eq!("the quick brown fox jumps over the lazy dog", a);
     assert!(a < "the quick brown fox jumps over the lazy dog!");
     assert!(a < Cord::from("the quick brown fox jumps over the lazy dog!").slice(..));
     assert!(a > "the quick brown fox");
@@ -588,7 +595,7 @@ fn send_sync_across_threads() {
             std::thread::spawn(move || {
                 c.append(vec![t as u8; 1000]);
                 c.prepend("x");
-                let sub = c.slice(1..data.len() + 1);
+                let sub = c.slice(1..=data.len());
                 assert_eq!(sub, data);
                 c.len()
             })
