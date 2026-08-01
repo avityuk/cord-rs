@@ -1,0 +1,329 @@
+//! Criterion micro-benchmarks for the hot paths of `Cord`.
+//!
+//! Run with `cargo bench`. Groups cover construction, cloning, append /
+//! prepend growth, slicing, iteration, comparison, search, flattening and
+//! hashing, with `Vec<u8>` baselines where a comparison is meaningful.
+
+use std::hash::{Hash, Hasher};
+use std::hint::black_box;
+
+use cord_rs::{Cord, CordBuffer};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+
+const SIZES: [usize; 5] = [8, 100, 4 << 10, 64 << 10, 1 << 20];
+
+fn data(n: usize) -> Vec<u8> {
+    (0..n).map(|i| (i * 31 % 251) as u8).collect()
+}
+
+/// A cord of `n` bytes built from `chunk` sized appends (fragmented tree).
+fn fragmented(n: usize, chunk: usize) -> Cord {
+    let bytes = data(n);
+    let mut cord = Cord::new();
+    for piece in bytes.chunks(chunk) {
+        cord.append(piece);
+    }
+    cord
+}
+
+fn bench_construct(c: &mut Criterion) {
+    let mut g = c.benchmark_group("construct");
+    for size in SIZES {
+        let bytes = data(size);
+        g.throughput(Throughput::Bytes(size as u64));
+        g.bench_with_input(BenchmarkId::new("from_slice", size), &bytes, |b, bytes| {
+            b.iter(|| Cord::from(black_box(&bytes[..])))
+        });
+        g.bench_with_input(BenchmarkId::new("from_vec", size), &bytes, |b, bytes| {
+            b.iter_batched(|| bytes.clone(), |v| Cord::from(black_box(v)), criterion::BatchSize::SmallInput)
+        });
+        g.bench_with_input(BenchmarkId::new("vec_from_slice", size), &bytes, |b, bytes| {
+            b.iter(|| black_box(&bytes[..]).to_vec())
+        });
+    }
+    g.finish();
+}
+
+fn bench_clone(c: &mut Criterion) {
+    let mut g = c.benchmark_group("clone");
+    let inline = Cord::from("inline");
+    let flat = Cord::from(&data(1000)[..]);
+    let tree = fragmented(1 << 20, 1000);
+    g.bench_function("inline", |b| b.iter(|| black_box(&inline).clone()));
+    g.bench_function("flat", |b| b.iter(|| black_box(&flat).clone()));
+    g.bench_function("btree_1MiB", |b| b.iter(|| black_box(&tree).clone()));
+    g.finish();
+}
+
+fn bench_append(c: &mut Criterion) {
+    let mut g = c.benchmark_group("append");
+    for chunk in [1usize, 16, 100, 1000, 4096] {
+        let total = 1 << 20;
+        let bytes = data(total);
+        g.throughput(Throughput::Bytes(total as u64));
+        g.bench_with_input(BenchmarkId::new("slices_to_1MiB", chunk), &bytes, |b, bytes| {
+            b.iter(|| {
+                let mut cord = Cord::new();
+                for piece in bytes.chunks(chunk) {
+                    cord.append(black_box(piece));
+                }
+                cord
+            })
+        });
+        g.bench_with_input(BenchmarkId::new("vec_extend_to_1MiB", chunk), &bytes, |b, bytes| {
+            b.iter(|| {
+                let mut v = Vec::new();
+                for piece in bytes.chunks(chunk) {
+                    v.extend_from_slice(black_box(piece));
+                }
+                v
+            })
+        });
+    }
+    // Appending cords: shared vs owned.
+    let piece = fragmented(64 << 10, 4000);
+    g.throughput(Throughput::Bytes((64 << 10) * 16));
+    g.bench_function("cords_shared_16x64KiB", |b| {
+        b.iter(|| {
+            let mut cord = Cord::new();
+            for _ in 0..16 {
+                cord.append(black_box(&piece));
+            }
+            cord
+        })
+    });
+    g.bench_function("cords_owned_16x64KiB", |b| {
+        b.iter(|| {
+            let mut cord = Cord::new();
+            for _ in 0..16 {
+                cord.append(black_box(piece.clone()));
+            }
+            cord
+        })
+    });
+    // Zero-copy building through CordBuffer.
+    let total = 1 << 20;
+    let bytes = data(total);
+    g.throughput(Throughput::Bytes(total as u64));
+    g.bench_function("cord_buffer_to_1MiB", |b| {
+        b.iter(|| {
+            let mut cord = Cord::new();
+            let mut src = &bytes[..];
+            while !src.is_empty() {
+                let mut buffer = CordBuffer::with_default_limit(src.len());
+                let n = buffer.put_slice_partial(src);
+                src = &src[n..];
+                cord.append(buffer);
+            }
+            cord
+        })
+    });
+    g.finish();
+}
+
+fn bench_prepend(c: &mut Criterion) {
+    let mut g = c.benchmark_group("prepend");
+    for chunk in [16usize, 1000] {
+        let total = 256 << 10;
+        let bytes = data(total);
+        g.throughput(Throughput::Bytes(total as u64));
+        g.bench_with_input(BenchmarkId::new("slices_to_256KiB", chunk), &bytes, |b, bytes| {
+            b.iter(|| {
+                let mut cord = Cord::new();
+                for piece in bytes.rchunks(chunk) {
+                    cord.prepend(black_box(piece));
+                }
+                cord
+            })
+        });
+    }
+    g.finish();
+}
+
+fn bench_slice(c: &mut Criterion) {
+    let mut g = c.benchmark_group("slice");
+    let flat = Cord::from(&data(4000)[..]);
+    let tree = fragmented(1 << 20, 1000);
+    g.bench_function("flat_middle", |b| b.iter(|| black_box(&flat).slice(1000..3000)));
+    g.bench_function("btree_small_inline", |b| b.iter(|| black_box(&tree).slice(500_000..500_010)));
+    g.bench_function("btree_middle_64KiB", |b| {
+        b.iter(|| black_box(&tree).slice(500_000..(500_000 + (64 << 10))))
+    });
+    g.bench_function("btree_advance_1KiB", |b| {
+        b.iter_batched(|| tree.clone(), |mut c| c.advance(1024), criterion::BatchSize::SmallInput)
+    });
+    g.bench_function("btree_truncate_1KiB", |b| {
+        b.iter_batched(|| tree.clone(), |mut c| c.truncate(c.len() - 1024), criterion::BatchSize::SmallInput)
+    });
+    g.bench_function("btree_split_off_middle", |b| {
+        b.iter_batched(|| tree.clone(), |mut c| c.split_off(500_000), criterion::BatchSize::SmallInput)
+    });
+    g.finish();
+}
+
+fn bench_iterate(c: &mut Criterion) {
+    let mut g = c.benchmark_group("iterate");
+    let tree = fragmented(1 << 20, 1000);
+    let vec = tree.to_vec();
+    g.throughput(Throughput::Bytes(vec.len() as u64));
+    g.bench_function("chunks_sum", |b| {
+        b.iter(|| black_box(&tree).chunks().map(|c| c.iter().map(|&x| x as u64).sum::<u64>()).sum::<u64>())
+    });
+    g.bench_function("bytes_sum", |b| b.iter(|| black_box(&tree).bytes().map(|x| x as u64).sum::<u64>()));
+    g.bench_function("index_every_4KiB", |b| {
+        b.iter(|| (0..tree.len()).step_by(4096).map(|i| tree[i] as u64).sum::<u64>())
+    });
+    g.bench_function("cursor_read_4KiB_pieces", |b| {
+        b.iter(|| {
+            let mut cursor = black_box(&tree).cursor();
+            let mut n = 0;
+            while !cursor.is_empty() {
+                n += cursor.read(4096.min(cursor.remaining())).len();
+            }
+            n
+        })
+    });
+    g.bench_function("vec_sum_baseline", |b| {
+        b.iter(|| black_box(&vec).iter().map(|&x| x as u64).sum::<u64>())
+    });
+    g.bench_function("to_vec", |b| b.iter(|| black_box(&tree).to_vec()));
+    g.finish();
+}
+
+fn bench_compare(c: &mut Criterion) {
+    let mut g = c.benchmark_group("compare");
+    let a = fragmented(1 << 20, 1000);
+    let b_same = fragmented(1 << 20, 777);
+    let flat = Cord::from(a.to_vec());
+    let vec = a.to_vec();
+    g.throughput(Throughput::Bytes(vec.len() as u64));
+    g.bench_function("eq_fragmented_vs_fragmented", |b| b.iter(|| black_box(&a) == black_box(&b_same)));
+    g.bench_function("eq_fragmented_vs_flat", |b| b.iter(|| black_box(&a) == black_box(&flat)));
+    g.bench_function("eq_fragmented_vs_slice", |b| b.iter(|| black_box(&a) == black_box(&vec[..])));
+    g.bench_function("cmp_shared_clone", |b| {
+        let clone = a.clone();
+        b.iter(|| black_box(&a).cmp(black_box(&clone)))
+    });
+    g.bench_function("vec_eq_baseline", |b| b.iter(|| black_box(&vec) == black_box(&vec)));
+    g.finish();
+}
+
+fn bench_find(c: &mut Criterion) {
+    let mut g = c.benchmark_group("find");
+    let mut tree = fragmented(1 << 20, 1000);
+    tree.append("needle");
+    let vec = tree.to_vec();
+    g.throughput(Throughput::Bytes(vec.len() as u64));
+    g.bench_function("find_at_end", |b| b.iter(|| black_box(&tree).find("needle")));
+    g.bench_function("find_cord_needle_at_end", |b| {
+        let needle = Cord::from("needle");
+        b.iter(|| black_box(&tree).find(&needle))
+    });
+    g.bench_function("vec_windows_baseline", |b| {
+        b.iter(|| black_box(&vec).windows(6).position(|w| w == b"needle"))
+    });
+    g.finish();
+}
+
+fn bench_flatten(c: &mut Criterion) {
+    let mut g = c.benchmark_group("flatten");
+    for size in [4 << 10, 64 << 10, 1 << 20] {
+        g.throughput(Throughput::Bytes(size as u64));
+        g.bench_with_input(BenchmarkId::new("fragmented", size), &size, |b, &size| {
+            b.iter_batched(
+                || fragmented(size, 500),
+                |mut c| {
+                    let _ = c.flatten();
+                    c
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    g.finish();
+}
+
+fn bench_hash(c: &mut Criterion) {
+    let mut g = c.benchmark_group("hash");
+    let tree = fragmented(64 << 10, 1000);
+    let flat = Cord::from(tree.to_vec());
+    let vec = tree.to_vec();
+    g.throughput(Throughput::Bytes(vec.len() as u64));
+    g.bench_function("fragmented_64KiB", |b| {
+        b.iter(|| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            black_box(&tree).hash(&mut h);
+            h.finish()
+        })
+    });
+    g.bench_function("flat_64KiB", |b| {
+        b.iter(|| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            black_box(&flat).hash(&mut h);
+            h.finish()
+        })
+    });
+    g.bench_function("vec_64KiB_baseline", |b| {
+        b.iter(|| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            black_box(&vec).hash(&mut h);
+            h.finish()
+        })
+    });
+    g.finish();
+}
+
+fn bench_diabolical(c: &mut Criterion) {
+    let mut g = c.benchmark_group("diabolical");
+    g.sample_size(20);
+    // Shared-before-every-append growth (worst case for in place appends).
+    g.bench_function("shared_single_byte_appends_5000", |b| {
+        b.iter(|| {
+            let mut cord = Cord::new();
+            for i in 0..5000u32 {
+                let _shared = cord.clone();
+                cord.append(&[(i % 256) as u8][..]);
+            }
+            cord
+        })
+    });
+    // Repeated split / overwrite / join, hostile to btrees.
+    g.bench_function("split_insert_join_x100_on_1MiB", |b| {
+        let base = fragmented(1 << 20, 1024);
+        let patch = data(500);
+        b.iter_batched(
+            || base.clone(),
+            |mut cord| {
+                let mut seed = 12345u64;
+                for _ in 0..100 {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    let offset = (seed >> 33) as usize % (cord.len() - patch.len());
+                    let mut suffix = cord.clone();
+                    suffix.advance(offset + patch.len());
+                    cord.truncate(offset);
+                    cord.append(&patch[..]);
+                    cord.append(suffix);
+                }
+                cord
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    g.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_construct,
+    bench_clone,
+    bench_append,
+    bench_prepend,
+    bench_slice,
+    bench_iterate,
+    bench_compare,
+    bench_find,
+    bench_flatten,
+    bench_hash,
+    bench_diabolical
+);
+criterion_main!(benches);

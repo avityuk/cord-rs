@@ -1,0 +1,45 @@
+[package]
+name = "cord-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "A Rust port of abseil's absl::Cord: a rope-like byte sequence with O(log n) append/prepend/slicing and shared substructure."
+license = "Apache-2.0"
+readme = "README.md"
+documentation = "https://docs.rs/cord-rs"
+keywords = ["cord", "rope", "bytes", "abseil", "buffer"]
+categories = ["data-structures", "memory-management"]
+exclude = [".github/", "scripts/"]
+
+[features]
+default = []
+# `bytes::Buf` for `Cord`, `bytes::BufMut` for `CordWriter`, and zero-copy
+# conversions between `Cord` and `bytes::Bytes`.
+bytes = ["dep:bytes"]
+# `serde::Serialize` / `serde::Deserialize` for `Cord` (as a byte sequence).
+serde = ["dep:serde"]
+
+[dependencies]
+bytes = { version = "1.9", optional = true, default-features = false }
+serde = { version = "1.0", optional = true, default-features = false, features = ["std"] }
+
+[dev-dependencies]
+proptest = "1.4"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+
+[[bench]]
+name = "cord"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "allow"

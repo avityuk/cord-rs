@@ -1,0 +1,11 @@
+cord-rs
+Copyright 2026 Andrey Vityuk
+
+This product is a Rust port of the `absl::Cord` data structure from the
+Abseil C++ Common Libraries (https://github.com/abseil/abseil-cpp),
+Copyright The Abseil Authors, licensed under the Apache License, Version 2.0.
+
+The algorithms, data layouts, constants and much of the documentation in this
+crate are derived from Abseil's `absl/strings/cord*` and
+`absl/strings/internal/cord_*` sources. The Cordz sampling/profiling layer and
+the CRC checksum node were intentionally not ported.
