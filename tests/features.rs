@@ -120,7 +120,7 @@ mod bytes_feature {
         let mut cord = Cord::from("head");
         {
             let mut writer = CordWriter::new(&mut cord);
-            assert!(writer.remaining_mut() > 1 << 40);
+            assert!(writer.remaining_mut() > usize::MAX / 2);
             writer.put_u32(0xDEAD_BEEF);
             writer.put_slice(b" middle ");
             for i in 0..10_000u32 {

@@ -1,5 +1,7 @@
 //! Property based model test: random operation sequences on `Cord`s are
 //! checked against `Vec<u8>` oracles, with tree validation after every step.
+// proptest is not available on wasm targets (see Cargo.toml).
+#![cfg(not(target_family = "wasm"))]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

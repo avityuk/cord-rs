@@ -1,6 +1,6 @@
-//! A Rust port of abseil's [`absl::Cord`]: a rope-like byte sequence with
-//! O(log n) append, prepend and slicing, O(1) cloning, and a 16 byte
-//! footprint with 15 bytes of inline storage.
+//! A rope-like byte sequence with O(log n) append, prepend and slicing, O(1)
+//! cloning, and a 16 byte footprint with 15 bytes of inline storage — a
+//! faithful port of abseil's [`absl::Cord`].
 //!
 //! # When to use a `Cord`
 //!

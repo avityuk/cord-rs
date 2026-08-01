@@ -172,7 +172,9 @@ fn all_flat_sizes() {
 #[test]
 fn gigabyte_cord_from_external() {
     let one_gig: usize = 1024 * 1024 * 1024;
-    let max_size = if core::mem::size_of::<usize>() > 4 { 128 * one_gig } else { 2 * one_gig };
+    // 128 GiB on 64-bit targets, 2 GiB on 32-bit ones (`checked_mul` keeps the
+    // 64-bit constant from being rejected by the overflow lint on 32-bit).
+    let max_size = one_gig.checked_mul(128).unwrap_or(2 * one_gig);
     let length = 128 * 1024;
     let from = internal::make_external(&vec![b'x'; length]);
 

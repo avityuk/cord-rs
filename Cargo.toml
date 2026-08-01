@@ -24,10 +24,14 @@ bytes = { version = "1.9", optional = true, default-features = false }
 serde = { version = "1.0", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
-proptest = "1.4"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+
+# proptest's RNG (getrandom) does not build on wasm32-unknown-unknown, which
+# the check gate uses to compile-check the 32-bit layouts.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+proptest = "1.4"
 
 [[bench]]
 name = "cord"

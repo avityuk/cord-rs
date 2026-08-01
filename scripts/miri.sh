@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Runs the unit tests and the deterministic API tests under Miri with strict
-# provenance checking. Requires: rustup +nightly component add miri.
+# Runs the unit, API, model and feature tests under Miri with strict
+# provenance. Required before pushing (CI enforces it). Needs a nightly
+# toolchain (development only -- using the crate needs stable):
+#   rustup toolchain install nightly --component miri
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MIRIFLAGS="${MIRIFLAGS:--Zmiri-strict-provenance}"

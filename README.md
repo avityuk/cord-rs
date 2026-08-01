@@ -1,8 +1,8 @@
 # cord-rs
 
-A Rust port of abseil's [`absl::Cord`][absl-cord]: a rope-like byte sequence
-with O(log n) append, prepend and slicing, O(1) cloning, and a 16 byte
-footprint with 15 bytes of inline storage.
+A rope-like byte sequence for building, slicing and sharing large binary
+data: O(log n) append, prepend and slicing, O(1) cloning, and a 16-byte
+handle that stores up to 15 bytes inline without allocating.
 
 ```toml
 [dependencies]
@@ -35,17 +35,55 @@ assert_eq!(total, cord.len());
 assert!(cord.ends_with(" tail"));
 ```
 
-## When to use a `Cord`
+## Why a cord?
 
-`Cord` is designed for large byte sequences that change over their lifetime
-or are shared across API boundaries: wire-format messages that get headers
-prepended or payloads appended, buffers assembled from many pieces, or data
-that is sliced and passed around without copying. For small, contiguous,
-rarely modified data prefer `Vec<u8>` or `bytes::Bytes`.
+`Vec<u8>` concatenation, insertion and slicing are O(n) copies; sharing means
+cloning. A `Cord` stores bytes either inline or in a reference-counted B-tree
+of immutable buffers, so it is designed for byte sequences that change over
+their lifetime or cross API boundaries:
 
-## What is ported
+- **Cheap edits**: `append`, `prepend`, `slice`, `split_off`/`split_to`,
+  `advance`, `truncate` are O(log n) and reuse existing buffers — e.g.
+  prepending a header to a wire-format message, or repeatedly appending
+  payloads.
+- **Cheap sharing**: `clone` is a reference-count bump; sub-cords share the
+  underlying memory.
+- **Zero-copy ingestion**: large `Vec<u8>`, `String`, `Box<[u8]>`,
+  `Arc<[u8]>`, `&'static [u8]` and `bytes::Bytes` values are adopted rather
+  than copied; `CordBuffer` lets I/O write into memory that becomes part of
+  the cord directly.
+- **Small-data friendly**: values up to 15 bytes live inline in the 16-byte
+  handle; small appends fill spare capacity in existing buffers.
 
-The representation and the optimizations of `absl::Cord` are preserved:
+For small, contiguous, rarely modified data, prefer `Vec<u8>` or
+`bytes::Bytes` — cords pay indirection for their flexibility, and random
+access (`cord[i]`) is O(log n).
+
+## API sketch
+
+Naming follows the [`bytes`] crate where a convention exists: `append` /
+`prepend` (accepting slices, strings, cords, owned buffers — see
+[`CordSource`]), `advance`, `truncate`, `slice`, `try_slice`, `split_off`,
+`split_to`, `as_flat`, `flatten`, `chunks()`, `bytes()`, `cursor()` (chunked
+reading, skipping, sub-cord extraction), `find`, `starts_with` / `ends_with` /
+`contains`, `compare`/`equals` plus `PartialEq`/`Ord` against slices, strings
+and cords, `Hash` (chunk-layout independent), `Index`, `Extend`,
+`FromIterator`, `io::Write`/`fmt::Write`, and `take_append_buffer` for
+reusing a cord's spare capacity. Out-of-range indices and ranges panic, like
+`Vec` and `bytes::Bytes`; `get` and `try_slice` are the non-panicking forms.
+
+Cargo features:
+
+- `bytes`: `bytes::Buf` for `Cord` and `Cursor`, `bytes::BufMut` for
+  `CordWriter`, and zero-copy conversions with `bytes::Bytes`.
+- `serde`: `Serialize` / `Deserialize` for `Cord` as a byte sequence.
+
+## Relationship to abseil's `absl::Cord`
+
+`cord-rs` is a faithful port of [`absl::Cord`][absl-cord] — the same data
+structure Google uses for protobuf `bytes`/`string` fields and RPC payloads —
+preserving its representation and optimizations, so its well-tuned
+performance characteristics carry over:
 
 | abseil                                   | cord-rs                                              |
 | ---------------------------------------- | ---------------------------------------------------- |
@@ -62,10 +100,8 @@ The representation and the optimizations of `absl::Cord` are preserved:
 
 Not ported: the Cordz sampling / profiling layer and the CRC checksum node.
 
-### API mapping
-
-The public API is idiomatic Rust, modeled on the [`bytes`] crate where a
-convention exists:
+<details>
+<summary>abseil → cord-rs API mapping</summary>
 
 | abseil                                | cord-rs                                         |
 | ------------------------------------- | ----------------------------------------------- |
@@ -86,14 +122,7 @@ convention exists:
 | `CopyCordToString` / `CopyCordToSpan` | `to_vec`, `copy_prefix_to`, `io::Read` on `Cursor` |
 | `AbslFormatFlush` / `operator<<`      | `fmt::Write`, `io::Write`, `Display`            |
 
-Bounds are checked like `Vec` / `bytes::Bytes`: out-of-range indices and
-ranges panic; `get` and `try_slice` are the non-panicking forms.
-
-## Features
-
-- `bytes`: `bytes::Buf` for `Cord` and `Cursor`, `bytes::BufMut` for
-  `CordWriter`, and zero-copy conversions with `bytes::Bytes`.
-- `serde`: `Serialize` / `Deserialize` for `Cord` as a byte sequence.
+</details>
 
 ## Safety and testing
 
@@ -107,17 +136,24 @@ and is therefore `unsafe` internally; the public API is safe. Verification:
   slice, split, advance, truncate, clone, flatten, cursor reads, ...) on
   several cords sharing structure, against `Vec<u8>` oracles, validating the
   tree after every step.
-- The unit and API tests run under [Miri] with strict provenance
-  (`scripts/miri.sh`) and under AddressSanitizer / ThreadSanitizer
-  (`scripts/sanitize.sh`).
+- The test suite runs under [Miri] with strict provenance and under
+  AddressSanitizer / ThreadSanitizer; both are required CI jobs.
 - 64-bit and 32-bit targets, little and big endian, are supported (CI covers
   `i686`, `wasm32` and a `powerpc64` build).
 
-Benchmarks: `cargo bench` (Criterion).
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). `scripts/check.sh` is the pre-commit
+gate (rustfmt, pedantic clippy with warnings as errors, tests and docs in
+both feature configurations, and a 32-bit compile of the crate and tests);
+`scripts/miri.sh` and `scripts/sanitize.sh` are the required pre-push
+soundness checks (nightly — a development-only requirement); `cargo bench`
+runs the Criterion benchmarks.
 
 ## Minimum supported Rust version
 
-1.95 (edition 2024).
+1.95 (edition 2024) to build and use the crate; validation tooling (Miri,
+sanitizers) additionally needs a nightly toolchain.
 
 ## License
 
@@ -127,5 +163,6 @@ Libraries, Copyright The Abseil Authors.
 
 [absl-cord]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
 [`bytes`]: https://crates.io/crates/bytes
+[`CordSource`]: https://docs.rs/cord-rs/latest/cord_rs/trait.CordSource.html
 [proptest]: https://crates.io/crates/proptest
 [Miri]: https://github.com/rust-lang/miri
