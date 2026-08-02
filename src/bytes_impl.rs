@@ -115,7 +115,8 @@ impl From<Cord> for Bytes {
 /// assert!(cord.ends_with(" tail"));
 /// ```
 pub struct CordWriter<'a> {
-    cord: &'a mut Cord,
+    /// `None` only after [`into_inner`](Self::into_inner) has taken it.
+    cord: Option<&'a mut Cord>,
     /// The buffer being filled, taken from the cord's spare capacity on first
     /// use so that small writes land in existing buffers.
     buffer: Option<CordBuffer>,
@@ -124,28 +125,29 @@ pub struct CordWriter<'a> {
 impl<'a> CordWriter<'a> {
     /// Creates a writer appending to `cord`.
     pub fn new(cord: &'a mut Cord) -> Self {
-        Self { cord, buffer: None }
+        Self { cord: Some(cord), buffer: None }
     }
 
     /// Appends any buffered data to the cord.
     pub fn flush(&mut self) {
         if let Some(buffer) = self.buffer.take()
             && !buffer.is_empty()
+            && let Some(cord) = self.cord.as_deref_mut()
         {
-            self.cord.append(buffer);
+            cord.append(buffer);
         }
     }
 
     /// Flushes and returns the underlying cord.
+    ///
+    /// # Panics
+    ///
+    /// Never panics: `into_inner` is the only place that ever takes `cord`
+    /// out, so it is always present when this runs.
     #[must_use]
     pub fn into_inner(mut self) -> &'a mut Cord {
         self.flush();
-        debug_assert!(self.buffer.is_none());
-        let this = core::mem::ManuallyDrop::new(self);
-        // SAFETY: `this` is never dropped and `buffer` is `None` after
-        // `flush`, so moving the reference out leaks nothing and does not
-        // double free.
-        unsafe { core::ptr::read(&raw const this.cord) }
+        self.cord.take().expect("CordWriter used after into_inner")
     }
 
     /// Returns a buffer with spare capacity, reusing the cord's own spare
@@ -153,7 +155,12 @@ impl<'a> CordWriter<'a> {
     fn buffer_mut(&mut self) -> &mut CordBuffer {
         if self.buffer.as_ref().is_none_or(|b| b.available() == 0) {
             self.flush();
-            self.buffer = Some(self.cord.take_append_buffer(CordBuffer::DEFAULT_LIMIT));
+            self.buffer = Some(
+                self.cord
+                    .as_deref_mut()
+                    .expect("CordWriter used after into_inner")
+                    .take_append_buffer(CordBuffer::DEFAULT_LIMIT),
+            );
         }
         self.buffer.as_mut().expect("buffer was just set")
     }
@@ -170,7 +177,9 @@ impl Drop for CordWriter<'_> {
 unsafe impl BufMut for CordWriter<'_> {
     #[inline]
     fn remaining_mut(&self) -> usize {
-        usize::MAX - self.cord.len() - self.buffer.as_ref().map_or(0, CordBuffer::len)
+        usize::MAX
+            - self.cord.as_deref().map_or(0, Cord::len)
+            - self.buffer.as_ref().map_or(0, CordBuffer::len)
     }
 
     /// # Safety
@@ -204,7 +213,7 @@ unsafe impl BufMut for CordWriter<'_> {
             buffer.put_slice(src);
         } else {
             self.flush();
-            self.cord.append(src);
+            self.cord.as_deref_mut().expect("CordWriter used after into_inner").append(src);
         }
     }
 }

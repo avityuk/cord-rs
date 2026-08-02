@@ -100,8 +100,13 @@ pub(crate) const fn tag_to_length(tag: u8) -> usize {
 
 #[inline]
 fn layout_for(size: usize) -> Layout {
-    // SAFETY: size is a multiple of 8 >= 32 and the alignment is a power of 2.
-    unsafe { Layout::from_size_align_unchecked(size, align_of::<CordRep>()) }
+    // `align_of::<CordRep>()` is a compile-time power of two and `size` is
+    // bounded by `MAX_LARGE_FLAT_SIZE`, so this can never actually fail; the
+    // formatting-free cold arm keeps the caller's inlining unaffected.
+    match Layout::from_size_align(size, align_of::<CordRep>()) {
+        Ok(layout) => layout,
+        Err(_) => unreachable!(),
+    }
 }
 
 /// Allocates a flat with a payload capacity of at least

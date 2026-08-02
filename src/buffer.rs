@@ -290,11 +290,11 @@ impl CordBuffer {
     #[inline]
     pub(crate) unsafe fn from_flat(rep: *mut CordRep) -> Self {
         // SAFETY: `rep` is a live flat node per the caller contract above,
-        // which is all `is_flat` and `refcount` require.
+        // which is all `debug_assert_unique_flat` requires.
         unsafe {
-            debug_assert!(!rep.is_null() && rep.is_flat() && rep.refcount().is_one());
-            Self { rep: Rep { long: Long { rep, _padding: 0 } } }
+            crate::rep::debug_assert_unique_flat(rep);
         }
+        Self { rep: Rep { long: Long { rep, _padding: 0 } } }
     }
 
     /// Consumes the buffer, returning its flat rep (with the current length)
@@ -458,14 +458,23 @@ impl CordBuffer {
         n
     }
 
+    /// Sets the length to `len`, clamped to the current length. Clamping
+    /// means this can only shrink (or no-op), which can never expose
+    /// uninitialized bytes, so it is sound as a safe fn (unlike `set_len`,
+    /// which can also grow).
+    #[inline]
+    fn truncate_len(&mut self, len: usize) {
+        let len = len.min(self.len());
+        // SAFETY: `len <= self.len()`, so every byte up to it is already
+        // initialized.
+        unsafe { self.set_len(len) };
+    }
+
     /// Shortens the initialized data to `len` bytes. No effect if `len >=
     /// self.len()`. Does not release memory.
     #[inline]
     pub fn truncate(&mut self, len: usize) {
-        if len < self.len() {
-            // SAFETY: shrinking never exposes uninitialized bytes.
-            unsafe { self.set_len(len) };
-        }
+        self.truncate_len(len);
     }
 
     /// Sets the length to zero. Does not release memory.

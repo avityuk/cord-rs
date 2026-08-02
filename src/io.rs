@@ -97,31 +97,32 @@ impl io::BufRead for Cursor<'_> {
 pub(crate) fn fmt_lossy(chunks: Chunks<'_>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     /// Decodes `buf`, storing an incomplete trailing sequence in `carry`.
     fn decode(
-        mut buf: &[u8],
+        buf: &[u8],
         carry: &mut [u8; 4],
         carry_len: &mut usize,
         f: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
-        loop {
-            match core::str::from_utf8(buf) {
-                Ok(s) => return f.write_str(s),
-                Err(e) => {
-                    let valid = e.valid_up_to();
-                    // SAFETY: `from_utf8` validated this prefix.
-                    f.write_str(unsafe { core::str::from_utf8_unchecked(&buf[..valid]) })?;
-                    if let Some(n) = e.error_len() {
-                        f.write_char(char::REPLACEMENT_CHARACTER)?;
-                        buf = &buf[valid + n..];
-                    } else {
-                        // Incomplete sequence at the end: keep it.
-                        let tail = &buf[valid..];
-                        carry[..tail.len()].copy_from_slice(tail);
-                        *carry_len = tail.len();
-                        return Ok(());
-                    }
-                }
+        let mut chunks = buf.utf8_chunks().peekable();
+        while let Some(chunk) = chunks.next() {
+            f.write_str(chunk.valid())?;
+            let invalid = chunk.invalid();
+            if invalid.is_empty() {
+                continue;
+            }
+            if chunks.peek().is_some() {
+                // An invalid chunk that isn't the last one in `buf` is
+                // always a genuine error, never an incomplete sequence
+                // (more bytes followed it and still didn't extend it).
+                f.write_char(char::REPLACEMENT_CHARACTER)?;
+            } else if core::str::from_utf8(invalid).unwrap_err().error_len().is_none() {
+                // Incomplete sequence at the end of `buf`: keep it.
+                carry[..invalid.len()].copy_from_slice(invalid);
+                *carry_len = invalid.len();
+            } else {
+                f.write_char(char::REPLACEMENT_CHARACTER)?;
             }
         }
+        Ok(())
     }
 
     let mut carry = [0u8; 4];

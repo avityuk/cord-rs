@@ -14,7 +14,6 @@
 //! Port of abseil's `cord_rep_btree.{h,cc}`.
 
 use core::fmt;
-use core::mem::offset_of;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
@@ -327,7 +326,7 @@ unsafe fn delete_leaf_edge(rep: *mut CordRep) {
 /// another tree corrupts every other reference to it.
 pub(crate) trait BtreePtr: Copy {
     /// Reinterprets `self` as a `*mut CordRep`.
-    unsafe fn as_rep(self) -> *mut CordRep;
+    fn as_rep(self) -> *mut CordRep;
     /// Reads `self`'s `height`.
     unsafe fn height(self) -> usize;
     /// Reads `self`'s `begin` cursor.
@@ -402,10 +401,10 @@ pub(crate) trait BtreePtr: Copy {
     unsafe fn size(self) -> usize {
         unsafe { self.end() - self.begin() }
     }
-    /// Returns [`MAX_CAPACITY`]. Performs no pointer access; `unsafe` only
-    /// for uniformity with the rest of the trait.
+    /// Returns [`MAX_CAPACITY`]. Performs no pointer access, so this is a
+    /// safe method despite the rest of the trait being unsafe.
     #[inline]
-    unsafe fn capacity(self) -> usize {
+    fn capacity(self) -> usize {
         MAX_CAPACITY
     }
     /// Index of the front or back edge.
@@ -607,7 +606,7 @@ pub(crate) trait BtreePtr: Copy {
 
 impl BtreePtr for *mut CordRepBtree {
     #[inline]
-    unsafe fn as_rep(self) -> *mut CordRep {
+    fn as_rep(self) -> *mut CordRep {
         // A `CordRepBtree` starts with its `rep: CordRep` field (`#[repr(C)]`),
         // so this cast is a plain pointer reinterpretation with no deref.
         self.cast()
@@ -891,14 +890,22 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
 impl CordRepBtree {
     /// Allocates a fresh, uninitialized-edges node.
     ///
-    /// # Safety
+    /// Ownership obligation on the result (not a precondition of calling):
+    /// the caller should eventually fill `edges[begin..end]` with live rep
+    /// pointers before the node is treated as a well-formed tree; not doing
+    /// so only leaks memory.
     ///
-    /// `begin`/`end` must be `<= MAX_CAPACITY` and `height` must fit
-    /// `small_u8` (`<= MAX_HEIGHT`, enforced by callers); the caller must
-    /// fill `edges[begin..end]` with live rep pointers before the node is
-    /// used as a well-formed tree.
+    /// # Panics
+    ///
+    /// Panics if `height > MAX_DEPTH` (it would otherwise be silently
+    /// truncated by `small_u8`, corrupting the node's declared height).
+    /// `MAX_DEPTH`, not `MAX_HEIGHT`, is the bound here: `finalize`'s
+    /// `new_pair` of two `MAX_HEIGHT` children is a legitimate, if
+    /// momentary, `MAX_DEPTH`-high tree that gets folded back down to
+    /// `MAX_HEIGHT` by [`rebuild`](Self::rebuild) right after.
     #[inline]
-    unsafe fn alloc(length: usize, height: usize, begin: usize, end: usize) -> *mut CordRepBtree {
+    fn alloc(length: usize, height: usize, begin: usize, end: usize) -> *mut CordRepBtree {
+        assert!(height <= MAX_DEPTH, "cord-rs: height {height} exceeds MAX_DEPTH");
         let mut rep = CordRep::new(length, BTREE);
         rep.storage = [small_u8(height), small_u8(begin), small_u8(end)];
         Box::into_raw(Box::new(CordRepBtree { rep, edges: [core::ptr::null_mut(); MAX_CAPACITY] }))
@@ -906,12 +913,14 @@ impl CordRepBtree {
 
     /// Creates a new empty node at `height`.
     ///
-    /// # Safety
+    /// # Panics
     ///
-    /// `height <= MAX_HEIGHT`.
+    /// Panics if `height` is too large for [`alloc`](Self::alloc) to accept
+    /// (see there); callers are expected to keep `height <= MAX_HEIGHT` for
+    /// the result to be a well-formed tree.
     #[inline]
-    pub(crate) unsafe fn new_node(height: usize) -> *mut CordRepBtree {
-        unsafe { Self::alloc(0, height, 0, 0) }
+    pub(crate) fn new_node(height: usize) -> *mut CordRepBtree {
+        Self::alloc(0, height, 0, 0)
     }
 
     /// Creates a new node containing `rep`, at height `rep.height + 1` for a
@@ -1084,14 +1093,14 @@ impl CordRepBtree {
     #[inline]
     unsafe fn copy_raw(this: *mut CordRepBtree, new_length: usize) -> *mut CordRepBtree {
         unsafe {
-            // Everything from `tag` onwards is plain data: copy it in one go.
-            const OFFSET: usize = offset_of!(CordRep, tag);
             let tree = Self::alloc(new_length, 0, 0, 0);
-            core::ptr::copy_nonoverlapping(
-                this.cast::<u8>().add(OFFSET),
-                tree.cast::<u8>().add(OFFSET),
-                core::mem::size_of::<CordRepBtree>() - OFFSET,
-            );
+            // `tag`, `storage` (the height/begin/end triple) and `edges` are
+            // plain data: copy them field by field. This is equivalent to
+            // the previous single `copy_nonoverlapping` from `tag` onwards
+            // but does not depend on there being no padding between fields.
+            (*tree).rep.tag = (*this).rep.tag;
+            (*tree).rep.storage = (*this).rep.storage;
+            (*tree).edges = (*this).edges;
             tree
         }
     }

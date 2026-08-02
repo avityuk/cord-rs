@@ -250,10 +250,9 @@ impl Cord {
     #[inline]
     pub(crate) unsafe fn from_rep(rep: *mut CordRep) -> Self {
         unsafe {
-            debug_assert!(!rep.is_null());
-            debug_assert!(rep.length() != 0);
-            Self { data: InlineData::from_tree(rep) }
+            rep::debug_assert_nonempty_rep(rep);
         }
+        Self { data: InlineData::from_tree(rep) }
     }
 
     /// Creates an inline cord. Requires `data.len() <= MAX_INLINE`.

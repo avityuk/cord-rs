@@ -271,6 +271,34 @@ impl RepPtr for *mut CordRep {
     }
 }
 
+/// Debug-only check that `rep` is non-null and non-empty — the adoption
+/// contract of `Cord::from_rep`. Compiles away in release builds.
+///
+/// # Safety
+///
+/// `rep` must point to a live rep (its header is read in debug builds).
+#[inline]
+pub(crate) unsafe fn debug_assert_nonempty_rep(rep: *mut CordRep) {
+    unsafe {
+        debug_assert!(!rep.is_null());
+        debug_assert!(rep.length() != 0);
+    }
+}
+
+/// Debug-only check that `rep` is a uniquely-owned flat — the adoption
+/// contract of `CordBuffer::from_flat`. Compiles away in release builds.
+///
+/// # Safety
+///
+/// Same contract as [`debug_assert_nonempty_rep`].
+#[inline]
+pub(crate) unsafe fn debug_assert_unique_flat(rep: *mut CordRep) {
+    unsafe {
+        debug_assert!(!rep.is_null());
+        debug_assert!(rep.is_flat() && rep.refcount().is_one());
+    }
+}
+
 /// Increments the reference count of `rep` and returns it.
 ///
 /// # Safety
