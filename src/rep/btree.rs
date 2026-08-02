@@ -667,9 +667,16 @@ impl BtreePtr for *mut CordRepBtree {
     #[inline]
     unsafe fn set_edge_ptr(self, index: usize, edge: *mut CordRep) {
         unsafe {
+            // Unlike `edge`'s `[begin(), end())` window, this is intentionally
+            // just the array bound: many callers write a slot before bumping
+            // `begin`/`end` to include it (or into a freshly `alloc`ed node
+            // whose cursors are still `0..0`), which is well-formed usage that
+            // a tighter `[begin(), end())` assert would wrongly reject.
+            debug_assert!(index < self.capacity());
             // SAFETY: `set_edge_ptr`'s contract requires exclusive access and
-            // `index < capacity() == edges.len()`; this overwrites the slot
-            // without touching either pointer's reference count, as documented.
+            // `index < capacity() == edges.len()` (checked above in debug
+            // builds); this overwrites the slot without touching either
+            // pointer's reference count, as documented.
             (*self).edges[index] = edge;
         }
     }
@@ -935,7 +942,7 @@ impl CordRepBtree {
         unsafe {
             let height = if rep.is_btree() { as_btree(rep).height() + 1 } else { 0 };
             let tree = Self::alloc(rep.length(), height, 0, 1);
-            (*tree).edges[0] = rep;
+            tree.set_edge_ptr(0, rep);
             tree
         }
     }
@@ -954,8 +961,8 @@ impl CordRepBtree {
         unsafe {
             debug_assert_eq!(front.height(), back.height());
             let tree = Self::alloc(front.length() + back.length(), front.height() + 1, 0, 2);
-            (*tree).edges[0] = front.as_rep();
-            (*tree).edges[1] = back.as_rep();
+            tree.set_edge_ptr(0, front.as_rep());
+            tree.set_edge_ptr(1, back.as_rep());
             tree
         }
     }
@@ -1235,7 +1242,15 @@ impl CordRepBtree {
                 this.set_begin(0);
                 this.set_end(new_end);
                 for i in 0..new_end {
-                    (*this).edges[i] = (*this).edges[i + delta];
+                    // SAFETY: `i + delta` ranges over the *old* `[delta,
+                    // old_end)` window (this loop's own `[0, new_end)` shifted
+                    // by `delta`), which was `this`'s live `[begin(), end())`
+                    // before the cursor update just above; now that `begin`/
+                    // `end` have moved, that range sits above the *new*
+                    // `end()`, so `edge`'s tighter `[begin(), end())` bound
+                    // would wrongly reject it even though the slot is still
+                    // live and in bounds (`< MAX_CAPACITY`).
+                    this.set_edge_ptr(i, (*this).edges[i + delta]);
                 }
             }
         }
@@ -1259,7 +1274,15 @@ impl CordRepBtree {
                 let mut i = new_end;
                 while i > new_begin {
                     i -= 1;
-                    (*this).edges[i] = (*this).edges[i - delta];
+                    // SAFETY: `i - delta` ranges over the *old* `[old_begin,
+                    // old_end)` window (this loop's `[new_begin, new_end)`
+                    // shifted down by `delta`), which was `this`'s live
+                    // `[begin(), end())` before the cursor update just above;
+                    // now that `begin`/`end` have moved, that range sits below
+                    // the *new* `begin()`, so `edge`'s tighter `[begin(),
+                    // end())` bound would wrongly reject it even though the
+                    // slot is still live and in bounds (`< MAX_CAPACITY`).
+                    this.set_edge_ptr(i, (*this).edges[i - delta]);
                 }
             }
         }
@@ -1279,11 +1302,11 @@ impl CordRepBtree {
             if IS_BACK {
                 Self::align_begin(this);
                 let idx = this.fetch_add_end(1);
-                (*this).edges[idx] = rep;
+                this.set_edge_ptr(idx, rep);
             } else {
                 Self::align_end(this);
                 let idx = this.sub_fetch_begin(1);
-                (*this).edges[idx] = rep;
+                this.set_edge_ptr(idx, rep);
             }
         }
     }
@@ -1308,7 +1331,7 @@ impl CordRepBtree {
                 Self::align_begin(this);
                 let mut new_end = this.end();
                 for i in sb..se {
-                    (*this).edges[new_end] = (*src).edges[i];
+                    this.set_edge_ptr(new_end, src.edge(i));
                     new_end += 1;
                 }
                 this.set_end(new_end);
@@ -1317,7 +1340,7 @@ impl CordRepBtree {
                 let new_begin = this.begin() - (se - sb);
                 this.set_begin(new_begin);
                 for (dst, i) in (new_begin..).zip(sb..se) {
-                    (*this).edges[dst] = (*src).edges[i];
+                    this.set_edge_ptr(dst, src.edge(i));
                 }
             }
         }
@@ -1373,7 +1396,7 @@ impl CordRepBtree {
         unsafe {
             let idx = this.index::<IS_BACK>();
             let result = if owned {
-                unref((*this).edges[idx]);
+                unref(this.edge(idx));
                 OpResult { tree: this, action: Action::InPlace }
             } else {
                 // Copy containing all unchanged edges: [begin, back) or
@@ -1385,7 +1408,7 @@ impl CordRepBtree {
                 }
                 result
             };
-            (*result.tree).edges[idx] = edge;
+            result.tree.set_edge_ptr(idx, edge);
             result.tree.add_length(delta);
             result
         }
@@ -1456,7 +1479,7 @@ impl CordRepBtree {
                     let n = data.len().min(flat::capacity(f));
                     f.set_length(n);
                     length += n;
-                    (*leaf).edges[end] = f;
+                    leaf.set_edge_ptr(end, f);
                     end += 1;
                     data = consume_copy::<IS_BACK>(flat::data(f), data, n);
                 }
@@ -1471,7 +1494,7 @@ impl CordRepBtree {
                     f.set_length(n);
                     length += n;
                     begin -= 1;
-                    (*leaf).edges[begin] = f;
+                    leaf.set_edge_ptr(begin, f);
                     data = consume_copy::<IS_BACK>(flat::data(f), data, n);
                 }
                 leaf.set_length(length);
@@ -1505,7 +1528,7 @@ impl CordRepBtree {
                     let n = data.len().min(flat::capacity(f));
                     f.set_length(n);
                     let idx = this.fetch_add_end(1);
-                    (*this).edges[idx] = f;
+                    this.set_edge_ptr(idx, f);
                     data = consume_copy::<IS_BACK>(flat::data(f), data, n);
                     if data.is_empty() || this.end() == cap {
                         break;
@@ -1518,7 +1541,7 @@ impl CordRepBtree {
                     let n = data.len().min(flat::capacity(f));
                     f.set_length(n);
                     let idx = this.sub_fetch_begin(1);
-                    (*this).edges[idx] = f;
+                    this.set_edge_ptr(idx, f);
                     data = consume_copy::<IS_BACK>(flat::data(f), data, n);
                     if data.is_empty() || this.begin() == 0 {
                         break;
@@ -1776,7 +1799,7 @@ impl CordRepBtree {
 
                 height -= 1;
                 if height < 0 {
-                    (*sub).edges[begin] = make_substring(ref_rep(edge), offset, len);
+                    sub.set_edge_ptr(begin, make_substring(ref_rep(edge), offset, len));
                     return result;
                 }
 
@@ -1784,7 +1807,7 @@ impl CordRepBtree {
                 pos = node.index_beyond(offset);
 
                 let nsub = Self::copy_to_end_from(node, pos.index, len);
-                (*sub).edges[begin] = nsub.as_rep();
+                sub.set_edge_ptr(begin, nsub.as_rep());
                 sub = nsub;
             }
             sub.set_begin(pos.index);
@@ -1843,7 +1866,7 @@ impl CordRepBtree {
                 let edge = node.edge(pos.index);
                 height -= 1;
                 if height < 0 {
-                    (*sub).edges[end] = make_substring(ref_rep(edge), 0, n);
+                    sub.set_edge_ptr(end, make_substring(ref_rep(edge), 0, n));
                     end += 1;
                     sub.set_end(end);
                     Self::assert_valid(as_btree(result.edge), true);
@@ -1853,7 +1876,7 @@ impl CordRepBtree {
                 node = as_btree(edge);
                 pos = node.index_of(n);
                 let nsub = Self::copy_begin_to(node, pos.index, n);
-                (*sub).edges[end] = nsub.as_rep();
+                sub.set_edge_ptr(end, nsub.as_rep());
                 end += 1;
                 sub.set_end(end);
                 sub = nsub;
@@ -1887,7 +1910,7 @@ impl CordRepBtree {
             let mut node = this;
             let mut height = height_to_isize(node.height());
             let mut front = node.index_of(offset);
-            let mut left = (*node).edges[front.index];
+            let mut left = node.edge(front.index);
             while front.n + n <= left.length() {
                 height -= 1;
                 if height < 0 {
@@ -1895,11 +1918,11 @@ impl CordRepBtree {
                 }
                 node = as_btree(left);
                 front = node.index_of(front.n);
-                left = (*node).edges[front.index];
+                left = node.edge(front.index);
             }
 
             let back = node.index_before_from(front, n);
-            let right = (*node).edges[back.index];
+            let right = node.edge(back.index);
             debug_assert!(back.index > front.index);
 
             // Get partial suffix and prefix entries.
@@ -1933,13 +1956,13 @@ impl CordRepBtree {
             // Compose the resulting tree.
             let sub = Self::new_node(height_from_isize(height));
             let mut end = 0;
-            (*sub).edges[end] = prefix.edge;
+            sub.set_edge_ptr(end, prefix.edge);
             end += 1;
             for r in node.edges_range(front.index + 1, back.index) {
-                (*sub).edges[end] = ref_rep(r);
+                sub.set_edge_ptr(end, ref_rep(r));
                 end += 1;
             }
-            (*sub).edges[end] = suffix.edge;
+            sub.set_edge_ptr(end, suffix.edge);
             end += 1;
             sub.set_end(end);
             sub.set_length(n);
@@ -2003,7 +2026,7 @@ impl CordRepBtree {
                 let edge_is_mutable = edge.refcount().is_one();
 
                 if height == 0 {
-                    (*tree).edges[pos.index] = resize_edge(edge, length, edge_is_mutable);
+                    tree.set_edge_ptr(pos.index, resize_edge(edge, length, edge_is_mutable));
                     return Self::assert_valid(top, true).as_rep();
                 }
                 height -= 1;
@@ -2011,7 +2034,7 @@ impl CordRepBtree {
                 if !edge_is_mutable {
                     // We can't remove suffixes in place down this edge: replace it
                     // with a prefix copy instead.
-                    (*tree).edges[pos.index] = Self::copy_prefix(as_btree(edge), length, false).edge;
+                    tree.set_edge_ptr(pos.index, Self::copy_prefix(as_btree(edge), length, false).edge);
                     unref(edge);
                     return Self::assert_valid(top, true).as_rep();
                 }

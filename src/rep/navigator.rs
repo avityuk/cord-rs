@@ -485,8 +485,11 @@ impl CordRepBtreeNavigator {
             // only increments once per edge consumed by this read, and the
             // read never spans more than `MAX_CAPACITY` edges below a node it
             // itself just allocated (mirroring the same accounting abseil's
-            // `cord_rep_btree_navigator.cc` `Read()` uses), so the direct
-            // `(*subtree).edges[subtree_end]` writes stay within the array.
+            // `cord_rep_btree_navigator.cc` `Read()` uses), so every
+            // `subtree.set_edge_ptr(subtree_end, ...)` call below stays within
+            // `set_edge_ptr`'s `index < capacity()` bound, even though
+            // `subtree_end` runs ahead of `subtree`'s `end` cursor (bumped
+            // only afterwards, via `set_end`) throughout this function.
             // `substring`/`substring_from`/`ref_rep` are given live data edges
             // reached the same way, satisfying their own contracts.
             let mut height = 0usize;
@@ -530,7 +533,7 @@ impl CordRepBtreeNavigator {
                 edge = node.edge(index);
                 if length >= edge.length() {
                     subtree.add_length(edge.length());
-                    (*subtree).edges[subtree_end] = ref_rep(edge);
+                    subtree.set_edge_ptr(subtree_end, ref_rep(edge));
                     subtree_end += 1;
                 }
                 if length < edge.length() {
@@ -553,13 +556,13 @@ impl CordRepBtreeNavigator {
                 if length != 0 {
                     let right = CordRepBtree::new_node(height);
                     right.set_length(length);
-                    (*subtree).edges[subtree_end] = right.as_rep();
+                    subtree.set_edge_ptr(subtree_end, right.as_rep());
                     subtree_end += 1;
                     subtree.set_end(subtree_end);
                     subtree = right;
                     subtree_end = 0;
                     while length >= edge.length() {
-                        (*subtree).edges[subtree_end] = ref_rep(edge);
+                        subtree.set_edge_ptr(subtree_end, ref_rep(edge));
                         subtree_end += 1;
                         length -= edge.length();
                         index += 1;
@@ -569,7 +572,7 @@ impl CordRepBtreeNavigator {
             }
             // Add any partial edge still remaining at the leaf level.
             if length != 0 {
-                (*subtree).edges[subtree_end] = substring(edge, 0, length);
+                subtree.set_edge_ptr(subtree_end, substring(edge, 0, length));
                 subtree_end += 1;
             }
             subtree.set_end(subtree_end);
