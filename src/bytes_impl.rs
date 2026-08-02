@@ -173,6 +173,11 @@ unsafe impl BufMut for CordWriter<'_> {
         usize::MAX - self.cord.len() - self.buffer.as_ref().map_or(0, CordBuffer::len)
     }
 
+    /// # Safety
+    ///
+    /// Per [`BufMut::advance_mut`]'s contract, the caller must have
+    /// initialized the first `cnt` bytes of the spare capacity most recently
+    /// returned by [`chunk_mut`](bytes::BufMut::chunk_mut).
     #[inline]
     unsafe fn advance_mut(&mut self, cnt: usize) {
         let buffer = self.buffer.as_mut().expect("advance_mut without a preceding chunk_mut");

@@ -135,16 +135,47 @@ impl CordRepExternal {
     }
 
     /// Drops the owner and deallocates the rep. Requires `rep.is_external()`.
+    ///
+    /// # Safety
+    ///
+    /// `rep` must be a non-null pointer to a live external rep (tag ==
+    /// `EXTERNAL`) originally produced by [`create`](Self::create), whose
+    /// reference count has just reached zero, transferring final ownership
+    /// to this call; `rep` must not be used again afterwards.
     #[inline]
     pub(crate) unsafe fn delete(rep: *mut CordRep) {
-        debug_assert!(rep.is_external());
+        debug_assert!(unsafe { rep.is_external() });
         let ext: *mut CordRepExternal = rep.cast();
-        ((*ext).releaser_invoker)(ext);
+        // SAFETY: `ext` is `rep` reinterpreted as its actual concrete type
+        // (sound because `rep`'s EXTERNAL tag guarantees it really is a
+        // `CordRepExternal` header, per this fn's contract), so its
+        // `releaser_invoker` field may be read. `releaser_invoker` was set
+        // by `create::<O>` to `release::<O>`, whose own contract (that `ext`
+        // points at a live `CordRepExternalImpl<O>` with a refcount of zero)
+        // is satisfied by this fn's contract on `rep`.
+        unsafe { ((*ext).releaser_invoker)(ext) }
     }
 }
 
+/// Type-erased `ReleaserInvoker` used as `CordRepExternalImpl<O>::ext`'s
+/// `releaser_invoker`: reconstructs the owning `Box` and drops it, running
+/// `O`'s destructor and freeing the node.
+///
+/// # Safety
+///
+/// `ext` must be a non-null pointer to the `ext` field of a live, uniquely
+/// owned `CordRepExternalImpl<O>` (i.e. the same `O` this fn was
+/// monomorphized for by [`CordRepExternal::create`]) originally obtained
+/// from `Box::into_raw`, whose reference count has just reached zero; `ext`
+/// must not be used again afterwards.
 unsafe fn release<O>(ext: *mut CordRepExternal) {
-    drop(Box::from_raw(ext.cast::<CordRepExternalImpl<O>>()));
+    // SAFETY: `ext` is the live, uniquely owned `ext` field of a
+    // `CordRepExternalImpl<O>` box per this fn's contract, so casting back
+    // to the enclosing `CordRepExternalImpl<O>` (repr(C), `ext` is the first
+    // field) and reconstructing the `Box` recovers exactly the allocation
+    // `Box::into_raw` produced in `create`; dropping it runs `O`'s
+    // destructor and frees the node.
+    unsafe { drop(Box::from_raw(ext.cast::<CordRepExternalImpl<O>>())) }
 }
 
 #[cfg(test)]

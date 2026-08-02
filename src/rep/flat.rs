@@ -104,9 +104,19 @@ fn layout_for(size: usize) -> Layout {
     unsafe { Layout::from_size_align_unchecked(size, align_of::<CordRep>()) }
 }
 
+/// Allocates a flat with a payload capacity of at least
+/// `min(len, MAX_SIZE - FLAT_OVERHEAD)` bytes (and at least
+/// `MIN_FLAT_LENGTH`), with the header initialized to length `0` and
+/// refcount one. `MAX_SIZE` is only ever instantiated as [`MAX_FLAT_SIZE`]
+/// or [`MAX_LARGE_FLAT_SIZE`] (by [`new`] / [`new_large`] below).
+///
+/// Ownership obligation on the result (not a precondition of calling): the
+/// returned `CordRep` is newly allocated with a refcount of one, and the
+/// caller becomes responsible for eventually releasing it via [`delete`] or
+/// [`super::unref`] exactly once — not doing so merely leaks memory.
 #[inline]
 #[expect(clippy::cast_ptr_alignment, reason = "the layout requests align_of::<CordRep>()")]
-unsafe fn new_impl<const MAX_SIZE: usize>(mut len: usize) -> *mut CordRep {
+fn new_impl<const MAX_SIZE: usize>(mut len: usize) -> *mut CordRep {
     if len <= MIN_FLAT_LENGTH {
         len = MIN_FLAT_LENGTH;
     } else if len > MAX_SIZE - FLAT_OVERHEAD {
@@ -115,44 +125,87 @@ unsafe fn new_impl<const MAX_SIZE: usize>(mut len: usize) -> *mut CordRep {
     // Round size up so it matches a size we can exactly express in a tag.
     let size = round_up_for_tag(len + FLAT_OVERHEAD);
     let layout = layout_for(size);
-    let raw = std::alloc::alloc(layout);
-    if raw.is_null() {
-        std::alloc::handle_alloc_error(layout);
+    // SAFETY: `layout` was produced by `layout_for`, which guarantees a
+    // non-zero size (>= MIN_FLAT_SIZE) and an alignment matching
+    // `align_of::<CordRep>()`, so `alloc` may be called with it; the
+    // returned block (once checked non-null) is immediately initialized
+    // with a full `CordRep` header before any other code can observe it.
+    unsafe {
+        let raw = std::alloc::alloc(layout);
+        if raw.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        let rep = raw.cast::<CordRep>();
+        rep.write(CordRep::new(0, allocated_size_to_tag(size)));
+        rep
     }
-    let rep = raw.cast::<CordRep>();
-    rep.write(CordRep::new(0, allocated_size_to_tag(size)));
-    rep
 }
 
 /// Allocates a new flat with a capacity of at least `min(len, MAX_FLAT_LENGTH)`
 /// bytes (and at least `MIN_FLAT_LENGTH`). The returned flat has `length == 0`.
+///
+/// Carries the same ownership obligation as [`new_impl`].
 #[inline]
-pub(crate) unsafe fn new(len: usize) -> *mut CordRep {
+pub(crate) fn new(len: usize) -> *mut CordRep {
     new_impl::<MAX_FLAT_SIZE>(len)
 }
 
 /// Like [`new`] but allows capacities up to `MAX_LARGE_FLAT_LENGTH`.
+///
+/// Carries the same ownership obligation as [`new_impl`].
 #[inline]
-pub(crate) unsafe fn new_large(len: usize) -> *mut CordRep {
+pub(crate) fn new_large(len: usize) -> *mut CordRep {
     new_impl::<MAX_LARGE_FLAT_SIZE>(len)
 }
 
 /// Deallocates a flat created by [`new`] / [`new_large`].
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live flat rep (tag in
+/// `FLAT..=MAX_FLAT_TAG`, i.e. originally returned by [`new`], [`new_large`]
+/// or [`create`]) whose reference count has just reached zero, transferring
+/// final ownership to this call; `rep` must not be used again afterwards.
+/// The memory is freed using the [`Layout`] implied by `rep`'s tag, which
+/// must therefore still match the tag-derived layout it was allocated with.
 #[inline]
 pub(crate) unsafe fn delete(rep: *mut CordRep) {
-    let tag = rep.tag();
-    debug_assert!((FLAT..=MAX_FLAT_TAG).contains(&tag));
-    std::alloc::dealloc(rep.cast(), layout_for(tag_to_allocated_size(tag)));
+    // SAFETY: `rep` is a live flat rep with a refcount of zero per this
+    // fn's contract, so its `tag` may be read and, since the tag correctly
+    // identifies the allocation's size class by construction, the matching
+    // layout may be reconstructed and passed to `dealloc` to free exactly
+    // the allocation `rep` was carved from.
+    unsafe {
+        let tag = rep.tag();
+        debug_assert!((FLAT..=MAX_FLAT_TAG).contains(&tag));
+        std::alloc::dealloc(rep.cast(), layout_for(tag_to_allocated_size(tag)));
+    }
 }
 
 /// Creates a flat containing `data` with up to `extra` bytes of additional
 /// capacity. Requires `data.len() <= MAX_FLAT_LENGTH`.
+///
+/// # Safety
+///
+/// `data.len()` must not exceed [`MAX_FLAT_LENGTH`]: the allocated flat's
+/// capacity is `min(data.len() + extra, MAX_FLAT_LENGTH)`, so a longer
+/// `data` would make the `copy_nonoverlapping` below write past the end of
+/// the allocation. The returned rep is newly allocated and uniquely owned;
+/// see [`new_impl`]'s ownership obligation note.
 #[inline]
 pub(crate) unsafe fn create(data: &[u8], extra: usize) -> *mut CordRep {
     debug_assert!(data.len() <= MAX_FLAT_LENGTH);
     let flat = new(data.len() + extra.min(MAX_FLAT_LENGTH));
-    core::ptr::copy_nonoverlapping(data.as_ptr(), self::data(flat), data.len());
-    flat.set_length(data.len());
+    // SAFETY: `flat` was just allocated by `new` with capacity at least
+    // `data.len()` (per this fn's contract on `data.len()` above), so
+    // `self::data(flat)` is valid for `data.len()` bytes of write and does
+    // not overlap `data` (a distinct, already-existing allocation).
+    // `set_length` is sound because `flat` is exclusively owned by this
+    // call.
+    unsafe {
+        core::ptr::copy_nonoverlapping(data.as_ptr(), self::data(flat), data.len());
+        flat.set_length(data.len());
+    }
     flat
 }
 
@@ -160,21 +213,43 @@ pub(crate) unsafe fn create(data: &[u8], extra: usize) -> *mut CordRep {
 ///
 /// The pointer is derived from the allocation pointer (not from a reference
 /// to the header), so it is valid for the whole capacity.
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live flat rep (tag in
+/// `FLAT..=MAX_FLAT_TAG`), i.e. one allocated by [`new`], [`new_large`] or
+/// [`create`]. The returned pointer is valid for reads/writes over
+/// `capacity(rep)` bytes; writing through it additionally requires the
+/// caller to hold `rep` exclusively (refcount of one), per the module's
+/// reference-counting convention.
 #[inline]
 pub(crate) unsafe fn data(rep: *mut CordRep) -> *mut u8 {
-    rep.cast::<u8>().add(FLAT_OVERHEAD)
+    // SAFETY: `rep` is a live flat rep per this fn's contract, so offsetting
+    // past its `FLAT_OVERHEAD`-byte header stays within the allocation and
+    // yields the start of the payload.
+    unsafe { rep.cast::<u8>().add(FLAT_OVERHEAD) }
 }
 
 /// Returns the payload capacity of `rep`.
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live flat rep (tag in
+/// `FLAT..=MAX_FLAT_TAG`).
 #[inline]
 pub(crate) unsafe fn capacity(rep: *mut CordRep) -> usize {
-    tag_to_length(rep.tag())
+    unsafe { tag_to_length(rep.tag()) }
 }
 
 /// Returns the allocated size (payload + overhead) of `rep`.
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live flat rep (tag in
+/// `FLAT..=MAX_FLAT_TAG`).
 #[inline]
 pub(crate) unsafe fn allocated_size(rep: *mut CordRep) -> usize {
-    tag_to_allocated_size(rep.tag())
+    unsafe { tag_to_allocated_size(rep.tag()) }
 }
 
 #[cfg(test)]

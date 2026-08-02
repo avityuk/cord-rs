@@ -152,10 +152,21 @@ impl InlineData {
 
     /// Copies all 15 inline bytes to `dst` (which must have room for 15
     /// bytes). Requires `!is_tree()`.
+    ///
+    /// # Safety
+    ///
+    /// `dst` must be valid for writes of `MAX_INLINE` (15) bytes and must
+    /// not overlap `self`'s storage. `self` must not currently hold a tree
+    /// (`!is_tree()`) — `as_chars()` requires it, since byte 0 doubles as
+    /// the tag/pointer discriminant otherwise.
     #[inline]
     pub(crate) unsafe fn copy_max_inline_to(&self, dst: *mut u8) {
         debug_assert!(!self.is_tree());
-        core::ptr::copy_nonoverlapping(self.as_chars(), dst, MAX_INLINE);
+        // SAFETY: `self.as_chars()` points to 15 readable inline bytes
+        // (`!is_tree()` holds per this fn's contract, asserted above); `dst`
+        // is valid for 15 bytes of write and does not overlap `self`, per
+        // this fn's contract.
+        unsafe { core::ptr::copy_nonoverlapping(self.as_chars(), dst, MAX_INLINE) }
     }
 
     /// Byte-wise equality of the whole 16 bytes (same inline value, or same
@@ -215,6 +226,8 @@ mod tests {
         d.set_inline_data(b"ab");
         assert_eq!(d.inline_slice(), b"ab");
         // Zero tail invariant.
+        // SAFETY: reading always-initialized bytes of the `bytes` union
+        // variant (last written by `set_inline_data` above).
         assert!(unsafe { &d.bytes[3..] }.iter().all(|&b| b == 0));
     }
 

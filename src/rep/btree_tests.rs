@@ -16,35 +16,51 @@ use super::{
 // --- Matchers ---------------------------------------------------------------
 
 /// `IsNode(height)`: a valid btree node of the given height.
+///
+/// # Safety
+///
+/// `rep` must be null or a pointer to a live rep; borrowed, not consumed.
 unsafe fn is_node(rep: *mut CordRep, height: usize) -> bool {
-    if rep.is_null() || rep.tag() != BTREE {
-        return false;
+    unsafe {
+        if rep.is_null() || rep.tag() != BTREE {
+            return false;
+        }
+        let tree = as_btree(rep);
+        if let Err(e) = CordRepBtree::check_valid(tree, false) {
+            let mut dump = String::new();
+            let _ = CordRepBtree::dump(rep, "Expected valid NODE, got:", false, &mut dump);
+            eprintln!("{e}\n{dump}");
+            return false;
+        }
+        tree.height() == height
     }
-    let tree = as_btree(rep);
-    if let Err(e) = CordRepBtree::check_valid(tree, false) {
-        let mut dump = String::new();
-        let _ = CordRepBtree::dump(rep, "Expected valid NODE, got:", false, &mut dump);
-        eprintln!("{e}\n{dump}");
-        return false;
-    }
-    tree.height() == height
 }
 
 /// `IsSubstring(start, length)`.
+///
+/// # Safety
+///
+/// `rep` must be null or a pointer to a live rep; borrowed, not consumed.
 unsafe fn is_substring(rep: *mut CordRep, start: usize, length: usize) -> bool {
-    if rep.is_null() || rep.tag() != SUBSTRING {
-        return false;
+    unsafe {
+        if rep.is_null() || rep.tag() != SUBSTRING {
+            return false;
+        }
+        let sub: *mut CordRepSubstring = rep.cast();
+        (*sub).start == start && rep.length() == length
     }
-    let sub: *mut CordRepSubstring = rep.cast();
-    (*sub).start == start && rep.length() == length
 }
 
 fn eq_extract_result(result: ExtractResult, tree: *mut CordRep, rep: *mut CordRep) -> bool {
     result.tree == tree && result.extracted == rep
 }
 
+/// # Safety
+///
+/// `tree` must be a non-null pointer to a live, well-formed btree node;
+/// borrowed, not consumed.
 unsafe fn edges_of(tree: *mut CordRepBtree) -> Vec<*mut CordRep> {
-    tree.edges().collect()
+    unsafe { tree.edges().collect() }
 }
 
 /// `DataConsumer`: consumes string fragments forwards or backwards.
@@ -71,8 +87,19 @@ impl<'a> DataConsumer<'a> {
     }
 }
 
+/// # Safety
+///
+/// `node` must be a non-null pointer to a live, well-formed btree node; the
+/// caller donates its reference, consumed by this call and transferred to
+/// the returned tree.
 unsafe fn btree_add(node: *mut CordRepBtree, append: bool, data: &[u8]) -> *mut CordRepBtree {
-    if append { CordRepBtree::append_data(node, data, 0) } else { CordRepBtree::prepend_data(node, data, 0) }
+    unsafe {
+        if append {
+            CordRepBtree::append_data(node, data, 0)
+        } else {
+            CordRepBtree::prepend_data(node, data, 0)
+        }
+    }
 }
 
 const SHARED: [bool; 2] = [false, true];
@@ -583,15 +610,21 @@ fn merge_leaf_with_tree_exceeding_leaf_capacity() {
     }
 }
 
+/// # Safety
+///
+/// `tree` must be a non-null pointer to a live, well-formed btree node with
+/// at least `depth` levels below it; borrowed, not consumed.
 unsafe fn ref_edges_at(depth: usize, refs: &mut AutoUnref, tree: *mut CordRepBtree) {
-    let edges = edges_of(tree);
-    if depth == 0 {
-        refs.add_ref(edges[0]);
-        refs.add_ref(*edges.last().unwrap());
-    } else {
-        assert!(tree.height() > 0);
-        ref_edges_at(depth - 1, refs, as_btree(edges[0]));
-        ref_edges_at(depth - 1, refs, as_btree(*edges.last().unwrap()));
+    unsafe {
+        let edges = edges_of(tree);
+        if depth == 0 {
+            refs.add_ref(edges[0]);
+            refs.add_ref(*edges.last().unwrap());
+        } else {
+            assert!(tree.height() > 0);
+            ref_edges_at(depth - 1, refs, as_btree(edges[0]));
+            ref_edges_at(depth - 1, refs, as_btree(*edges.last().unwrap()));
+        }
     }
 }
 
@@ -1389,8 +1422,13 @@ fn rebuild() {
     }
 }
 
+/// # Safety
+///
+/// Same contract as [`CordRepBtree::extract_append_buffer`]: `input` must be
+/// a non-null pointer to a live, well-formed btree node; the caller donates
+/// its reference, consumed by this call.
 unsafe fn extract_last(input: *mut CordRepBtree, cap: usize) -> ExtractResult {
-    CordRepBtree::extract_append_buffer(input, cap)
+    unsafe { CordRepBtree::extract_append_buffer(input, cap) }
 }
 
 #[test]

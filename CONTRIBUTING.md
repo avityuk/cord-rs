@@ -108,11 +108,35 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
   it, diff against the C++ source and keep the ported tests aligned; test
   names mirror the C++ test names in `snake_case`.
 - **`unsafe` discipline.** All raw-pointer code lives under `src/rep/` and in the
-  `unsafe` helper blocks of `cord.rs`/`iter.rs`/`buffer.rs`. Every `unsafe {}`
-  block in the public layer carries a `// SAFETY:` comment. Derive data
-  pointers from the allocation pointer, never from a reference to the header
-  (Stacked Borrows), and derive pointers into owned buffers only after the
-  owner reached its final address.
+  `unsafe` helper blocks of `cord.rs`/`iter.rs`/`buffer.rs`. `unsafe_op_in_unsafe_fn`
+  is `deny`d, so every unsafe operation needs an explicit `unsafe {}` block.
+  Derive data pointers from the allocation pointer, never from a reference to
+  the header (Stacked Borrows), and derive pointers into owned buffers only
+  after the owner reached its final address.
+  - Every `unsafe fn` gets a `/// # Safety` doc section, but *centralize*:
+    when several methods share an invariant (e.g. a trait's "self must point
+    to a live, well-formed node"), state it once at the trait/module level
+    and have individual methods reference it, spelling out only the delta a
+    given method adds (an extra bound, an exclusivity requirement). Don't
+    duplicate the trait's contract onto its impls — an impl method with no
+    doc comment of its own is documented by its trait declaration already.
+  - `// SAFETY:` comments are mandatory in safe fns that call into unsafe
+    code, and in unsafe fns only where a specific operation needs a local
+    argument that isn't already covered by the fn's own `# Safety` section
+    (a loop invariant, an arithmetic bound, a tag-based cast, an aliasing
+    argument) — never as a bare echo of the doc a few lines above. If an
+    `unsafe fn`'s whole body is one block discharging exactly its own
+    documented contract, it needs no block comment at all.
+  - Never write `# Safety: None`. If a function genuinely has no
+    precondition, either make it a safe fn that wraps its own unsafe
+    operations internally (the common case for test helpers), or, if it must
+    stay `unsafe` for signature uniformity with sibling methods, drop the
+    `# Safety` heading and say so in a plain sentence instead.
+  - Tests: SAFETY comments on ordinary `unsafe {}` blocks inside `#[test] fn`
+    bodies are optional — add one only for a genuinely non-obvious setup
+    (e.g. overlapping-buffer bounds); a routine "freshly allocated, unreffed
+    once" note is not worth writing, the test demonstrates it by construction
+    and runs under Miri.
 - **Lints.** `clippy::pedantic` is on. Justify deliberate casts with
   `#[expect(clippy::..., reason = "...")]` (checked helpers such as
   `small_u8`, `height_to_isize`), not blanket `allow`s. Test files may allow the

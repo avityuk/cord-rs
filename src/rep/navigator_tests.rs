@@ -31,18 +31,20 @@ struct Fixture {
 }
 
 impl Fixture {
-    unsafe fn new(count: usize) -> Self {
-        let data = create_random_string(count * CHARS_PER_FLAT);
-        let mut flats = create_flats_from_string(&data, CHARS_PER_FLAT);
-        if count > 1 {
-            unref(flats[1]);
-            flats[1] = make_substring(CHARS_PER_FLAT, CHARS_PER_FLAT, make_flat(&data));
-        } else {
-            unref(flats[0]);
-            flats[0] = make_substring(0, CHARS_PER_FLAT, make_flat(&data));
+    fn new(count: usize) -> Self {
+        unsafe {
+            let data = create_random_string(count * CHARS_PER_FLAT);
+            let mut flats = create_flats_from_string(&data, CHARS_PER_FLAT);
+            if count > 1 {
+                unref(flats[1]);
+                flats[1] = make_substring(CHARS_PER_FLAT, CHARS_PER_FLAT, make_flat(&data));
+            } else {
+                unref(flats[0]);
+                flats[0] = make_substring(0, CHARS_PER_FLAT, make_flat(&data));
+            }
+            let tree = cord_rep_btree_from_flats(&flats);
+            Self { data, flats, tree }
         }
-        let tree = cord_rep_btree_from_flats(&flats);
-        Self { data, flats, tree }
     }
 }
 

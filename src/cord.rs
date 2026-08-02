@@ -88,20 +88,41 @@ const _: () = assert!(core::mem::size_of::<Cord>() == 16);
 // --- Free helpers on reps ---------------------------------------------------
 
 /// Creates a new flat or btree out of `data`. Requires non-empty data.
+///
+/// # Safety
+///
+/// `data` must be non-empty. Returns a fresh rep with a refcount of one; the
+/// reference transfers to the caller.
 unsafe fn new_tree(data: &[u8], alloc_hint: usize) -> *mut CordRep {
     debug_assert!(!data.is_empty());
-    if data.len() <= MAX_FLAT_LENGTH {
-        return flat::create(data, alloc_hint);
+    // SAFETY: `data` is non-empty per the caller contract above, so both
+    // `flat::create` calls (whole-`data` or the `MAX_FLAT_LENGTH`-sized
+    // first chunk) get a non-empty slice, and `append_data` gets the
+    // (possibly empty) remainder of an already non-empty `data`.
+    unsafe {
+        if data.len() <= MAX_FLAT_LENGTH {
+            return flat::create(data, alloc_hint);
+        }
+        let first = flat::create(&data[..MAX_FLAT_LENGTH], 0);
+        let root = CordRepBtree::create(first);
+        CordRepBtree::append_data(root, &data[MAX_FLAT_LENGTH..], alloc_hint).as_rep()
     }
-    let first = flat::create(&data[..MAX_FLAT_LENGTH], 0);
-    let root = CordRepBtree::create(first);
-    CordRepBtree::append_data(root, &data[MAX_FLAT_LENGTH..], alloc_hint).as_rep()
 }
 
 /// Returns `rep` converted into a btree (a no-op if it already is one).
+///
+/// # Safety
+///
+/// `rep` must be a valid, non-null pointer to a live rep. This adopts the
+/// caller's reference on `rep`: if `rep` is already a btree it is returned
+/// unchanged (same reference), otherwise it becomes the first leaf of a
+/// freshly created btree that owns the reference. Either way the returned
+/// pointer carries the reference back to the caller.
 #[inline]
 unsafe fn force_btree(rep: *mut CordRep) -> *mut CordRepBtree {
-    if rep.is_btree() { rep.cast() } else { CordRepBtree::create(rep) }
+    // SAFETY: per the contract above, `rep` is valid and its reference is
+    // ours to place into a new btree (or reinterpret in place).
+    unsafe { if rep.is_btree() { rep.cast() } else { CordRepBtree::create(rep) } }
 }
 
 /// Creates a rep from a large owned buffer. Copies the data if the buffer is
@@ -112,6 +133,8 @@ fn rep_from_owned<O: StableBytes>(owner: O, capacity: usize) -> *mut CordRep {
     if bytes.len() <= MAX_BYTES_TO_COPY || bytes.len() < capacity / 2 {
         // Short: copy to avoid the external node overhead.
         // Wasteful: copy to avoid pinning too much unused memory.
+        // SAFETY: `bytes.len() > MAX_INLINE > 0`, so `new_tree`'s non-empty
+        // `data` requirement holds.
         return unsafe { new_tree(bytes, 0) };
     }
     CordRepExternal::create(owner)
@@ -120,47 +143,75 @@ fn rep_from_owned<O: StableBytes>(owner: O, capacity: usize) -> *mut CordRep {
 /// Searches for a non-full flat at the right-most leaf of `root`. On success
 /// the lengths of all nodes on the path are increased and the append region
 /// is returned; the caller must immediately fill it.
+///
+/// # Safety
+///
+/// `root` must be a non-null pointer to a live rep, borrowed (not consumed):
+/// this only inspects `root` and, on success, grows an already-owned,
+/// uniquely-referenced flat in place. The caller must fill the returned
+/// `[u8]` region (already accounted for in the tree's length) before any
+/// other access to `root`.
 #[inline]
 unsafe fn prepare_append_region(root: *mut CordRep, max_length: usize) -> Option<(*mut u8, usize)> {
-    if root.is_btree()
-        && root.refcount().is_one()
-        && let Some(span) = CordRepBtree::get_append_buffer(as_btree(root), max_length)
-    {
-        return Some(span);
+    unsafe {
+        if root.is_btree()
+            && root.refcount().is_one()
+            && let Some(span) = CordRepBtree::get_append_buffer(as_btree(root), max_length)
+        {
+            return Some(span);
+        }
+        if !root.is_flat() || !root.refcount().is_one() {
+            return None;
+        }
+        let in_use = root.length();
+        let capacity = flat::capacity(root);
+        if in_use == capacity {
+            return None;
+        }
+        let size_increase = (capacity - in_use).min(max_length);
+        root.set_length(in_use + size_increase);
+        Some((flat::data(root).add(in_use), size_increase))
     }
-    if !root.is_flat() || !root.refcount().is_one() {
-        return None;
-    }
-    let in_use = root.length();
-    let capacity = flat::capacity(root);
-    if in_use == capacity {
-        return None;
-    }
-    let size_increase = (capacity - in_use).min(max_length);
-    root.set_length(in_use + size_increase);
-    Some((flat::data(root).add(in_use), size_increase))
 }
 
 /// Returns the flat data of `rep` if it is a single contiguous buffer.
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live rep, borrowed for the returned
+/// slice's lifetime `'a` (the caller is responsible for `rep`, and the tree
+/// it roots, actually outliving `'a`).
 unsafe fn get_flat_aux<'a>(rep: *mut CordRep) -> Option<&'a [u8]> {
-    if rep.is_btree() {
-        return CordRepBtree::as_flat(as_btree(rep));
+    unsafe {
+        if rep.is_btree() {
+            return CordRepBtree::as_flat(as_btree(rep));
+        }
+        // FLAT, EXTERNAL or SUBSTRING of those: all are data edges.
+        debug_assert!(rep::is_data_edge(rep));
+        Some(edge_data(rep))
     }
-    // FLAT, EXTERNAL or SUBSTRING of those: all are data edges.
-    debug_assert!(rep::is_data_edge(rep));
-    Some(edge_data(rep))
 }
 
 /// `extract_append_buffer` for any rep type.
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live rep. The caller donates its
+/// reference on `rep`: exactly one of the returned `ExtractResult`'s `tree`
+/// or `extracted` fields carries that same reference back to the caller
+/// (unchanged if extraction wasn't possible, repurposed as the extracted
+/// buffer otherwise); the other field is null.
 unsafe fn extract_append_buffer(rep: *mut CordRep, min_capacity: usize) -> rep::btree::ExtractResult {
-    use rep::btree::ExtractResult;
-    if rep.is_btree() {
-        return CordRepBtree::extract_append_buffer(as_btree(rep), min_capacity);
+    unsafe {
+        use rep::btree::ExtractResult;
+        if rep.is_btree() {
+            return CordRepBtree::extract_append_buffer(as_btree(rep), min_capacity);
+        }
+        if rep.is_flat() && rep.refcount().is_one() && flat::capacity(rep) - rep.length() >= min_capacity {
+            return ExtractResult { tree: core::ptr::null_mut(), extracted: rep };
+        }
+        ExtractResult { tree: rep, extracted: core::ptr::null_mut() }
     }
-    if rep.is_flat() && rep.refcount().is_one() && flat::capacity(rep) - rep.length() >= min_capacity {
-        return ExtractResult { tree: core::ptr::null_mut(), extracted: rep };
-    }
-    ExtractResult { tree: rep, extracted: core::ptr::null_mut() }
 }
 
 #[cold]
@@ -191,11 +242,18 @@ impl Cord {
     }
 
     /// Creates a cord holding `rep` (which must be non-null and non-empty).
+    ///
+    /// # Safety
+    ///
+    /// `rep` must be non-null with `rep.length() != 0`. The caller transfers
+    /// its reference on `rep` to the returned `Cord`.
     #[inline]
     pub(crate) unsafe fn from_rep(rep: *mut CordRep) -> Self {
-        debug_assert!(!rep.is_null());
-        debug_assert!(rep.length() != 0);
-        Self { data: InlineData::from_tree(rep) }
+        unsafe {
+            debug_assert!(!rep.is_null());
+            debug_assert!(rep.length() != 0);
+            Self { data: InlineData::from_tree(rep) }
+        }
     }
 
     /// Creates an inline cord. Requires `data.len() <= MAX_INLINE`.
@@ -208,6 +266,12 @@ impl Cord {
 
     /// Steals the tree out of `self` without decrementing its refcount.
     /// Requires `is_tree()`.
+    ///
+    /// # Safety
+    ///
+    /// `self.is_tree()` must hold. The tree's reference is moved out (`self`
+    /// is forgotten, not dropped, so no `unref` happens); the caller becomes
+    /// responsible for that reference.
     #[inline]
     unsafe fn into_rep(self) -> *mut CordRep {
         let rep = self.data.as_tree();
@@ -216,21 +280,50 @@ impl Cord {
     }
 
     /// Returns a new reference to the tree. Requires `is_tree()`.
+    ///
+    /// # Safety
+    ///
+    /// `self.is_tree()` must hold. Unlike `into_rep`, `self` keeps its own
+    /// reference; the returned pointer carries a freshly incremented,
+    /// independent reference to the caller.
     #[inline]
     unsafe fn take_rep_ref(&self) -> *mut CordRep {
-        ref_rep(self.data.as_tree())
+        unsafe { ref_rep(self.data.as_tree()) }
     }
 
+    /// Switches `self` from inline to tree representation, storing `rep`.
+    ///
+    /// # Safety
+    ///
+    /// `self` must currently be inline (`!self.is_tree()`) and `rep` must be
+    /// a non-null pointer to a live rep whose reference transfers to `self`.
     #[inline]
     unsafe fn emplace_tree(&mut self, rep: *mut CordRep) {
         self.data.make_tree(rep);
     }
 
+    /// Replaces `self`'s current tree pointer with `rep`, without touching
+    /// the old tree's refcount.
+    ///
+    /// # Safety
+    ///
+    /// `self.is_tree()` must hold and `rep` must be a non-null pointer to a
+    /// live rep whose reference transfers to `self`. The caller is
+    /// responsible for the old tree's reference (typically already moved
+    /// elsewhere, e.g. into a rebuilt tree that reuses it, before this call).
     #[inline]
     unsafe fn set_tree(&mut self, rep: *mut CordRep) {
         self.data.set_tree(rep);
     }
 
+    /// Like `set_tree`, but a null `rep` resets `self` to empty inline data
+    /// instead of storing a null tree pointer.
+    ///
+    /// # Safety
+    ///
+    /// `self.is_tree()` must hold. If `rep` is non-null it must be a live rep
+    /// whose reference transfers to `self`; the caller is responsible for the
+    /// old tree's reference exactly as in `set_tree`.
     #[inline]
     unsafe fn set_tree_or_empty(&mut self, rep: *mut CordRep) {
         debug_assert!(self.is_tree());
@@ -243,53 +336,91 @@ impl Cord {
 
     /// Commits a new or updated root `rep`; `had_tree` tells whether the cord
     /// previously held a tree.
+    ///
+    /// # Safety
+    ///
+    /// `rep` must be a non-null pointer to a live rep whose reference
+    /// transfers to `self`. `had_tree` must accurately reflect whether `self`
+    /// held a tree before this call (it decides between `set_tree`, which
+    /// assumes a prior tree reference has already been accounted for, and
+    /// `emplace_tree`, which assumes `self` was inline).
     #[inline]
     unsafe fn commit_tree(&mut self, had_tree: bool, rep: *mut CordRep) {
-        if had_tree {
-            self.set_tree(rep);
-        } else {
-            self.emplace_tree(rep);
+        unsafe {
+            if had_tree {
+                self.set_tree(rep);
+            } else {
+                self.emplace_tree(rep);
+            }
         }
     }
 
     /// Creates a flat from the inline data with `extra` bytes of capacity.
+    ///
+    /// # Safety
+    ///
+    /// `self` must currently be inline (`!self.is_tree()`); this reads
+    /// `self`'s inline bytes and copies them into a freshly allocated flat,
+    /// which is returned with a refcount of one owned by the caller.
     unsafe fn make_flat_with_extra_capacity(&self, extra: usize) -> *mut CordRep {
-        let len = self.data.inline_size();
-        let result = flat::new(len + extra);
-        result.set_length(len);
-        self.data.copy_max_inline_to(flat::data(result));
-        result
-    }
-
-    unsafe fn append_tree(&mut self, tree: *mut CordRep) {
-        debug_assert!(!tree.is_null());
-        debug_assert!(tree.length() != 0);
-        if self.is_tree() {
-            let tree = CordRepBtree::append(force_btree(self.data.as_tree()), tree);
-            self.set_tree(tree.as_rep());
-        } else {
-            let mut tree = tree;
-            if !self.data.is_empty() {
-                let flat = self.make_flat_with_extra_capacity(0);
-                tree = CordRepBtree::append(CordRepBtree::create(flat), tree).as_rep();
-            }
-            self.emplace_tree(tree);
+        unsafe {
+            let len = self.data.inline_size();
+            let result = flat::new(len + extra);
+            result.set_length(len);
+            self.data.copy_max_inline_to(flat::data(result));
+            result
         }
     }
 
-    unsafe fn prepend_tree(&mut self, tree: *mut CordRep) {
-        debug_assert!(!tree.is_null());
-        debug_assert!(tree.length() != 0);
-        if self.is_tree() {
-            let tree = CordRepBtree::prepend(force_btree(self.data.as_tree()), tree);
-            self.set_tree(tree.as_rep());
-        } else {
-            let mut tree = tree;
-            if !self.data.is_empty() {
-                let flat = self.make_flat_with_extra_capacity(0);
-                tree = CordRepBtree::prepend(CordRepBtree::create(flat), tree).as_rep();
+    /// Appends `tree` (a non-empty rep) to `self`, folding it into `self`'s
+    /// existing representation.
+    ///
+    /// # Safety
+    ///
+    /// `tree` must be non-null and non-empty; the caller donates its
+    /// reference on `tree`, which is consumed by this call (incorporated
+    /// into `self`'s tree, possibly after being unreffed if merged away).
+    unsafe fn append_tree(&mut self, tree: *mut CordRep) {
+        unsafe {
+            debug_assert!(!tree.is_null());
+            debug_assert!(tree.length() != 0);
+            if self.is_tree() {
+                let tree = CordRepBtree::append(force_btree(self.data.as_tree()), tree);
+                self.set_tree(tree.as_rep());
+            } else {
+                let mut tree = tree;
+                if !self.data.is_empty() {
+                    let flat = self.make_flat_with_extra_capacity(0);
+                    tree = CordRepBtree::append(CordRepBtree::create(flat), tree).as_rep();
+                }
+                self.emplace_tree(tree);
             }
-            self.emplace_tree(tree);
+        }
+    }
+
+    /// Prepends `tree` (a non-empty rep) to `self`, folding it into `self`'s
+    /// existing representation.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`append_tree`](Self::append_tree): `tree` must be
+    /// non-null and non-empty, and the caller donates its reference, which
+    /// this call consumes.
+    unsafe fn prepend_tree(&mut self, tree: *mut CordRep) {
+        unsafe {
+            debug_assert!(!tree.is_null());
+            debug_assert!(tree.length() != 0);
+            if self.is_tree() {
+                let tree = CordRepBtree::prepend(force_btree(self.data.as_tree()), tree);
+                self.set_tree(tree.as_rep());
+            } else {
+                let mut tree = tree;
+                if !self.data.is_empty() {
+                    let flat = self.make_flat_with_extra_capacity(0);
+                    tree = CordRepBtree::prepend(CordRepBtree::create(flat), tree).as_rep();
+                }
+                self.emplace_tree(tree);
+            }
         }
     }
 
@@ -377,39 +508,64 @@ impl Cord {
 
     /// Appends `src` with precise sizing (no spare capacity is used or
     /// allocated). Requires `0 < src.len() <= MAX_FLAT_LENGTH`.
+    ///
+    /// # Safety
+    ///
+    /// `0 < src.len() <= MAX_FLAT_LENGTH` must hold. When taking the inline
+    /// fast path this also relies on `self.remaining_inline_capacity()`
+    /// having just been checked `>= src.len()`, so the inline buffer (15
+    /// bytes) has room; the branch itself performs that check.
     unsafe fn append_precise(&mut self, src: &[u8]) {
-        debug_assert!(!src.is_empty());
-        debug_assert!(src.len() <= MAX_FLAT_LENGTH);
-        if self.remaining_inline_capacity() >= src.len() {
-            let inline_length = self.data.inline_size();
-            self.data.set_inline_size(inline_length + src.len());
-            core::ptr::copy_nonoverlapping(
-                src.as_ptr(),
-                self.data.as_chars_mut().add(inline_length),
-                src.len(),
-            );
-        } else {
-            self.append_tree(flat::create(src, 0));
+        unsafe {
+            debug_assert!(!src.is_empty());
+            debug_assert!(src.len() <= MAX_FLAT_LENGTH);
+            if self.remaining_inline_capacity() >= src.len() {
+                let inline_length = self.data.inline_size();
+                self.data.set_inline_size(inline_length + src.len());
+                // SAFETY: the branch just checked `src.len() <=
+                // remaining_inline_capacity()`, so this write lands within the
+                // 15 byte inline buffer.
+                core::ptr::copy_nonoverlapping(
+                    src.as_ptr(),
+                    self.data.as_chars_mut().add(inline_length),
+                    src.len(),
+                );
+            } else {
+                self.append_tree(flat::create(src, 0));
+            }
         }
     }
 
     /// Prepends `src` with precise sizing. Requires `0 < src.len() <= MAX_FLAT_LENGTH`.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`append_precise`](Self::append_precise): `0 <
+    /// src.len() <= MAX_FLAT_LENGTH`, with the inline fast path additionally
+    /// relying on the `remaining_inline_capacity` check performed in the
+    /// branch itself.
     unsafe fn prepend_precise(&mut self, src: &[u8]) {
-        debug_assert!(!src.is_empty());
-        debug_assert!(src.len() <= MAX_FLAT_LENGTH);
-        if self.remaining_inline_capacity() >= src.len() {
-            let cur_size = self.data.inline_size();
-            let mut data = InlineData::new();
-            data.set_inline_size(cur_size + src.len());
-            core::ptr::copy_nonoverlapping(src.as_ptr(), data.as_chars_mut(), src.len());
-            core::ptr::copy_nonoverlapping(
-                self.data.as_chars(),
-                data.as_chars_mut().add(src.len()),
-                cur_size,
-            );
-            self.data = data;
-        } else {
-            self.prepend_tree(flat::create(src, 0));
+        unsafe {
+            debug_assert!(!src.is_empty());
+            debug_assert!(src.len() <= MAX_FLAT_LENGTH);
+            if self.remaining_inline_capacity() >= src.len() {
+                let cur_size = self.data.inline_size();
+                let mut data = InlineData::new();
+                data.set_inline_size(cur_size + src.len());
+                // SAFETY: the branch just checked `src.len() <=
+                // remaining_inline_capacity()`, so both copies below land within
+                // `data`'s 15 byte inline buffer (`src.len() + cur_size ==
+                // data.inline_size() <= 15`).
+                core::ptr::copy_nonoverlapping(src.as_ptr(), data.as_chars_mut(), src.len());
+                core::ptr::copy_nonoverlapping(
+                    self.data.as_chars(),
+                    data.as_chars_mut().add(src.len()),
+                    cur_size,
+                );
+                self.data = data;
+            } else {
+                self.prepend_tree(flat::create(src, 0));
+            }
         }
     }
 
@@ -643,14 +799,25 @@ impl Cord {
     }
 
     /// Copies all bytes to `dst`, which must have room for `len()` bytes.
+    ///
+    /// # Safety
+    ///
+    /// `dst` must be valid for writes of `self.len()` bytes and must not
+    /// overlap any chunk of `self`'s data (each chunk copy uses
+    /// `copy_nonoverlapping`).
     unsafe fn copy_to_ptr(&self, mut dst: *mut u8) {
-        if let Some(chunk) = self.as_flat() {
-            core::ptr::copy_nonoverlapping(chunk.as_ptr(), dst, chunk.len());
-            return;
-        }
-        for chunk in self.chunks() {
-            core::ptr::copy_nonoverlapping(chunk.as_ptr(), dst, chunk.len());
-            dst = dst.add(chunk.len());
+        unsafe {
+            // SAFETY: `dst` has room for `self.len()` bytes and doesn't overlap
+            // per the fn contract above; each branch below writes at most that
+            // many bytes total, advancing `dst` by exactly each chunk's length.
+            if let Some(chunk) = self.as_flat() {
+                core::ptr::copy_nonoverlapping(chunk.as_ptr(), dst, chunk.len());
+                return;
+            }
+            for chunk in self.chunks() {
+                core::ptr::copy_nonoverlapping(chunk.as_ptr(), dst, chunk.len());
+                dst = dst.add(chunk.len());
+            }
         }
     }
 }
@@ -955,12 +1122,20 @@ impl Cord {
     }
 
     /// Reduces the inline size by `n`, zeroing the tail.
+    ///
+    /// # Safety
+    ///
+    /// `self` must currently be inline (`!self.is_tree()`) with `n <=
+    /// self.data.inline_size()`, so the write of `n` zero bytes at the new
+    /// end stays within the 15 byte inline buffer.
     unsafe fn reduce_inline_size(&mut self, n: usize) {
-        let size = self.data.inline_size();
-        debug_assert!(size >= n);
-        let new_size = size - n;
-        core::ptr::write_bytes(self.data.as_chars_mut().add(new_size), 0, n);
-        self.data.set_inline_size(new_size);
+        unsafe {
+            let size = self.data.inline_size();
+            debug_assert!(size >= n);
+            let new_size = size - n;
+            core::ptr::write_bytes(self.data.as_chars_mut().add(new_size), 0, n);
+            self.data.set_inline_size(new_size);
+        }
     }
 
     /// Returns a new cord holding the bytes in `range`, sharing memory with

@@ -206,88 +206,151 @@ impl CordRep {
 /// All methods are `unsafe`: `self` must point to a live rep. They read and
 /// write through the raw pointer without creating references to the header,
 /// so they are safe to interleave with other raw pointers to the same node.
+///
+/// # Safety
+///
+/// Every method on this trait requires `self` to be a non-null pointer to a
+/// live [`CordRep`] header (directly, or as the header of a derived rep such
+/// as a flat, external, substring or btree node) for the duration of the
+/// call. Methods that mutate a field (`set_length`) additionally require the
+/// caller to hold the rep exclusively (refcount of one) per the [module's
+/// reference-counting convention](self) — mutating a shared node is a data
+/// race with any other reader.
 pub(crate) trait RepPtr: Copy {
+    /// Reads `self`'s `length`.
     unsafe fn length(self) -> usize;
+    /// Sets `self`'s `length`. Requires exclusive access, see the
+    /// [trait-level safety section](RepPtr).
     unsafe fn set_length(self, length: usize);
+    /// Reads `self`'s `tag`.
     unsafe fn tag(self) -> u8;
+    /// Reads `self`'s refcount.
     unsafe fn refcount<'a>(self) -> &'a Refcount;
 
     #[inline]
     unsafe fn is_substring(self) -> bool {
-        self.tag() == SUBSTRING
+        unsafe { self.tag() == SUBSTRING }
     }
     #[inline]
     unsafe fn is_btree(self) -> bool {
-        self.tag() == BTREE
+        unsafe { self.tag() == BTREE }
     }
     #[inline]
     unsafe fn is_external(self) -> bool {
-        self.tag() == EXTERNAL
+        unsafe { self.tag() == EXTERNAL }
     }
     #[inline]
     unsafe fn is_flat(self) -> bool {
-        self.tag() >= FLAT
+        unsafe { self.tag() >= FLAT }
     }
 }
 
 impl RepPtr for *mut CordRep {
     #[inline]
     unsafe fn length(self) -> usize {
-        (*self).length
+        unsafe { (*self).length }
     }
     #[inline]
     unsafe fn set_length(self, length: usize) {
-        (*self).length = length;
+        // SAFETY: exclusive access (this fn's contract) means no other
+        // reader/writer can observe the write mid-flight.
+        unsafe { (*self).length = length }
     }
     #[inline]
     unsafe fn tag(self) -> u8 {
-        (*self).tag
+        unsafe { (*self).tag }
     }
     #[inline]
     unsafe fn refcount<'a>(self) -> &'a Refcount {
-        &*core::ptr::addr_of!((*self).refcount)
+        // SAFETY: `addr_of!` (rather than `&(*self).refcount`) avoids ever
+        // materializing a reference to the whole `CordRep` header, keeping
+        // this in line with the rest of the module's raw-pointer discipline;
+        // only the `refcount` field itself is borrowed, and it is always
+        // accessed atomically.
+        unsafe { &*core::ptr::addr_of!((*self).refcount) }
     }
 }
 
 /// Increments the reference count of `rep` and returns it.
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live rep. This does not consume an
+/// existing reference: the returned pointer is a *new*, additional reference
+/// on `rep` (mirrors abseil's `CordRep::Ref`), on top of whatever reference
+/// the caller already held.
 #[inline]
 pub(crate) unsafe fn ref_rep(rep: *mut CordRep) -> *mut CordRep {
     debug_assert!(!rep.is_null());
-    rep.refcount().increment();
+    unsafe { rep.refcount().increment() };
     rep
 }
 
 /// Decrements the reference count of `rep`, destroying it on zero.
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live rep, and the caller must be
+/// relinquishing exactly one reference it owns on `rep` (this fn *adopts* a
+/// reference per the [module convention](self)). The caller must not use
+/// `rep` again afterwards unless it independently holds another reference.
 #[inline]
 pub(crate) unsafe fn unref(rep: *mut CordRep) {
     debug_assert!(!rep.is_null());
-    if !rep.refcount().decrement_expect_high_refcount() {
-        destroy(rep);
+    // SAFETY: `rep` is a live rep per this fn's contract. `destroy` is only
+    // called once `decrement_expect_high_refcount` reports the count
+    // reached zero, at which point this call's adopted reference was the
+    // last one outstanding, so `rep` may be freed.
+    unsafe {
+        if !rep.refcount().decrement_expect_high_refcount() {
+            destroy(rep);
+        }
     }
 }
 
 /// Destroys `rep`, whose reference count has reached zero.
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live rep whose reference count has
+/// just reached zero, transferring final ownership to this function (the
+/// caller must not use `rep`, or any substring child reference it may
+/// release along the way, again afterwards).
 pub(crate) unsafe fn destroy(mut rep: *mut CordRep) {
-    loop {
-        debug_assert!(!rep.refcount().is_immortal());
-        let tag = rep.tag();
-        if tag == BTREE {
-            btree::CordRepBtree::destroy(rep.cast());
-            return;
-        } else if tag == EXTERNAL {
-            external::CordRepExternal::delete(rep);
-            return;
-        } else if tag == SUBSTRING {
-            let substring: *mut CordRepSubstring = rep.cast();
-            rep = (*substring).child;
-            CordRepSubstring::delete(substring);
-            if rep.refcount().decrement() {
+    // SAFETY: `rep` is a live rep with a refcount of zero per this fn's
+    // contract. Each branch below reads `rep.tag()` and then casts/dispatches
+    // on it, which is sound because a rep's tag byte always correctly
+    // identifies its concrete type by construction (see the module's
+    // "Layout" doc) — a BTREE-tagged rep really is a `CordRepBtree`, etc.
+    // The `SUBSTRING` branch does not recurse into the child: it decrements
+    // the child's refcount (the reference the substring held) and, if that
+    // also reaches zero, reassigns `rep` to the child and loops rather than
+    // calling `destroy` recursively, so long substring chains can't blow the
+    // stack. Every branch either `return`s directly or loops with a `rep`
+    // that again satisfies this fn's contract (a live, now-zero-refcount
+    // rep owned by this call).
+    unsafe {
+        loop {
+            debug_assert!(!rep.refcount().is_immortal());
+            let tag = rep.tag();
+            if tag == BTREE {
+                btree::CordRepBtree::destroy(rep.cast());
+                return;
+            } else if tag == EXTERNAL {
+                external::CordRepExternal::delete(rep);
+                return;
+            } else if tag == SUBSTRING {
+                let substring: *mut CordRepSubstring = rep.cast();
+                rep = (*substring).child;
+                CordRepSubstring::delete(substring);
+                if rep.refcount().decrement() {
+                    return;
+                }
+            } else {
+                debug_assert!(tag >= FLAT);
+                flat::delete(rep);
                 return;
             }
-        } else {
-            debug_assert!(tag >= FLAT);
-            flat::delete(rep);
-            return;
         }
     }
 }
@@ -311,18 +374,29 @@ impl CordRepSubstring {
     /// Requires `child` to be a flat or external node and `pos`/`n` to form a
     /// non-empty partial sub range of `child`: `n > 0 && n < child.length &&
     /// pos + n <= child.length`.
+    ///
+    /// # Safety
+    ///
+    /// `child` must be a non-null, live flat or external rep, and the caller
+    /// must be transferring (adopting away) one reference it owns on `child`
+    /// to the newly created substring. `pos`/`n` must satisfy the range
+    /// requirement above.
     #[inline]
     pub(crate) unsafe fn create(child: *mut CordRep, pos: usize, n: usize) -> *mut CordRepSubstring {
-        debug_assert!(!child.is_null());
-        debug_assert!(n > 0);
-        debug_assert!(n < child.length());
-        debug_assert!(pos < child.length());
-        debug_assert!(n <= child.length() - pos);
-        assert!(
-            child.is_external() || child.is_flat(),
-            "cord-rs: unexpected node type {} for substring child",
-            child.tag()
-        );
+        unsafe {
+            debug_assert!(!child.is_null());
+            debug_assert!(n > 0);
+            debug_assert!(n < child.length());
+            debug_assert!(pos < child.length());
+            debug_assert!(n <= child.length() - pos);
+            assert!(
+                child.is_external() || child.is_flat(),
+                "cord-rs: unexpected node type {} for substring child",
+                child.tag()
+            );
+        }
+        // Storing `child`'s pointer value doesn't dereference it, so
+        // constructing and boxing the new node is ordinary safe code.
         Box::into_raw(Box::new(CordRepSubstring { rep: CordRep::new(n, SUBSTRING), start: pos, child }))
     }
 
@@ -332,29 +406,63 @@ impl CordRepSubstring {
     /// `n == rep.length` this returns `ref_rep(rep)`. If `rep` is itself a
     /// substring, the returned substring references its child with `pos`
     /// adjusted by the original `start`.
+    ///
+    /// # Safety
+    ///
+    /// `rep` must be a non-null pointer to a live rep for which
+    /// `is_data_edge(rep)` holds, and `pos`/`n` must satisfy the range
+    /// requirement above. Unlike [`create`](Self::create), this does *not*
+    /// consume a reference on `rep`: the caller keeps whatever reference it
+    /// already held, and the new substring (or the `ref_rep(rep)` result)
+    /// carries its own, independently acquired reference.
     #[inline]
     pub(crate) unsafe fn substring(mut rep: *mut CordRep, mut pos: usize, n: usize) -> *mut CordRep {
-        debug_assert!(!rep.is_null());
-        debug_assert!(n != 0);
-        debug_assert!(pos < rep.length());
-        debug_assert!(n <= rep.length() - pos);
-        if n == rep.length() {
-            return ref_rep(rep);
+        // SAFETY: `rep` is a live rep per this fn's contract. `n ==
+        // rep.length()` returns a fresh reference via `ref_rep`. Otherwise,
+        // when `rep` is itself a SUBSTRING (a valid cast because its tag
+        // says so), we walk to its `child` and adjust `pos`, mirroring
+        // abseil's substring-of-substring flattening; `child` is guaranteed
+        // live because the substring being read holds a reference on it.
+        // The final `ref_rep(rep)` acquires the independent reference the
+        // new node needs before it is boxed and returned.
+        unsafe {
+            debug_assert!(!rep.is_null());
+            debug_assert!(n != 0);
+            debug_assert!(pos < rep.length());
+            debug_assert!(n <= rep.length() - pos);
+            if n == rep.length() {
+                return ref_rep(rep);
+            }
+            if rep.is_substring() {
+                let sub: *mut CordRepSubstring = rep.cast();
+                pos += (*sub).start;
+                rep = (*sub).child;
+            }
+            let substring = Box::new(CordRepSubstring {
+                rep: CordRep::new(n, SUBSTRING),
+                start: pos,
+                child: ref_rep(rep),
+            });
+            Box::into_raw(substring).cast()
         }
-        if rep.is_substring() {
-            let sub: *mut CordRepSubstring = rep.cast();
-            pos += (*sub).start;
-            rep = (*sub).child;
-        }
-        let substring =
-            Box::new(CordRepSubstring { rep: CordRep::new(n, SUBSTRING), start: pos, child: ref_rep(rep) });
-        Box::into_raw(substring).cast()
     }
 
     /// Frees the substring node itself (not its child).
+    ///
+    /// # Safety
+    ///
+    /// `substring` must be a pointer originally produced by
+    /// [`create`](Self::create) or [`substring`](Self::substring) (i.e. a
+    /// live, exclusively-owned `CordRepSubstring` obtained from
+    /// `Box::into_raw`), and this call takes ownership of it: `substring`
+    /// must not be used again afterwards. The referenced `child` is left
+    /// untouched — its reference must be released separately by the caller.
     #[inline]
     pub(crate) unsafe fn delete(substring: *mut CordRepSubstring) {
-        drop(Box::from_raw(substring));
+        // SAFETY: `substring` is a live, uniquely-owned box pointer per this
+        // fn's contract, so reconstructing and dropping the `Box` is sound
+        // and frees exactly that allocation.
+        unsafe { drop(Box::from_raw(substring)) };
     }
 }
 
@@ -362,19 +470,30 @@ impl CordRepSubstring {
 
 /// Returns `true` if `edge` is a FLAT, EXTERNAL or a SUBSTRING of a FLAT or
 /// EXTERNAL node.
+///
+/// # Safety
+///
+/// `edge` must be a non-null pointer to a live rep.
 #[inline]
 pub(crate) unsafe fn is_data_edge(mut edge: *const CordRep) -> bool {
-    debug_assert!(!edge.is_null());
-    // Fast path: EXTERNAL or FLAT is a single well predicted branch.
-    let tag = (*edge).tag;
-    if tag == EXTERNAL || tag >= FLAT {
-        return true;
+    // SAFETY: `edge` is a live rep per this fn's contract, so its header may
+    // be read directly. If its tag is SUBSTRING, the tag itself guarantees
+    // the pointer really is a `CordRepSubstring`, whose `child` field is in
+    // turn always a live rep (the substring holds a reference on it) — so
+    // following it and reading its tag is likewise sound.
+    unsafe {
+        debug_assert!(!edge.is_null());
+        // Fast path: EXTERNAL or FLAT is a single well predicted branch.
+        let tag = (*edge).tag;
+        if tag == EXTERNAL || tag >= FLAT {
+            return true;
+        }
+        if tag == SUBSTRING {
+            edge = (*edge.cast::<CordRepSubstring>()).child;
+        }
+        let tag = (*edge).tag;
+        tag == EXTERNAL || tag >= FLAT
     }
-    if tag == SUBSTRING {
-        edge = (*edge.cast::<CordRepSubstring>()).child;
-    }
-    let tag = (*edge).tag;
-    tag == EXTERNAL || tag >= FLAT
 }
 
 /// Returns the bytes referenced by the data edge `edge`.
@@ -382,22 +501,39 @@ pub(crate) unsafe fn is_data_edge(mut edge: *const CordRep) -> bool {
 /// Requires `is_data_edge(edge)`. The returned slice borrows the node's
 /// memory: the caller must ensure the edge outlives `'a` and is not mutated
 /// (i.e. it is held by a live cord and not being appended to in place).
+///
+/// # Safety
+///
+/// `edge` must be a non-null pointer to a live rep for which
+/// `is_data_edge(edge)` holds, and the referenced bytes must remain valid
+/// and unmutated for the lifetime `'a` of the returned slice.
 #[inline]
 pub(crate) unsafe fn edge_data<'a>(mut edge: *const CordRep) -> &'a [u8] {
-    debug_assert!(is_data_edge(edge));
-    let mut offset = 0;
-    let length = (*edge).length;
-    if (*edge).tag == SUBSTRING {
-        let sub = edge.cast::<CordRepSubstring>();
-        offset = (*sub).start;
-        edge = (*sub).child;
+    // SAFETY: `edge` is a live data edge per this fn's contract. Following a
+    // SUBSTRING to its `child` is sound for the same reason as in
+    // `is_data_edge` (the tag guarantees the cast, the substring holds a
+    // reference on `child`). Dispatching on the (possibly substring-derefed)
+    // tag to read either a flat's payload or an external's `base` is sound
+    // because the tag correctly identifies the concrete type. The resulting
+    // pointer, `offset` and `length` together describe exactly the `length`
+    // bytes this data edge represents, which the caller's contract keeps
+    // valid for `'a`.
+    unsafe {
+        debug_assert!(is_data_edge(edge));
+        let mut offset = 0;
+        let length = (*edge).length;
+        if (*edge).tag == SUBSTRING {
+            let sub = edge.cast::<CordRepSubstring>();
+            offset = (*sub).start;
+            edge = (*sub).child;
+        }
+        let base = if (*edge).tag >= FLAT {
+            flat::data(edge.cast_mut()).cast_const()
+        } else {
+            (*edge.cast::<external::CordRepExternal>()).base
+        };
+        core::slice::from_raw_parts(base.add(offset), length)
     }
-    let base = if (*edge).tag >= FLAT {
-        flat::data(edge.cast_mut()).cast_const()
-    } else {
-        (*edge.cast::<external::CordRepExternal>()).base
-    };
-    core::slice::from_raw_parts(base.add(offset), length)
 }
 
 // --- Small memmove ---------------------------------------------------------
@@ -406,39 +542,58 @@ pub(crate) unsafe fn edge_data<'a>(mut edge: *const CordRep) -> &'a [u8] {
 ///
 /// If `NULLIFY_TAIL` is true the destination is zero padded up to 15 bytes
 /// (so `dst` must have room for 15 bytes regardless of `n`).
+///
+/// # Safety
+///
+/// - `n` must be at most 15.
+/// - `src` must be valid for reads of `n` bytes.
+/// - `dst` must be valid for writes of `n` bytes, or of 15 bytes if
+///   `NULLIFY_TAIL` is true (regardless of `n`).
+/// - `src` and `dst` may overlap arbitrarily: each branch reads both ends of
+///   its `n`-byte range into locals before writing anything, so it behaves
+///   like `memmove`, not `memcpy`.
 #[inline]
 pub(crate) unsafe fn small_memmove<const NULLIFY_TAIL: bool>(dst: *mut u8, src: *const u8, n: usize) {
     use core::ptr::{read_unaligned, write_bytes, write_unaligned};
-    if n >= 8 {
-        debug_assert!(n <= 15);
-        let buf1 = read_unaligned(src.cast::<u64>());
-        let buf2 = read_unaligned(src.add(n - 8).cast::<u64>());
-        if NULLIFY_TAIL {
-            write_bytes(dst.add(7), 0, 8);
-        }
-        write_unaligned(dst.cast::<u64>(), buf1);
-        write_unaligned(dst.add(n - 8).cast::<u64>(), buf2);
-    } else if n >= 4 {
-        let buf1 = read_unaligned(src.cast::<u32>());
-        let buf2 = read_unaligned(src.add(n - 4).cast::<u32>());
-        if NULLIFY_TAIL {
-            write_bytes(dst.add(4), 0, 4);
-            write_bytes(dst.add(7), 0, 8);
-        }
-        write_unaligned(dst.cast::<u32>(), buf1);
-        write_unaligned(dst.add(n - 4).cast::<u32>(), buf2);
-    } else {
-        if n != 0 {
-            let b0 = *src;
-            let bm = *src.add(n / 2);
-            let bl = *src.add(n - 1);
-            *dst = b0;
-            *dst.add(n / 2) = bm;
-            *dst.add(n - 1) = bl;
-        }
-        if NULLIFY_TAIL {
-            write_bytes(dst.add(7), 0, 8);
-            write_bytes(dst.add(n), 0, 8);
+    // SAFETY: `n <= 15` and `src`/`dst` are valid for `n` (or, with
+    // `NULLIFY_TAIL`, up to 15) bytes, per this fn's contract. Each branch
+    // below only touches offsets within that range (e.g. `src.add(n - 8)` /
+    // `dst.add(n - 8)` in the `n >= 8` branch stay `<= src + 14` / `dst +
+    // 14`), and every read of `src` is captured into a local (`buf1`,
+    // `buf2`, or `b0`/`bm`/`bl`) before any write to `dst`, so the copy is
+    // correct even when `src` and `dst` overlap.
+    unsafe {
+        if n >= 8 {
+            debug_assert!(n <= 15);
+            let buf1 = read_unaligned(src.cast::<u64>());
+            let buf2 = read_unaligned(src.add(n - 8).cast::<u64>());
+            if NULLIFY_TAIL {
+                write_bytes(dst.add(7), 0, 8);
+            }
+            write_unaligned(dst.cast::<u64>(), buf1);
+            write_unaligned(dst.add(n - 8).cast::<u64>(), buf2);
+        } else if n >= 4 {
+            let buf1 = read_unaligned(src.cast::<u32>());
+            let buf2 = read_unaligned(src.add(n - 4).cast::<u32>());
+            if NULLIFY_TAIL {
+                write_bytes(dst.add(4), 0, 4);
+                write_bytes(dst.add(7), 0, 8);
+            }
+            write_unaligned(dst.cast::<u32>(), buf1);
+            write_unaligned(dst.add(n - 4).cast::<u32>(), buf2);
+        } else {
+            if n != 0 {
+                let b0 = *src;
+                let bm = *src.add(n / 2);
+                let bl = *src.add(n - 1);
+                *dst = b0;
+                *dst.add(n / 2) = bm;
+                *dst.add(n - 1) = bl;
+            }
+            if NULLIFY_TAIL {
+                write_bytes(dst.add(7), 0, 8);
+                write_bytes(dst.add(n), 0, 8);
+            }
         }
     }
 }
@@ -489,6 +644,9 @@ mod tests {
         }
         // Overlapping move.
         let mut buf: Vec<u8> = (0..16).collect();
+        // SAFETY: `n = 12 <= 15`; `src = buf.as_ptr().add(3)` is valid for 12
+        // reads (`buf` has 16 bytes, offset 3 leaves 13); `dst = buf.as_mut_ptr()`
+        // is valid for 12 writes into the same 16-byte `buf`.
         unsafe { small_memmove::<false>(buf.as_mut_ptr(), buf.as_ptr().add(3), 12) };
         assert_eq!(&buf[..12], &(3..15).collect::<Vec<u8>>()[..]);
     }

@@ -281,10 +281,20 @@ impl CordBuffer {
     }
 
     /// Wraps a flat rep with a refcount of one.
+    ///
+    /// # Safety
+    ///
+    /// `rep` must be a non-null pointer to a live, uniquely-owned (refcount
+    /// one) flat node; the caller transfers that sole reference to the
+    /// returned `CordBuffer`, which will free it on drop.
     #[inline]
     pub(crate) unsafe fn from_flat(rep: *mut CordRep) -> Self {
-        debug_assert!(!rep.is_null() && rep.is_flat() && rep.refcount().is_one());
-        Self { rep: Rep { long: Long { rep, _padding: 0 } } }
+        // SAFETY: `rep` is a live flat node per the caller contract above,
+        // which is all `is_flat` and `refcount` require.
+        unsafe {
+            debug_assert!(!rep.is_null() && rep.is_flat() && rep.refcount().is_one());
+            Self { rep: Rep { long: Long { rep, _padding: 0 } } }
+        }
     }
 
     /// Consumes the buffer, returning its flat rep (with the current length)
@@ -411,7 +421,11 @@ impl CordBuffer {
         if self.rep.is_short() {
             self.rep.set_short_length(len);
         } else {
-            self.rep.rep().set_length(len);
+            // SAFETY: the rep is live and exclusively owned by this buffer
+            // (per this fn's `# Safety` contract that the first `len` bytes
+            // are initialized, and `CordBuffer` never shares its rep), and
+            // `len` was just checked against `capacity()` above.
+            unsafe { self.rep.rep().set_length(len) };
         }
     }
 

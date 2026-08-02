@@ -71,12 +71,22 @@ impl<'a> Chunks<'a> {
         }
     }
 
+    /// # Safety
+    ///
+    /// `tree` must be a non-null pointer to a live rep tree that outlives
+    /// `self` for `'a` (borrowed, not adopted: this call does not affect
+    /// `tree`'s refcount, matching the borrowed-`Cord` lifetime tracked by
+    /// `self._marker`).
     unsafe fn init_tree(&mut self, tree: *mut CordRep) {
-        if tree.is_btree() {
-            self.current_chunk = self.btree_reader.init(as_btree(tree));
-        } else {
-            self.current_leaf = tree;
-            self.current_chunk = edge_data(tree);
+        // SAFETY: `tree` is live per the caller contract above, which is all
+        // `is_btree`, `as_btree`, `btree_reader.init` and `edge_data` require.
+        unsafe {
+            if tree.is_btree() {
+                self.current_chunk = self.btree_reader.init(as_btree(tree));
+            } else {
+                self.current_leaf = tree;
+                self.current_chunk = edge_data(tree);
+            }
         }
     }
 
