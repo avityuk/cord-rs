@@ -730,7 +730,7 @@ fn remove_suffix() {
                         if shared {
                             assert_eq!(last_edge.length(), 512);
                         } else {
-                            assert!(last_edge.refcount().is_one());
+                            assert!(last_edge.ref_is_one());
                             assert_eq!(last_edge.length(), last_length);
                         }
                     }
@@ -1018,7 +1018,7 @@ fn is_flat_multi_flat() {
 
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic(expected = "assertion failed: this.refcount().is_one()")]
+#[should_panic(expected = "assertion failed: this.as_rep().ref_is_one()")]
 fn get_append_buffer_not_private() {
     unsafe {
         let mut refs = AutoUnref::new();

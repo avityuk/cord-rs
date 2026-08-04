@@ -155,12 +155,12 @@ fn rep_from_owned<O: StableBytes>(owner: O, capacity: usize) -> *mut CordRep {
 unsafe fn prepare_append_region(root: *mut CordRep, max_length: usize) -> Option<(*mut u8, usize)> {
     unsafe {
         if root.is_btree()
-            && root.refcount().is_one()
+            && root.ref_is_one()
             && let Some(span) = CordRepBtree::get_append_buffer(as_btree(root), max_length)
         {
             return Some(span);
         }
-        if !root.is_flat() || !root.refcount().is_one() {
+        if !root.is_flat() || !root.ref_is_one() {
             return None;
         }
         let in_use = root.length();
@@ -207,7 +207,7 @@ unsafe fn extract_append_buffer(rep: *mut CordRep, min_capacity: usize) -> rep::
         if rep.is_btree() {
             return CordRepBtree::extract_append_buffer(as_btree(rep), min_capacity);
         }
-        if rep.is_flat() && rep.refcount().is_one() && flat::capacity(rep) - rep.length() >= min_capacity {
+        if rep.is_flat() && rep.ref_is_one() && flat::capacity(rep) - rep.length() >= min_capacity {
             return ExtractResult { tree: core::ptr::null_mut(), extracted: rep };
         }
         ExtractResult { tree: rep, extracted: core::ptr::null_mut() }
@@ -1066,7 +1066,7 @@ impl Cord {
                 let sub = CordRepBtree::sub_tree(as_btree(tree), n, tree.length() - n);
                 unref(tree);
                 sub
-            } else if tree.is_substring() && tree.refcount().is_one() {
+            } else if tree.is_substring() && tree.ref_is_one() {
                 let sub: *mut CordRepSubstring = tree.cast();
                 (*sub).start += n;
                 tree.set_length(tree.length() - n);
@@ -1107,7 +1107,7 @@ impl Cord {
                 core::ptr::null_mut()
             } else if tree.is_btree() {
                 CordRepBtree::remove_suffix(as_btree(tree), n)
-            } else if !tree.is_external() && tree.refcount().is_one() {
+            } else if !tree.is_external() && tree.ref_is_one() {
                 debug_assert!(tree.is_flat() || tree.is_substring());
                 tree.set_length(tree.length() - n);
                 tree

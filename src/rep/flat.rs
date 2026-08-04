@@ -307,7 +307,7 @@ mod tests {
                 1 << 20,
             ] {
                 let rep = new(len);
-                assert!(rep.refcount().is_one());
+                assert!(rep.ref_is_one());
                 assert_eq!(rep.length(), 0);
                 assert!(rep.is_flat());
                 let cap = capacity(rep);

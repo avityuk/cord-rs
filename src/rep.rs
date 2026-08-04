@@ -224,8 +224,25 @@ pub(crate) trait RepPtr: Copy {
     unsafe fn set_length(self, length: usize);
     /// Reads `self`'s `tag`.
     unsafe fn tag(self) -> u8;
-    /// Reads `self`'s refcount.
-    unsafe fn refcount<'a>(self) -> &'a Refcount;
+    /// Increments `self`'s refcount. See the [trait-level safety
+    /// section](RepPtr).
+    unsafe fn ref_inc(self);
+    /// Decrements `self`'s refcount; see [`Refcount::decrement`]. See the
+    /// [trait-level safety section](RepPtr).
+    unsafe fn ref_dec(self) -> bool;
+    /// Decrements `self`'s refcount; see
+    /// [`Refcount::decrement_expect_high_refcount`]. See the [trait-level
+    /// safety section](RepPtr).
+    unsafe fn ref_dec_expect_high_refcount(self) -> bool;
+    /// Returns `true` if `self`'s refcount is exactly one. See the
+    /// [trait-level safety section](RepPtr).
+    unsafe fn ref_is_one(self) -> bool;
+    /// Returns `true` if `self`'s refcount is immortal. See the
+    /// [trait-level safety section](RepPtr).
+    unsafe fn ref_is_immortal(self) -> bool;
+    /// Reads `self`'s current refcount; see [`Refcount::get`]. See the
+    /// [trait-level safety section](RepPtr).
+    unsafe fn ref_get(self) -> usize;
 
     #[inline]
     unsafe fn is_substring(self) -> bool {
@@ -261,13 +278,37 @@ impl RepPtr for *mut CordRep {
         unsafe { (*self).tag }
     }
     #[inline]
-    unsafe fn refcount<'a>(self) -> &'a Refcount {
-        // SAFETY: `addr_of!` (rather than `&(*self).refcount`) avoids ever
-        // materializing a reference to the whole `CordRep` header, keeping
-        // this in line with the rest of the module's raw-pointer discipline;
-        // only the `refcount` field itself is borrowed, and it is always
-        // accessed atomically.
-        unsafe { &*core::ptr::addr_of!((*self).refcount) }
+    unsafe fn ref_inc(self) {
+        // SAFETY: the atomic's interior mutability makes a shared reference
+        // to just the `refcount` field sound to hand to `Refcount::increment`
+        // even though other raw pointers may alias the rest of the header;
+        // the reference is scoped to this call and never escapes.
+        unsafe { &(*self).refcount }.increment();
+    }
+    #[inline]
+    unsafe fn ref_dec(self) -> bool {
+        // SAFETY: see `ref_inc`.
+        unsafe { &(*self).refcount }.decrement()
+    }
+    #[inline]
+    unsafe fn ref_dec_expect_high_refcount(self) -> bool {
+        // SAFETY: see `ref_inc`.
+        unsafe { &(*self).refcount }.decrement_expect_high_refcount()
+    }
+    #[inline]
+    unsafe fn ref_is_one(self) -> bool {
+        // SAFETY: see `ref_inc`.
+        unsafe { &(*self).refcount }.is_one()
+    }
+    #[inline]
+    unsafe fn ref_is_immortal(self) -> bool {
+        // SAFETY: see `ref_inc`.
+        unsafe { &(*self).refcount }.is_immortal()
+    }
+    #[inline]
+    unsafe fn ref_get(self) -> usize {
+        // SAFETY: see `ref_inc`.
+        unsafe { &(*self).refcount }.get()
     }
 }
 
@@ -295,7 +336,7 @@ pub(crate) unsafe fn debug_assert_nonempty_rep(rep: *mut CordRep) {
 pub(crate) unsafe fn debug_assert_unique_flat(rep: *mut CordRep) {
     unsafe {
         debug_assert!(!rep.is_null());
-        debug_assert!(rep.is_flat() && rep.refcount().is_one());
+        debug_assert!(rep.is_flat() && rep.ref_is_one());
     }
 }
 
@@ -310,7 +351,7 @@ pub(crate) unsafe fn debug_assert_unique_flat(rep: *mut CordRep) {
 #[inline]
 pub(crate) unsafe fn ref_rep(rep: *mut CordRep) -> *mut CordRep {
     debug_assert!(!rep.is_null());
-    unsafe { rep.refcount().increment() };
+    unsafe { rep.ref_inc() };
     rep
 }
 
@@ -330,7 +371,7 @@ pub(crate) unsafe fn unref(rep: *mut CordRep) {
     // reached zero, at which point this call's adopted reference was the
     // last one outstanding, so `rep` may be freed.
     unsafe {
-        if !rep.refcount().decrement_expect_high_refcount() {
+        if !rep.ref_dec_expect_high_refcount() {
             destroy(rep);
         }
     }
@@ -359,7 +400,7 @@ pub(crate) unsafe fn destroy(mut rep: *mut CordRep) {
     // rep owned by this call).
     unsafe {
         loop {
-            debug_assert!(!rep.refcount().is_immortal());
+            debug_assert!(!rep.ref_is_immortal());
             let tag = rep.tag();
             if tag == BTREE {
                 btree::CordRepBtree::destroy(rep.cast());
@@ -371,7 +412,7 @@ pub(crate) unsafe fn destroy(mut rep: *mut CordRep) {
                 let substring: *mut CordRepSubstring = rep.cast();
                 rep = (*substring).child;
                 CordRepSubstring::delete(substring);
-                if rep.refcount().decrement() {
+                if rep.ref_dec() {
                     return;
                 }
             } else {

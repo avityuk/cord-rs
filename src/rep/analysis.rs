@@ -43,7 +43,7 @@ impl RepRef {
             // SAFETY: `cast_mut` only changes pointer mutability, not what it
             // points to; the count is only ever read here, never mutated.
             let fraction = if mode == Mode::FairShare {
-                let refcount = rep.cast_mut().refcount().get();
+                let refcount = rep.cast_mut().ref_get();
                 if refcount == 1 { frac } else { frac / refcount as f64 }
             } else {
                 1.0

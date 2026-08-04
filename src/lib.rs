@@ -157,7 +157,7 @@ pub mod internal {
     #[must_use]
     pub fn root_refcount(cord: &Cord) -> usize {
         // SAFETY: the tree is live.
-        cord.tree().map_or(0, |t| unsafe { t.refcount().get() })
+        cord.tree().map_or(0, |t| unsafe { t.ref_get() })
     }
 
     /// Validates the tree structure, returning an error message on failure.

@@ -209,7 +209,7 @@ unsafe fn make_substring_from(rep: *mut CordRep, offset: usize) -> *mut CordRep 
 /// `edge` must be a non-null pointer to a live data edge (`is_data_edge`)
 /// with `0 < length <= edge.length()`. `is_mutable` must be `true` only if
 /// the caller has verified `edge` is not shared with any other tree (e.g.
-/// `edge.refcount().is_one()`): a `true` value licenses this function to
+/// `edge.ref_is_one()`): a `true` value licenses this function to
 /// mutate `edge`'s length in place, which would corrupt any other live
 /// reference to `edge` if it were in fact shared. The caller donates its
 /// reference on `edge`; the returned pointer (either `edge` itself or a new
@@ -269,7 +269,7 @@ unsafe fn consume_copy<const IS_BACK: bool>(dst: *mut u8, s: &[u8], n: usize) ->
 unsafe fn delete_substring(substring: *mut CordRepSubstring) {
     unsafe {
         let rep = (*substring).child;
-        if !rep.refcount().decrement() {
+        if !rep.ref_dec() {
             if rep.tag() >= FLAT {
                 flat::delete(rep);
             } else {
@@ -314,8 +314,8 @@ unsafe fn delete_leaf_edge(rep: *mut CordRep) {
 /// for every `i` in `[begin(), end())`, `edges[i]` is a non-null pointer to
 /// a live rep (a data edge if `height() == 0`, else a `CordRepBtree` of
 /// height `self.height() - 1`). Read-only accessors (`as_rep`, `height`,
-/// `begin`, `end`, `edge`, `length`, `refcount`, and everything built purely
-/// on those) require only this well-formedness and a live borrow of `self`
+/// `begin`, `end`, `edge`, `length`, and everything built purely on those)
+/// require only this well-formedness and a live borrow of `self`
 /// for the call's duration — they never require exclusive access, and never
 /// change `self`'s own reference count (it is always borrowed, never
 /// adopted or transferred). Mutating accessors (`set_begin`, `set_end`,
@@ -379,11 +379,6 @@ pub(crate) trait BtreePtr: Copy {
         unsafe {
             self.set_length(self.length() - delta);
         }
-    }
-    /// Reads `self`'s refcount.
-    #[inline]
-    unsafe fn refcount<'a>(self) -> &'a super::Refcount {
-        unsafe { self.as_rep().refcount() }
     }
     /// Index of the back edge.
     ///
@@ -736,12 +731,12 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
             // non-leaf node, itself a live, well-formed btree node.
             debug_assert!(depth <= tree.height());
             let mut current_depth = 0;
-            while current_depth < depth && tree.refcount().is_one() {
+            while current_depth < depth && tree.as_rep().ref_is_one() {
                 self.stack[current_depth] = tree;
                 current_depth += 1;
                 tree = tree.edge_at::<IS_BACK>().cast();
             }
-            self.share_depth = current_depth + usize::from(tree.refcount().is_one());
+            self.share_depth = current_depth + usize::from(tree.as_rep().ref_is_one());
             while current_depth < depth {
                 self.stack[current_depth] = tree;
                 current_depth += 1;
@@ -768,12 +763,12 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
             debug_assert!(height <= MAX_HEIGHT);
             let mut depth = 0;
             while depth < height {
-                debug_assert!(tree.refcount().is_one());
+                debug_assert!(tree.as_rep().ref_is_one());
                 self.stack[depth] = tree;
                 depth += 1;
                 tree = tree.edge_at::<IS_BACK>().cast();
             }
-            debug_assert!(tree.refcount().is_one());
+            debug_assert!(tree.as_rep().ref_is_one());
             self.share_depth = depth + 1;
         }
     }
@@ -1015,7 +1010,7 @@ impl CordRepBtree {
     pub(crate) unsafe fn unref_edges(tree: *mut CordRepBtree, begin: usize, end: usize) {
         unsafe {
             for edge in tree.edges_range(begin, end) {
-                if !edge.refcount().decrement() {
+                if !edge.ref_dec() {
                     core::hint::cold_path();
                     super::destroy(edge);
                 }
@@ -1037,7 +1032,7 @@ impl CordRepBtree {
             match tree.height() {
                 0 => {
                     for edge in tree.edges() {
-                        if !edge.refcount().decrement() {
+                        if !edge.ref_dec() {
                             delete_leaf_edge(edge);
                         }
                     }
@@ -1064,12 +1059,12 @@ impl CordRepBtree {
     unsafe fn destroy_tree<const SIZE: usize>(tree: *mut CordRepBtree) {
         unsafe {
             for node in tree.edges() {
-                if node.refcount().decrement() {
+                if node.ref_dec() {
                     continue;
                 }
                 let node = as_btree(node);
                 for edge in node.edges() {
-                    if edge.refcount().decrement() {
+                    if edge.ref_dec() {
                         continue;
                     }
                     if SIZE == 1 {
@@ -1187,7 +1182,7 @@ impl CordRepBtree {
     unsafe fn consume_begin_to(tree: *mut CordRepBtree, end: usize, new_length: usize) -> *mut CordRepBtree {
         unsafe {
             debug_assert!(end <= tree.end());
-            if tree.refcount().is_one() {
+            if tree.as_rep().ref_is_one() {
                 Self::unref_edges(tree, end, tree.end());
                 tree.set_end(end);
                 tree.set_length(new_length);
@@ -1213,7 +1208,7 @@ impl CordRepBtree {
     unsafe fn extract_front(tree: *mut CordRepBtree) -> *mut CordRep {
         unsafe {
             let front = tree.edge(tree.begin());
-            if tree.refcount().is_one() {
+            if tree.as_rep().ref_is_one() {
                 Self::unref_edges(tree, tree.begin() + 1, tree.end());
                 Self::delete(tree);
             } else {
@@ -1640,7 +1635,7 @@ impl CordRepBtree {
                 let result = Self::to_op_result(merge_node, ops.owned(depth));
                 Self::add_edges_from::<IS_BACK>(result.tree, src);
                 result.tree.add_length(src.length());
-                if src.refcount().is_one() {
+                if src.as_rep().ref_is_one() {
                     Self::delete(src);
                 } else {
                     for edge in src.edges() {
@@ -1996,13 +1991,13 @@ impl CordRepBtree {
 
             let mut length = len - n;
             let mut height = height_to_isize(tree.height());
-            let mut is_mutable = tree.refcount().is_one();
+            let mut is_mutable = tree.as_rep().ref_is_one();
 
             // Extract all top nodes which are reduced to size = 1.
             let mut pos = tree.index_of_length(length);
             while pos.index == tree.begin() {
                 let edge = Self::extract_front(tree);
-                is_mutable &= edge.refcount().is_one();
+                is_mutable &= edge.ref_is_one();
                 if height == 0 {
                     return resize_edge(edge, length, is_mutable);
                 }
@@ -2022,8 +2017,8 @@ impl CordRepBtree {
             length = pos.n;
             while length != edge.length() {
                 // `consume_begin_to` guarantees `tree` is a privately owned copy.
-                debug_assert!(tree.refcount().is_one());
-                let edge_is_mutable = edge.refcount().is_one();
+                debug_assert!(tree.as_rep().ref_is_one());
+                let edge_is_mutable = edge.ref_is_one();
 
                 if height == 0 {
                     tree.set_edge_ptr(pos.index, resize_edge(edge, length, edge_is_mutable));
@@ -2134,31 +2129,31 @@ impl CordRepBtree {
     /// - the last data edge is a non-shared flat with available capacity.
     ///
     /// The caller must immediately initialize the returned bytes. Requires
-    /// `this.refcount().is_one()`.
+    /// `this.as_rep().ref_is_one()`.
     ///
     /// # Safety
     ///
     /// `this` must be a non-null pointer to a live, well-formed btree node
-    /// with `this.refcount().is_one()`; it is borrowed, not consumed (any
+    /// with `this.as_rep().ref_is_one()`; it is borrowed, not consumed (any
     /// node whose length is grown remains owned by `this`'s tree). On
     /// success the caller must fill the returned region (already accounted
     /// for in the tree's length) before any other access to `this`.
     pub(crate) unsafe fn get_append_buffer(this: *mut CordRepBtree, size: usize) -> Option<(*mut u8, usize)> {
         unsafe {
-            debug_assert!(this.refcount().is_one());
+            debug_assert!(this.as_rep().ref_is_one());
             let depth = this.height();
             let mut node = this;
             let mut stack = [core::ptr::null_mut::<CordRepBtree>(); MAX_DEPTH];
             for slot in stack.iter_mut().take(depth) {
                 node = as_btree(node.edge_at::<BACK>());
-                if !node.refcount().is_one() {
+                if !node.as_rep().ref_is_one() {
                     return None;
                 }
                 *slot = node;
             }
             // Must be a privately owned, mutable flat with capacity.
             let edge = node.edge_at::<BACK>();
-            if !edge.refcount().is_one() || edge.tag() < FLAT {
+            if !edge.ref_is_one() || edge.tag() < FLAT {
                 return None;
             }
             let avail = flat::capacity(edge) - edge.length();
@@ -2201,20 +2196,20 @@ impl CordRepBtree {
 
             // Dive down the right side of the tree, making sure no edges are shared.
             while tree.height() > 0 {
-                if !tree.refcount().is_one() {
+                if !tree.as_rep().ref_is_one() {
                     return result;
                 }
                 stack[depth] = tree;
                 depth += 1;
                 tree = as_btree(tree.edge_at::<BACK>());
             }
-            if !tree.refcount().is_one() {
+            if !tree.as_rep().ref_is_one() {
                 return result;
             }
 
             // Validate we ended on a non shared flat with enough capacity.
             let mut rep = tree.edge_at::<BACK>();
-            if !(rep.is_flat() && rep.refcount().is_one()) {
+            if !(rep.is_flat() && rep.ref_is_one()) {
                 return result;
             }
             let length = rep.length();
@@ -2283,7 +2278,7 @@ impl CordRepBtree {
         consume: bool,
     ) {
         unsafe {
-            let owned = consume && tree.refcount().is_one();
+            let owned = consume && tree.as_rep().ref_is_one();
             if tree.height() == 0 {
                 for mut edge in tree.edges() {
                     if !owned {
@@ -2474,11 +2469,8 @@ impl CordRepBtree {
         unsafe {
             debug_assert!(depth <= MAX_DEPTH + 2);
             let rep = rep.cast_mut();
-            let sharing = if rep.refcount().is_one() {
-                "Private".to_string()
-            } else {
-                format!("Shared({})", rep.refcount().get())
-            };
+            let sharing =
+                if rep.ref_is_one() { "Private".to_string() } else { format!("Shared({})", rep.ref_get()) };
             let maybe_dump_data = |out: &mut dyn fmt::Write, r: *mut CordRep| -> fmt::Result {
                 if include_contents {
                     const MAX_DATA_LENGTH: usize = 60;
