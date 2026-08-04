@@ -1,5 +1,7 @@
 //! Port of abseil's `cord_rep_btree_navigator_test.cc`.
 
+use std::ptr::NonNull;
+
 use super::btree::{BtreePtr, CordRepBtree, MAX_CAPACITY, MAX_HEIGHT, as_btree};
 use super::navigator::CordRepBtreeNavigator;
 use super::test_util::*;
@@ -179,8 +181,8 @@ fn skip() {
 
             for char_offset in 0..CHARS_PER_FLAT {
                 let pos = nav.skip(char_offset);
-                assert_eq!(pos.edge, nav.current());
-                assert_eq!(pos.edge, flats[0]);
+                assert_eq!(pos.edge, NonNull::new(nav.current()));
+                assert_eq!(pos.edge, NonNull::new(flats[0]));
                 assert_eq!(pos.offset, char_offset);
             }
 
@@ -192,14 +194,14 @@ fn skip() {
 
                         let length1 = index1 * CHARS_PER_FLAT;
                         let pos1 = nav.skip(length1 + char_offset);
-                        assert_eq!(pos1.edge, flats[index1]);
-                        assert_eq!(pos1.edge, nav.current());
+                        assert_eq!(pos1.edge, NonNull::new(flats[index1]));
+                        assert_eq!(pos1.edge, NonNull::new(nav.current()));
                         assert_eq!(pos1.offset, char_offset);
 
                         let length2 = index2 * CHARS_PER_FLAT;
                         let pos2 = nav.skip(length2 - length1 + char_offset);
-                        assert_eq!(pos2.edge, flats[index2]);
-                        assert_eq!(pos2.edge, nav.current());
+                        assert_eq!(pos2.edge, NonNull::new(flats[index2]));
+                        assert_eq!(pos2.edge, NonNull::new(nav.current()));
                         assert_eq!(pos2.offset, char_offset);
                     }
                 }
@@ -219,8 +221,8 @@ fn seek() {
 
             for char_offset in 0..CHARS_PER_FLAT {
                 let pos = nav.seek(char_offset);
-                assert_eq!(pos.edge, nav.current());
-                assert_eq!(pos.edge, flats[0]);
+                assert_eq!(pos.edge, NonNull::new(nav.current()));
+                assert_eq!(pos.edge, NonNull::new(flats[0]));
                 assert_eq!(pos.offset, char_offset);
             }
 
@@ -228,8 +230,8 @@ fn seek() {
                 for char_offset in 0..CHARS_PER_FLAT {
                     let offset = index * CHARS_PER_FLAT + char_offset;
                     let pos1 = nav.seek(offset);
-                    assert_eq!(pos1.edge, flat);
-                    assert_eq!(pos1.edge, nav.current());
+                    assert_eq!(pos1.edge, NonNull::new(flat));
+                    assert_eq!(pos1.edge, NonNull::new(nav.current()));
                     assert_eq!(pos1.offset, char_offset);
                 }
             }
@@ -248,8 +250,8 @@ fn init_offset() {
         let pos = nav.init_offset(tree, 5);
         assert!(nav.is_some());
         assert_eq!(nav.btree(), tree);
-        assert_eq!(pos.edge, tree.edge(1));
-        assert_eq!(pos.edge, nav.current());
+        assert_eq!(pos.edge, NonNull::new(tree.edge(1)));
+        assert_eq!(pos.edge, NonNull::new(nav.current()));
         assert_eq!(pos.offset, 2);
         unref(tree.as_rep());
     }
@@ -263,13 +265,13 @@ fn init_offset_and_seek_beyond_length() {
 
         let mut nav = CordRepBtreeNavigator::new();
         nav.init_first(tree1);
-        assert!(nav.seek(3).edge.is_null());
-        assert!(nav.seek(100).edge.is_null());
+        assert!(nav.seek(3).edge.is_none());
+        assert!(nav.seek(100).edge.is_none());
         assert_eq!(nav.btree(), tree1);
         assert_eq!(nav.current(), tree1.edge(0));
 
-        assert!(nav.init_offset(tree2, 3).edge.is_null());
-        assert!(nav.init_offset(tree2, 100).edge.is_null());
+        assert!(nav.init_offset(tree2, 3).edge.is_none());
+        assert!(nav.init_offset(tree2, 100).edge.is_none());
         assert_eq!(nav.btree(), tree1);
         assert_eq!(nav.current(), tree1.edge(0));
 
@@ -294,14 +296,14 @@ fn read() {
 
                     // Read node.
                     let result = nav.read(edge_offset, length);
-                    assert!(!result.tree.is_null());
-                    assert_eq!(result.tree.length(), length);
-                    if result.tree.tag() == BTREE {
-                        assert!(CordRepBtree::is_valid(as_btree(result.tree), false));
+                    let tree = result.tree.expect("read produced a tree").as_ptr();
+                    assert_eq!(tree.length(), length);
+                    if tree.tag() == BTREE {
+                        assert!(CordRepBtree::is_valid(as_btree(tree), false));
                     }
 
                     // Verify contents.
-                    assert_eq!(cord_to_string(result.tree), &data[offset..offset + length]);
+                    assert_eq!(cord_to_string(tree), &data[offset..offset + length]);
 
                     // Verify 'partial last edge' reads.
                     let partial = (offset + length) % CHARS_PER_FLAT;
@@ -313,7 +315,7 @@ fn read() {
                         assert_eq!(nav.current(), flats[index]);
                     }
 
-                    unref(result.tree);
+                    unref(tree);
                 }
             }
         }
@@ -328,7 +330,7 @@ fn read_beyond_length_of_tree() {
             let mut nav = CordRepBtreeNavigator::new();
             nav.init_first(f.tree);
             let result = nav.read(2, f.tree.length());
-            assert!(result.tree.is_null());
+            assert!(result.tree.is_none());
         }
     }
 }

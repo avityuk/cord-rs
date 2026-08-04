@@ -6,6 +6,7 @@
 #![allow(clippy::cast_possible_truncation, reason = "tests pack small known values into bytes")]
 
 use std::collections::VecDeque;
+use std::ptr::NonNull;
 
 use super::btree::{BtreePtr, CordRepBtree, ExtractResult, MAX_CAPACITY, MAX_HEIGHT, as_btree};
 use super::test_util::*;
@@ -28,7 +29,7 @@ unsafe fn is_node(rep: *mut CordRep, height: usize) -> bool {
         let tree = as_btree(rep);
         if let Err(e) = CordRepBtree::check_valid(tree, false) {
             let mut dump = String::new();
-            let _ = CordRepBtree::dump(rep, "Expected valid NODE, got:", false, &mut dump);
+            let _ = CordRepBtree::dump(NonNull::new(rep), "Expected valid NODE, got:", false, &mut dump);
             eprintln!("{e}\n{dump}");
             return false;
         }
@@ -52,7 +53,7 @@ unsafe fn is_substring(rep: *mut CordRep, start: usize, length: usize) -> bool {
 }
 
 fn eq_extract_result(result: ExtractResult, tree: *mut CordRep, rep: *mut CordRep) -> bool {
-    result.tree == tree && result.extracted == rep
+    result.tree == NonNull::new(tree) && result.extracted == NonNull::new(rep)
 }
 
 /// # Safety
@@ -1123,9 +1124,9 @@ fn dump() {
     unsafe {
         // Handles null.
         let mut s = String::new();
-        CordRepBtree::dump(core::ptr::null(), "", false, &mut s).unwrap();
-        CordRepBtree::dump(core::ptr::null(), "Once upon a label", false, &mut s).unwrap();
-        CordRepBtree::dump(core::ptr::null(), "Once upon a label", true, &mut s).unwrap();
+        CordRepBtree::dump(None, "", false, &mut s).unwrap();
+        CordRepBtree::dump(None, "Once upon a label", false, &mut s).unwrap();
+        CordRepBtree::dump(None, "Once upon a label", true, &mut s).unwrap();
         assert!(s.contains("NULL"));
 
         // Cover legal edges.
@@ -1151,9 +1152,11 @@ fn dump() {
         for api in 0..=2 {
             let mut s = String::new();
             match api {
-                0 => CordRepBtree::dump(tree.as_rep(), "", false, &mut s).unwrap(),
-                1 => CordRepBtree::dump(tree.as_rep(), "Once upon a label", false, &mut s).unwrap(),
-                _ => CordRepBtree::dump(tree.as_rep(), "Once upon a label", true, &mut s).unwrap(),
+                0 => CordRepBtree::dump(NonNull::new(tree.as_rep()), "", false, &mut s).unwrap(),
+                1 => CordRepBtree::dump(NonNull::new(tree.as_rep()), "Once upon a label", false, &mut s)
+                    .unwrap(),
+                _ => CordRepBtree::dump(NonNull::new(tree.as_rep()), "Once upon a label", true, &mut s)
+                    .unwrap(),
             }
             // Contains Node(depth) / Leaf and private / shared indicators.
             for needle in ["Node(1)", "Leaf", "Private", "Shared"] {

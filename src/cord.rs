@@ -4,6 +4,7 @@ use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::ops::{Bound, Index, RangeBounds};
+use core::ptr::NonNull;
 
 use crate::buffer::{ConsumedBuffer, CordBuffer};
 use crate::inline_data::InlineData;
@@ -208,9 +209,9 @@ unsafe fn extract_append_buffer(rep: *mut CordRep, min_capacity: usize) -> rep::
             return CordRepBtree::extract_append_buffer(as_btree(rep), min_capacity);
         }
         if rep.is_flat() && rep.ref_is_one() && flat::capacity(rep) - rep.length() >= min_capacity {
-            return ExtractResult { tree: core::ptr::null_mut(), extracted: rep };
+            return ExtractResult { tree: None, extracted: NonNull::new(rep) };
         }
-        ExtractResult { tree: rep, extracted: core::ptr::null_mut() }
+        ExtractResult { tree: NonNull::new(rep), extracted: None }
     }
 }
 
@@ -1007,9 +1008,9 @@ impl Cord {
             // has a refcount of one and is no longer referenced by the tree.
             unsafe {
                 let result = extract_append_buffer(tree, min_capacity);
-                if !result.extracted.is_null() {
-                    self.set_tree_or_empty(result.tree);
-                    return CordBuffer::from_flat(result.extracted);
+                if let Some(extracted) = result.extracted {
+                    self.set_tree_or_empty(result.tree.map_or(core::ptr::null_mut(), NonNull::as_ptr));
+                    return CordBuffer::from_flat(extracted.as_ptr());
                 }
             }
             return if block_size != 0 {

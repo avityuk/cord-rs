@@ -95,6 +95,8 @@ pub use bytes_impl::CordWriter;
 /// public API; may change without notice.
 #[doc(hidden)]
 pub mod internal {
+    use core::ptr::NonNull;
+
     use crate::Cord;
     use crate::rep::btree::{CordRepBtree, as_btree};
     use crate::rep::{self, RepPtr, RepRef, RepView};
@@ -188,7 +190,7 @@ pub mod internal {
             None => out.push_str("(inline)\n"),
             // SAFETY: the tree is live.
             Some(tree) => unsafe {
-                let _ = CordRepBtree::dump(tree, "", include_contents, &mut out);
+                let _ = CordRepBtree::dump(NonNull::new(tree), "", include_contents, &mut out);
             },
         }
         out

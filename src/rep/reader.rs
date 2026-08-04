@@ -2,6 +2,8 @@
 //!
 //! Port of abseil's `cord_rep_btree_reader.{h,cc}`.
 
+use core::ptr::NonNull;
+
 use super::btree::{BtreePtr, CordRepBtree};
 use super::navigator::CordRepBtreeNavigator;
 use super::{CordRep, RepPtr, edge_data};
@@ -136,15 +138,16 @@ impl CordRepBtreeReader {
             // We are positioned on the last consumed edge, so skip it too.
             let edge_length = self.navigator.current().length();
             let pos = self.navigator.skip(skip + edge_length);
-            if pos.edge.is_null() {
+            let Some(edge) = pos.edge else {
                 core::hint::cold_path();
                 self.remaining = 0;
                 return &[];
-            }
+            };
+            let edge = edge.as_ptr();
             // All edges skipped before `pos.edge` (`skip - pos.offset` bytes) are
             // consumed, as is the current edge.
-            self.remaining -= skip - pos.offset + pos.edge.length();
-            &edge_data(pos.edge)[pos.offset..]
+            self.remaining -= skip - pos.offset + edge.length();
+            &edge_data(edge)[pos.offset..]
         }
     }
 
@@ -162,12 +165,12 @@ impl CordRepBtreeReader {
             // tree, so `self.navigator.seek()`, `edge_data`, and `self.length()`
             // are all sound to call.
             let pos = self.navigator.seek(offset);
-            if pos.edge.is_null() {
+            let Some(edge) = pos.edge else {
                 core::hint::cold_path();
                 self.remaining = 0;
                 return &[];
-            }
-            let chunk = &edge_data(pos.edge)[pos.offset..];
+            };
+            let chunk = &edge_data(edge.as_ptr())[pos.offset..];
             self.remaining = self.length() - offset - chunk.len();
             chunk
         }
@@ -198,7 +201,11 @@ impl CordRepBtreeReader {
             let offset = if chunk_size != 0 { edge.length() - chunk_size } else { 0 };
 
             let result = self.navigator.read(offset, n);
-            let tree = result.tree;
+            // `read`'s own return type stays a raw pointer this phase (its
+            // sole caller, `iter.rs`, is converted in the next phase); thread
+            // `Option<NonNull>` internally and drop to a raw pointer only at
+            // this boundary.
+            let tree = result.tree.map_or(core::ptr::null_mut(), NonNull::as_ptr);
 
             // If the data was covered entirely by `chunk_size` we did not consume
             // any additional data and directly return the rest of the edge.

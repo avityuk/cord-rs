@@ -95,13 +95,22 @@ pub(crate) struct Position {
     pub(crate) n: usize,
 }
 
-/// Result of `extract_append_buffer`: the remaining tree (possibly null) and
-/// the extracted flat (null on failure).
+/// Result of `extract_append_buffer`: the remaining tree (`None` if the
+/// whole tree was consumed) and the extracted flat (`None` on failure).
 #[derive(Clone, Copy)]
 pub(crate) struct ExtractResult {
-    pub(crate) tree: *mut CordRep,
-    pub(crate) extracted: *mut CordRep,
+    pub(crate) tree: Option<NonNull<CordRep>>,
+    pub(crate) extracted: Option<NonNull<CordRep>>,
 }
+
+// `Option<NonNull<T>>` is niche-optimized to the same size as `*mut T`, so
+// the sentinel conversions in this module (`ExtractResult`, the `rebuild`
+// stack) cost nothing over the raw pointers they replace.
+const _: () =
+    assert!(core::mem::size_of::<Option<NonNull<CordRep>>>() == core::mem::size_of::<*mut CordRep>());
+const _: () = assert!(
+    core::mem::size_of::<Option<NonNull<CordRepBtree>>>() == core::mem::size_of::<*mut CordRepBtree>()
+);
 
 /// A btree node. `storage[0..3]` of the header hold `height`, `begin`, `end`.
 #[repr(C)]
@@ -783,13 +792,19 @@ struct StackOperations<const IS_BACK: bool> {
     /// Depth at which nodes become shared: 0 if the root is shared, 1 if the
     /// second node is shared, ..., `> depth` if no node is shared.
     share_depth: usize,
-    stack: [*mut CordRepBtree; MAX_DEPTH],
+    /// Root-to-leaf path built by `build_stack`/`build_owned_stack`. Only
+    /// `stack[0..depth]` (the `depth` passed to whichever built it) are
+    /// meaningful; entries beyond that are left dangling
+    /// (`NonNull::dangling()`) and must never be read. Plain `NonNull`
+    /// (rather than `Option`) so reading a path entry within bounds never
+    /// carries an extra branch.
+    stack: [NonNull<CordRepBtree>; MAX_DEPTH],
 }
 
 impl<const IS_BACK: bool> StackOperations<IS_BACK> {
     #[inline]
     fn new() -> Self {
-        Self { share_depth: 0, stack: [core::ptr::null_mut(); MAX_DEPTH] }
+        Self { share_depth: 0, stack: [NonNull::dangling(); MAX_DEPTH] }
     }
 
     /// True if the node at `depth` and all of its parents are privately owned.
@@ -816,13 +831,13 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
             debug_assert!(depth <= tree.height());
             let mut current_depth = 0;
             while current_depth < depth && tree.as_rep().ref_is_one() {
-                self.stack[current_depth] = tree;
+                self.stack[current_depth] = NonNull::new_unchecked(tree);
                 current_depth += 1;
                 tree = tree.edge_at::<IS_BACK>().cast();
             }
             self.share_depth = current_depth + usize::from(tree.as_rep().ref_is_one());
             while current_depth < depth {
-                self.stack[current_depth] = tree;
+                self.stack[current_depth] = NonNull::new_unchecked(tree);
                 current_depth += 1;
                 tree = tree.edge_at::<IS_BACK>().cast();
             }
@@ -848,7 +863,7 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
             let mut depth = 0;
             while depth < height {
                 debug_assert!(tree.as_rep().ref_is_one());
-                self.stack[depth] = tree;
+                self.stack[depth] = NonNull::new_unchecked(tree);
                 depth += 1;
                 tree = tree.edge_at::<IS_BACK>().cast();
             }
@@ -919,7 +934,7 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
             if depth != 0 {
                 loop {
                     depth -= 1;
-                    let node = self.stack[depth];
+                    let node = self.stack[depth].as_ptr();
                     let owned = depth < self.share_depth;
                     match result.action {
                         Action::Popped => {
@@ -931,7 +946,9 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
                             result =
                                 CordRepBtree::set_edge::<IS_BACK>(node, owned, result.tree.as_rep(), length);
                             if PROPAGATE {
-                                self.stack[depth] = result.tree;
+                                // SAFETY: `result.tree` (an `OpResult::tree`)
+                                // is always a live, non-null node.
+                                self.stack[depth] = NonNull::new_unchecked(result.tree);
                             }
                         }
                         Action::InPlace => {
@@ -939,7 +956,7 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
                             node.add_length(length);
                             while depth > 0 {
                                 depth -= 1;
-                                node = self.stack[depth];
+                                node = self.stack[depth].as_ptr();
                                 node.add_length(length);
                             }
                             return node;
@@ -2257,18 +2274,18 @@ impl CordRepBtree {
 
     /// Extracts the right-most flat from `tree` iff the tree and all nodes
     /// down to it are unshared, it is an unshared flat, and it has at least
-    /// `extra_capacity` bytes available. Returns `{tree, null}` otherwise.
-    /// On success the flat is removed from the tree, which may collapse to a
-    /// single data edge or to null.
+    /// `extra_capacity` bytes available. Returns `{tree: Some(tree),
+    /// extracted: None}` otherwise. On success the flat is removed from the
+    /// tree, which may collapse to a single data edge or to `None`.
     ///
     /// # Safety
     ///
     /// `tree` must be a non-null pointer to a live, well-formed btree node;
     /// the caller donates its reference, consumed by this call. On failure
     /// the result's `tree` field carries that same reference back unchanged
-    /// (`extracted` is null); on success `extracted` carries a reference to
+    /// (`extracted` is `None`); on success `extracted` carries a reference to
     /// the removed flat and `tree` carries a reference to whatever remains
-    /// (possibly null, if the whole tree was consumed).
+    /// (`None`, if the whole tree was consumed).
     pub(crate) unsafe fn extract_append_buffer(
         mut tree: *mut CordRepBtree,
         extra_capacity: usize,
@@ -2276,7 +2293,7 @@ impl CordRepBtree {
         unsafe {
             let mut depth = 0;
             let mut stack = [core::ptr::null_mut::<CordRepBtree>(); MAX_DEPTH];
-            let mut result = ExtractResult { tree: tree.as_rep(), extracted: core::ptr::null_mut() };
+            let mut result = ExtractResult { tree: NonNull::new(tree.as_rep()), extracted: None };
 
             // Dive down the right side of the tree, making sure no edges are shared.
             while tree.height() > 0 {
@@ -2301,14 +2318,14 @@ impl CordRepBtree {
             if extra_capacity > avail {
                 return result;
             }
-            result.extracted = rep;
+            result.extracted = NonNull::new(rep);
 
             // Cascading delete all nodes that become empty.
             while tree.size() == 1 {
                 Self::delete(tree);
                 if depth == 0 {
                     // We consumed the entire tree.
-                    result.tree = core::ptr::null_mut();
+                    result.tree = None;
                     return result;
                 }
                 depth -= 1;
@@ -2331,13 +2348,13 @@ impl CordRepBtree {
                 rep = tree.edge_at::<BACK>();
                 Self::delete(tree);
                 if height == 0 {
-                    result.tree = rep;
+                    result.tree = NonNull::new(rep);
                     return result;
                 }
                 tree = as_btree(rep);
             }
 
-            result.tree = tree.as_rep();
+            result.tree = NonNull::new(tree.as_rep());
             result
         }
     }
@@ -2355,9 +2372,10 @@ impl CordRepBtree {
     /// if `consume` the caller donates its reference, which is released by
     /// this call, otherwise `tree` is only borrowed. `stack` must be an
     /// in-progress rebuild stack as constructed by `rebuild`, indexed by
-    /// height, with each populated entry a live, uniquely owned btree node.
+    /// height, with each populated entry a live, uniquely owned btree node
+    /// (`None` means "level not yet created").
     unsafe fn rebuild_into(
-        stack: &mut [*mut CordRepBtree; MAX_DEPTH + 1],
+        stack: &mut [Option<NonNull<CordRepBtree>>; MAX_DEPTH + 1],
         tree: *mut CordRepBtree,
         consume: bool,
     ) {
@@ -2370,23 +2388,37 @@ impl CordRepBtree {
                     }
                     let mut height = 0;
                     let length = edge.length();
-                    let mut node = stack[0];
+                    // `stack[0]` is populated by `rebuild` before the first
+                    // call into `rebuild_into` and never cleared, so it is
+                    // always `Some` here; this is not a hot path (rebuild only
+                    // runs when a tree exceeds `MAX_HEIGHT`), so a checked
+                    // `expect` is preferred over an unchecked unwrap.
+                    let mut node = stack[0].expect("cord-rs: rebuild stack root missing").as_ptr();
                     let mut result = Self::add_edge::<BACK>(node, true, edge, length);
                     while result.action == Action::Popped {
-                        stack[height] = result.tree;
+                        // SAFETY: `result.tree` (an `OpResult::tree`) is always
+                        // a freshly created, non-null node.
+                        stack[height] = Some(NonNull::new_unchecked(result.tree));
                         height += 1;
                         assert!(height < MAX_DEPTH, "cord-rs: CordRepBtree::rebuild exceeded max depth");
-                        if stack[height].is_null() {
-                            result.action = Action::InPlace;
-                            stack[height] = Self::new_pair(node, result.tree);
-                        } else {
-                            node = stack[height];
-                            result = Self::add_edge::<BACK>(node, true, result.tree.as_rep(), length);
+                        match stack[height] {
+                            None => {
+                                result.action = Action::InPlace;
+                                // SAFETY: `new_pair` always returns a fresh,
+                                // non-null node.
+                                stack[height] =
+                                    Some(NonNull::new_unchecked(Self::new_pair(node, result.tree)));
+                            }
+                            Some(next) => {
+                                node = next.as_ptr();
+                                result = Self::add_edge::<BACK>(node, true, result.tree.as_rep(), length);
+                            }
                         }
                     }
                     height += 1;
-                    while height < MAX_DEPTH && !stack[height].is_null() {
-                        stack[height].add_length(length);
+                    while height < MAX_DEPTH {
+                        let Some(n) = stack[height] else { break };
+                        n.as_ptr().add_length(length);
                         height += 1;
                     }
                 }
@@ -2416,14 +2448,15 @@ impl CordRepBtree {
     pub(crate) unsafe fn rebuild(tree: *mut CordRepBtree) -> *mut CordRepBtree {
         unsafe {
             let mut node = Self::new_node(0);
-            let mut stack = [core::ptr::null_mut::<CordRepBtree>(); MAX_DEPTH + 1];
-            stack[0] = node;
+            let mut stack = [None::<NonNull<CordRepBtree>>; MAX_DEPTH + 1];
+            // SAFETY: `node` is a fresh, non-null node from `new_node`.
+            stack[0] = Some(NonNull::new_unchecked(node));
             Self::rebuild_into(&mut stack, tree, true);
-            for &parent in &stack {
-                if parent.is_null() {
-                    return node;
+            for parent in stack {
+                match parent {
+                    None => return node,
+                    Some(p) => node = p.as_ptr(),
                 }
-                node = parent;
             }
             unreachable!("cord-rs: rebuild stack not null terminated")
         }
@@ -2507,7 +2540,12 @@ impl CordRepBtree {
                 && let Err(msg) = Self::check_valid(tree, shallow)
             {
                 let mut dump = String::new();
-                let _ = Self::dump(tree.as_rep(), "CordRepBtree validation failed:", false, &mut dump);
+                let _ = Self::dump(
+                    NonNull::new(tree.as_rep()),
+                    "CordRepBtree validation failed:",
+                    false,
+                    &mut dump,
+                );
                 panic!("{msg}\n{dump}");
             }
             tree
@@ -2515,14 +2553,15 @@ impl CordRepBtree {
     }
 
     /// Dumps the structure of `rep` (a btree, substring, flat or external) to
-    /// `out`. Intended for debugging and testing only.
+    /// `out`, or "NULL" if `rep` is `None`. Intended for debugging and
+    /// testing only.
     ///
     /// # Safety
     ///
-    /// `rep` must be null or a pointer to a live, well-formed rep tree; it
-    /// is borrowed, not consumed.
+    /// `rep`, if `Some`, must point to a live, well-formed rep tree; it is
+    /// borrowed, not consumed.
     pub(crate) unsafe fn dump(
-        rep: *const CordRep,
+        rep: Option<NonNull<CordRep>>,
         label: &str,
         include_contents: bool,
         out: &mut dyn fmt::Write,
@@ -2533,7 +2572,10 @@ impl CordRepBtree {
                 writeln!(out, "{label}")?;
                 writeln!(out, "-----------------------------------")?;
             }
-            if rep.is_null() { writeln!(out, "NULL") } else { Self::dump_all(rep, include_contents, out, 0) }
+            match rep {
+                None => writeln!(out, "NULL"),
+                Some(rep) => Self::dump_all(rep.as_ptr(), include_contents, out, 0),
+            }
         }
     }
 

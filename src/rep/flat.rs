@@ -139,10 +139,8 @@ fn new_impl<const MAX_SIZE: usize>(mut len: usize) -> *mut CordRep {
     // with a full `CordRep` header before any other code can observe it.
     unsafe {
         let raw = std::alloc::alloc(layout);
-        if raw.is_null() {
-            std::alloc::handle_alloc_error(layout);
-        }
-        let rep = raw.cast::<CordRep>();
+        let raw = NonNull::new(raw).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+        let rep = raw.as_ptr().cast::<CordRep>();
         rep.write(CordRep::new(0, allocated_size_to_tag(size)));
         rep
     }
