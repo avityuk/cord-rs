@@ -6,6 +6,9 @@
 //! When the reference count drops to zero the owner is dropped, releasing the
 //! memory.
 
+use core::marker::PhantomData;
+use core::ptr::NonNull;
+
 use super::{CordRep, EXTERNAL, RepPtr};
 
 /// Function that drops the owner and frees the `CordRepExternalImpl`.
@@ -176,6 +179,70 @@ unsafe fn release<O>(ext: *mut CordRepExternal) {
     // `Box::into_raw` produced in `create`; dropping it runs `O`'s
     // destructor and frees the node.
     unsafe { drop(Box::from_raw(ext.cast::<CordRepExternalImpl<O>>())) }
+}
+
+/// Copy handle borrowing a live external rep for `'a`.
+///
+/// # Invariant
+///
+/// The wrapped pointer is non-null and points to a live external rep (tag
+/// == `EXTERNAL`) for the duration of `'a`, established once at the sole
+/// constructor [`from_raw`](Self::from_raw).
+#[derive(Clone, Copy)]
+pub(crate) struct ExternalRef<'a> {
+    ptr: NonNull<CordRepExternal>,
+    _marker: PhantomData<&'a CordRepExternal>,
+}
+
+impl<'a> ExternalRef<'a> {
+    /// Wraps `ptr` as an external handle borrowed for `'a`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be non-null and point to a live external rep that the
+    /// caller guarantees stays live, and unmutated other than
+    /// through its interior-mutable refcount, for `'a`.
+    #[inline]
+    pub(crate) unsafe fn from_raw(ptr: *mut CordRepExternal) -> Self {
+        debug_assert!(!ptr.is_null());
+        // SAFETY: non-null per the debug_assert above.
+        Self { ptr: unsafe { NonNull::new_unchecked(ptr) }, _marker: PhantomData }
+    }
+
+    /// This external node's `length`.
+    #[inline]
+    pub(crate) fn len(self) -> usize {
+        // SAFETY: `self`'s invariant (struct doc) guarantees `self.ptr` is a
+        // live external rep for the call's duration; this only borrows the
+        // embedded `CordRep.length` field, not the whole header.
+        unsafe { (*self.ptr.as_ptr()).rep.length }
+    }
+
+    /// The referenced bytes.
+    #[inline]
+    pub(crate) fn data(self) -> &'a [u8] {
+        let len = self.len();
+        // SAFETY: `self`'s invariant makes `self.ptr` a live external rep
+        // for `'a`; `base` was derived (in `create`) from the owner's final
+        // address and the `StableBytes` contract keeps it valid for `len`
+        // bytes for as long as the node itself, i.e. `'a`.
+        unsafe { core::slice::from_raw_parts((*self.ptr.as_ptr()).base, len) }
+    }
+
+    /// The size this external node contributes to memory-usage accounting:
+    /// the fixed per-node overhead ([`EXTERNAL_REP_SIZE`]) plus the
+    /// referenced length.
+    #[inline]
+    pub(crate) fn allocated_size(self) -> usize {
+        self.len() + EXTERNAL_REP_SIZE
+    }
+
+    /// Escape hatch to the raw pointer, for code not yet converted to the
+    /// handle types.
+    #[inline]
+    pub(crate) fn as_ptr(self) -> *mut CordRepExternal {
+        self.ptr.as_ptr()
+    }
 }
 
 #[cfg(test)]

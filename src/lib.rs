@@ -96,8 +96,8 @@ pub use bytes_impl::CordWriter;
 #[doc(hidden)]
 pub mod internal {
     use crate::Cord;
-    use crate::rep::btree::{BtreePtr, CordRepBtree, as_btree};
-    use crate::rep::{self, RepPtr};
+    use crate::rep::btree::{CordRepBtree, as_btree};
+    use crate::rep::{self, RepPtr, RepRef, RepView};
 
     /// Maximum inline size of a `Cord`.
     pub const MAX_INLINE: usize = rep::MAX_INLINE;
@@ -118,46 +118,51 @@ pub mod internal {
         cord.is_tree()
     }
 
+    /// Wraps `cord`'s root tree pointer, if any, as a borrowed [`RepRef`].
+    fn root(cord: &Cord) -> Option<RepRef<'_>> {
+        // SAFETY: `Cord::tree()` returns a pointer to a live root node kept
+        // alive by `cord` itself, so wrapping it as a `RepRef` borrowed for
+        // the lifetime of this `&Cord` reference is sound.
+        cord.tree().map(|t| unsafe { RepRef::from_raw(t) })
+    }
+
     /// Whether `cord` holds a btree.
     #[must_use]
     pub fn is_btree(cord: &Cord) -> bool {
-        // SAFETY: the tree is live.
-        cord.tree().is_some_and(|t| unsafe { t.is_btree() })
+        root(cord).is_some_and(RepRef::is_btree)
     }
 
     /// Whether `cord` holds a single flat node.
     #[must_use]
     pub fn is_flat(cord: &Cord) -> bool {
-        // SAFETY: the tree is live.
-        cord.tree().is_some_and(|t| unsafe { t.is_flat() })
+        root(cord).is_some_and(RepRef::is_flat)
     }
 
     /// Whether `cord` holds a single external node.
     #[must_use]
     pub fn is_external(cord: &Cord) -> bool {
-        // SAFETY: the tree is live.
-        cord.tree().is_some_and(|t| unsafe { t.is_external() })
+        root(cord).is_some_and(RepRef::is_external)
     }
 
     /// Whether `cord` holds a single substring node.
     #[must_use]
     pub fn is_substring(cord: &Cord) -> bool {
-        // SAFETY: the tree is live.
-        cord.tree().is_some_and(|t| unsafe { t.is_substring() })
+        root(cord).is_some_and(RepRef::is_substring)
     }
 
     /// Height of the btree, if any.
     #[must_use]
     pub fn btree_height(cord: &Cord) -> Option<usize> {
-        // SAFETY: the tree is live.
-        cord.tree().and_then(|t| unsafe { t.is_btree().then(|| as_btree(t).height()) })
+        root(cord).and_then(|rep| match rep.view() {
+            RepView::Btree(tree) => Some(tree.height()),
+            _ => None,
+        })
     }
 
     /// Reference count of the root node (0 if inline).
     #[must_use]
     pub fn root_refcount(cord: &Cord) -> usize {
-        // SAFETY: the tree is live.
-        cord.tree().map_or(0, |t| unsafe { t.ref_get() })
+        root(cord).map_or(0, RepRef::ref_get)
     }
 
     /// Validates the tree structure, returning an error message on failure.
@@ -234,7 +239,9 @@ pub mod internal {
     /// The allocated size of the flat node held by `cord`, if it holds one.
     #[must_use]
     pub fn flat_allocated_size(cord: &Cord) -> Option<usize> {
-        // SAFETY: the tree is live.
-        cord.tree().and_then(|t| unsafe { t.is_flat().then(|| rep::flat::allocated_size(t)) })
+        root(cord).and_then(|rep| match rep.view() {
+            RepView::Flat(flat) => Some(flat.allocated_size()),
+            _ => None,
+        })
     }
 }

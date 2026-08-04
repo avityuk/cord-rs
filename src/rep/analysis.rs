@@ -3,9 +3,7 @@
 
 use std::collections::HashSet;
 
-use super::btree::{BtreePtr, as_btree};
-use super::external::EXTERNAL_REP_SIZE;
-use super::{BTREE, CordRep, CordRepSubstring, FLAT, RepPtr, SUBSTRING, flat, is_data_edge};
+use super::{CordRep, CordRepSubstring, RepRef, RepView};
 
 /// Accounting mode, see [`crate::MemoryAccounting`].
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -23,53 +21,41 @@ struct Analysis {
     counted: HashSet<*const CordRep>,
 }
 
-/// A rep reference carrying the cumulative inverse refcount weight ("fair
+/// A rep handle carrying the cumulative inverse refcount weight ("fair
 /// share" fraction) of the path from the root.
 #[derive(Clone, Copy)]
-struct RepRef {
-    rep: *const CordRep,
+struct Node<'a> {
+    rep: RepRef<'a>,
     fraction: f64,
 }
 
-impl RepRef {
-    /// # Safety
-    ///
-    /// `rep` must be non-null and point to a live [`CordRep`] (its refcount
-    /// is read when `mode == Mode::FairShare`).
+impl<'a> Node<'a> {
     #[inline]
     #[expect(clippy::cast_precision_loss, reason = "fair share accounting is an approximation by design")]
-    unsafe fn new(mode: Mode, rep: *const CordRep, frac: f64) -> Self {
-        unsafe {
-            // SAFETY: `cast_mut` only changes pointer mutability, not what it
-            // points to; the count is only ever read here, never mutated.
-            let fraction = if mode == Mode::FairShare {
-                let refcount = rep.cast_mut().ref_get();
-                if refcount == 1 { frac } else { frac / refcount as f64 }
-            } else {
-                1.0
-            };
-            Self { rep, fraction }
-        }
+    fn new(mode: Mode, rep: RepRef<'a>, frac: f64) -> Self {
+        let fraction = if mode == Mode::FairShare {
+            let refcount = rep.ref_get();
+            if refcount == 1 { frac } else { frac / refcount as f64 }
+        } else {
+            1.0
+        };
+        Self { rep, fraction }
     }
 
-    /// # Safety
-    ///
-    /// `child` must be non-null and point to a live [`CordRep`] (same
-    /// contract as [`new`](Self::new)).
     #[inline]
-    unsafe fn child(self, mode: Mode, child: *const CordRep) -> Self {
-        unsafe { Self::new(mode, child, self.fraction) }
+    fn child(self, mode: Mode, child: RepRef<'a>) -> Self {
+        Self::new(mode, child, self.fraction)
     }
 }
 
 impl Analysis {
     #[expect(clippy::cast_precision_loss, reason = "fair share accounting is an approximation by design")]
-    fn add(&mut self, size: usize, rep: RepRef) {
+    fn add(&mut self, size: usize, node: Node<'_>) {
         match self.mode {
             Mode::Total => self.total += size as f64,
-            Mode::FairShare => self.total += size as f64 * rep.fraction,
+            Mode::FairShare => self.total += size as f64 * node.fraction,
             Mode::TotalMorePrecise => {
-                if self.counted.insert(rep.rep) {
+                if self.counted.insert(node.rep.as_ptr().cast_const()) {
                     self.total += size as f64;
                 }
             }
@@ -78,48 +64,39 @@ impl Analysis {
 
     /// External reps are assumed heap allocated at their exact size.
     ///
-    /// # Safety
-    ///
-    /// `rep.rep` must be non-null and point to a live data edge
-    /// (`is_data_edge(rep.rep)`: a FLAT, EXTERNAL, or SUBSTRING of one).
-    unsafe fn analyze_data_edge(&mut self, mut rep: RepRef) {
-        unsafe {
-            // SAFETY: `flat::allocated_size` requires a live flat node, which
-            // the `tag >= FLAT` check below establishes.
-            debug_assert!(is_data_edge(rep.rep));
-            if (*rep.rep).tag == SUBSTRING {
-                self.add(core::mem::size_of::<CordRepSubstring>(), rep);
-                rep = rep.child(self.mode, (*rep.rep.cast::<CordRepSubstring>()).child);
-            }
-            let size = if (*rep.rep).tag >= FLAT {
-                flat::allocated_size(rep.rep.cast_mut())
-            } else {
-                (*rep.rep).length + EXTERNAL_REP_SIZE
-            };
-            self.add(size, rep);
+    /// Requires `node.rep.is_data_edge()` (a FLAT, EXTERNAL, or SUBSTRING of
+    /// one).
+    fn analyze_data_edge(&mut self, mut node: Node<'_>) {
+        debug_assert!(node.rep.is_data_edge());
+        if let RepView::Substring { child, .. } = node.rep.view() {
+            self.add(core::mem::size_of::<CordRepSubstring>(), node);
+            node = node.child(self.mode, child);
         }
+        let size = match node.rep.view() {
+            RepView::Flat(flat) => flat.allocated_size(),
+            RepView::External(ext) => ext.allocated_size(),
+            _ => unreachable!("cord-rs: data edge must resolve to a flat or external node"),
+        };
+        self.add(size, node);
     }
 
-    /// # Safety
-    ///
-    /// `rep.rep` must be non-null and point to a live `CordRepBtree` (tag
-    /// `BTREE`).
-    unsafe fn analyze_btree(&mut self, rep: RepRef) {
-        unsafe {
-            // SAFETY: `tree.edges()` yields either live btree children of one
-            // lesser height, or live data edges, by btree well-formedness —
-            // satisfying `analyze_btree`'s and `analyze_data_edge`'s own
-            // contracts for the recursive calls below.
-            self.add(core::mem::size_of::<super::btree::CordRepBtree>(), rep);
-            let tree = as_btree(rep.rep.cast_mut());
-            if tree.height() > 0 {
-                for edge in tree.edges() {
-                    self.analyze_btree(rep.child(self.mode, edge));
-                }
-            } else {
-                for edge in tree.edges() {
-                    self.analyze_data_edge(rep.child(self.mode, edge));
-                }
+    /// Requires `node.rep.is_btree()`.
+    fn analyze_btree(&mut self, node: Node<'_>) {
+        self.add(core::mem::size_of::<super::btree::CordRepBtree>(), node);
+        let RepView::Btree(tree) = node.rep.view() else {
+            unreachable!("cord-rs: analyze_btree requires a btree node")
+        };
+        // The recursive calls' contracts (`analyze_btree`'s and
+        // `analyze_data_edge`'s own) are satisfied by btree well-formedness:
+        // `tree.edges()` yields either live btree children of one lesser
+        // height, or live data edges.
+        if tree.height() > 0 {
+            for edge in tree.edges() {
+                self.analyze_btree(node.child(self.mode, edge));
+            }
+        } else {
+            for edge in tree.edges() {
+                self.analyze_data_edge(node.child(self.mode, edge));
             }
         }
     }
@@ -129,22 +106,16 @@ impl Analysis {
         clippy::cast_sign_loss,
         reason = "the total is a non-negative approximation of a byte count"
     )]
-    /// # Safety
-    ///
-    /// `rep` must be non-null and point to a live [`CordRep`] tree (a data
-    /// edge or a `CordRepBtree`).
-    unsafe fn run(mode: Mode, rep: *const CordRep) -> usize {
-        unsafe {
-            let mut analysis = Analysis { mode, total: 0.0, counted: HashSet::new() };
-            let repref = RepRef::new(mode, rep, 1.0);
-            if is_data_edge(repref.rep) {
-                analysis.analyze_data_edge(repref);
-            } else {
-                debug_assert_eq!((*repref.rep).tag, BTREE);
-                analysis.analyze_btree(repref);
-            }
-            analysis.total as usize
+    fn run(mode: Mode, rep: RepRef<'_>) -> usize {
+        let mut analysis = Analysis { mode, total: 0.0, counted: HashSet::new() };
+        let node = Node::new(mode, rep, 1.0);
+        if rep.is_data_edge() {
+            analysis.analyze_data_edge(node);
+        } else {
+            debug_assert!(rep.is_btree());
+            analysis.analyze_btree(node);
         }
+        analysis.total as usize
     }
 }
 
@@ -156,7 +127,12 @@ impl Analysis {
 /// `rep` must be non-null and point to a live [`CordRep`] tree (a data edge
 /// or a `CordRepBtree`).
 pub(crate) unsafe fn estimated_memory_usage(rep: *const CordRep) -> usize {
-    unsafe { Analysis::run(Mode::Total, rep) }
+    // SAFETY: `rep` is a live rep tree per this fn's contract, which is
+    // exactly `RepRef::from_raw`'s precondition; `Analysis::run` neither
+    // adopts nor transfers a reference, so `rep`'s cast to `*mut` here is
+    // just a pointer reinterpretation (the resulting `RepRef` is read-only).
+    let rep = unsafe { RepRef::from_raw(rep.cast_mut()) };
+    Analysis::run(Mode::Total, rep)
 }
 
 /// Like [`estimated_memory_usage`] but counting each distinct node once.
@@ -165,7 +141,9 @@ pub(crate) unsafe fn estimated_memory_usage(rep: *const CordRep) -> usize {
 ///
 /// Same contract as [`estimated_memory_usage`].
 pub(crate) unsafe fn more_precise_memory_usage(rep: *const CordRep) -> usize {
-    unsafe { Analysis::run(Mode::TotalMorePrecise, rep) }
+    // SAFETY: see `estimated_memory_usage`.
+    let rep = unsafe { RepRef::from_raw(rep.cast_mut()) };
+    Analysis::run(Mode::TotalMorePrecise, rep)
 }
 
 /// Approximate bytes held by `rep` weighted by the sharing ratio of each node.
@@ -174,5 +152,7 @@ pub(crate) unsafe fn more_precise_memory_usage(rep: *const CordRep) -> usize {
 ///
 /// Same contract as [`estimated_memory_usage`].
 pub(crate) unsafe fn estimated_fair_share_memory_usage(rep: *const CordRep) -> usize {
-    unsafe { Analysis::run(Mode::FairShare, rep) }
+    // SAFETY: see `estimated_memory_usage`.
+    let rep = unsafe { RepRef::from_raw(rep.cast_mut()) };
+    Analysis::run(Mode::FairShare, rep)
 }

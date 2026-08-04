@@ -10,7 +10,9 @@
 //! Port of abseil's `cord_rep_flat.h`.
 
 use core::alloc::Layout;
+use core::marker::PhantomData;
 use core::mem::{align_of, offset_of};
+use core::ptr::NonNull;
 
 use super::{CordRep, FLAT, MAX_FLAT_TAG, RepPtr, small_u8};
 
@@ -255,6 +257,75 @@ pub(crate) unsafe fn capacity(rep: *mut CordRep) -> usize {
 #[inline]
 pub(crate) unsafe fn allocated_size(rep: *mut CordRep) -> usize {
     unsafe { tag_to_allocated_size(rep.tag()) }
+}
+
+/// Copy handle borrowing a live flat rep for `'a`.
+///
+/// # Invariant
+///
+/// The wrapped pointer is non-null and points to a live flat rep (tag in
+/// `FLAT..=MAX_FLAT_TAG`) for the duration of `'a`, established once at the
+/// sole constructor [`from_raw`](Self::from_raw).
+#[derive(Clone, Copy)]
+pub(crate) struct FlatRef<'a> {
+    ptr: NonNull<CordRep>,
+    _marker: PhantomData<&'a CordRep>,
+}
+
+impl<'a> FlatRef<'a> {
+    /// Wraps `ptr` as a flat handle borrowed for `'a`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be non-null and point to a live flat rep (tag in
+    /// `FLAT..=MAX_FLAT_TAG`) that the caller guarantees stays live, and unmutated other than
+    /// through its interior-mutable refcount, for `'a`.
+    #[inline]
+    pub(crate) unsafe fn from_raw(ptr: *mut CordRep) -> Self {
+        debug_assert!(!ptr.is_null());
+        // SAFETY: non-null per the debug_assert above.
+        Self { ptr: unsafe { NonNull::new_unchecked(ptr) }, _marker: PhantomData }
+    }
+
+    /// This flat's `length`.
+    #[inline]
+    pub(crate) fn len(self) -> usize {
+        // SAFETY: `self`'s invariant (struct doc) guarantees `self.ptr` is a
+        // live flat rep for the call's duration.
+        unsafe { self.ptr.as_ptr().length() }
+    }
+
+    /// This flat's payload capacity.
+    #[inline]
+    pub(crate) fn capacity(self) -> usize {
+        // SAFETY: see `len`.
+        unsafe { capacity(self.ptr.as_ptr()) }
+    }
+
+    /// This flat's allocated size (payload + overhead).
+    #[inline]
+    pub(crate) fn allocated_size(self) -> usize {
+        // SAFETY: see `len`.
+        unsafe { allocated_size(self.ptr.as_ptr()) }
+    }
+
+    /// The initialized prefix of this flat's payload (`len()` bytes).
+    #[inline]
+    pub(crate) fn data(self) -> &'a [u8] {
+        let len = self.len();
+        // SAFETY: `self`'s invariant makes `self.ptr` a live flat rep for
+        // `'a`, so the pointer `data` derives from the allocation is valid
+        // for reads over the whole capacity, which is at least `len` (a
+        // flat's `length` never exceeds its capacity).
+        unsafe { core::slice::from_raw_parts(data(self.ptr.as_ptr()), len) }
+    }
+
+    /// Escape hatch to the raw pointer, for code not yet converted to the
+    /// handle types.
+    #[inline]
+    pub(crate) fn as_ptr(self) -> *mut CordRep {
+        self.ptr.as_ptr()
+    }
 }
 
 #[cfg(test)]

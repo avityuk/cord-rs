@@ -14,6 +14,8 @@
 //! Port of abseil's `cord_rep_btree.{h,cc}`.
 
 use core::fmt;
+use core::marker::PhantomData;
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
@@ -688,6 +690,88 @@ pub(crate) unsafe fn as_btree(rep: *mut CordRep) -> *mut CordRepBtree {
     unsafe {
         debug_assert!(rep.is_btree());
         rep.cast()
+    }
+}
+
+/// Copy handle borrowing a live btree node for `'a`.
+///
+/// Read-only shell for this phase: mutation and deep tree surgery stay on
+/// [`BtreePtr`] / raw `*mut CordRepBtree` (see the [module doc](self) on why
+/// that stays deliberately unsafe — `StackOperations` tracks share-depth
+/// dynamically, which a static witness type can't express). Fleshed out
+/// with the rest of `BtreePtr`'s read accessors in a later phase.
+///
+/// # Invariant
+///
+/// The wrapped pointer is non-null and points to a live, well-formed
+/// `CordRepBtree` (see [`BtreePtr`]'s trait-level `# Safety`) for the
+/// duration of `'a`, established once at the sole constructor
+/// [`from_raw`](Self::from_raw).
+#[derive(Clone, Copy)]
+pub(crate) struct BtreeRef<'a> {
+    ptr: NonNull<CordRepBtree>,
+    _marker: PhantomData<&'a CordRepBtree>,
+}
+
+impl<'a> BtreeRef<'a> {
+    /// Wraps `ptr` as a btree handle borrowed for `'a`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be non-null and point to a live, well-formed
+    /// `CordRepBtree` that the caller guarantees stays live, and unmutated other than
+    /// through its interior-mutable refcount, for `'a`.
+    #[inline]
+    pub(crate) unsafe fn from_raw(ptr: *mut CordRepBtree) -> Self {
+        debug_assert!(!ptr.is_null());
+        // SAFETY: non-null per the debug_assert above.
+        Self { ptr: unsafe { NonNull::new_unchecked(ptr) }, _marker: PhantomData }
+    }
+
+    /// This node's `height`.
+    #[inline]
+    pub(crate) fn height(self) -> usize {
+        // SAFETY: `self`'s invariant (struct doc) guarantees `self.ptr` is a
+        // live, well-formed btree node for the call's duration.
+        unsafe { self.ptr.as_ptr().height() }
+    }
+
+    /// This (sub)tree's total length.
+    #[inline]
+    pub(crate) fn len(self) -> usize {
+        // SAFETY: see `height`.
+        unsafe { self.ptr.as_ptr().length() }
+    }
+
+    /// Escape hatch to the raw pointer, for code not yet converted to the
+    /// handle types.
+    #[inline]
+    pub(crate) fn as_ptr(self) -> *mut CordRepBtree {
+        self.ptr.as_ptr()
+    }
+
+    /// This handle reinterpreted as a plain [`super::RepRef`].
+    #[inline]
+    pub(crate) fn as_rep_ref(self) -> super::RepRef<'a> {
+        // SAFETY: `self`'s invariant guarantees `self.ptr.as_rep()` (a plain
+        // reinterpreting cast, see `BtreePtr::as_rep`) is a live rep for
+        // `'a`.
+        unsafe { super::RepRef::from_raw(self.ptr.as_ptr().as_rep()) }
+    }
+
+    /// Iterates the live `[begin, end)` edges of this node: children of one
+    /// lesser height if `height() > 0`, otherwise data edges.
+    #[inline]
+    pub(crate) fn edges(self) -> impl Iterator<Item = super::RepRef<'a>> {
+        let ptr = self.ptr.as_ptr();
+        // SAFETY: `self`'s invariant makes `ptr` a live, well-formed node
+        // for `'a`, satisfying `BtreePtr::edges`'s contract.
+        unsafe { ptr.edges() }.map(|edge| {
+            // SAFETY: by the well-formedness `BtreePtr::edges` relies on,
+            // every yielded edge is a live rep for as long as the parent
+            // node, i.e. for `'a`.
+            unsafe { super::RepRef::from_raw(edge) }
+        })
     }
 }
 

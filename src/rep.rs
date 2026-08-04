@@ -33,6 +33,8 @@
 // Parts of the rep API are only exercised by the test suites and benchmarks.
 #![allow(dead_code)]
 
+use core::marker::PhantomData;
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 pub(crate) mod analysis;
@@ -43,6 +45,8 @@ mod btree_tests;
 mod data_edge_tests;
 pub(crate) mod external;
 pub(crate) mod flat;
+#[cfg(test)]
+mod handle_tests;
 pub(crate) mod navigator;
 #[cfg(test)]
 mod navigator_tests;
@@ -603,6 +607,270 @@ pub(crate) unsafe fn edge_data<'a>(mut edge: *const CordRep) -> &'a [u8] {
         };
         core::slice::from_raw_parts(base.add(offset), length)
     }
+}
+
+// --- Typed handles -----------------------------------------------------
+
+/// Copy handle borrowing a live rep for `'a`.
+///
+/// Replaces ad hoc `*mut CordRep` + [`RepPtr`] call sites with a type that
+/// carries its liveness invariant once, at construction, instead of at every
+/// call site. `self`'s pointer is never turned into a `&CordRep` (a
+/// whole-header reference); every method below reads through the raw
+/// pointer or scopes a borrow to just the (interior-mutable) refcount field,
+/// exactly like [`RepPtr`]'s impl for `*mut CordRep` already does.
+///
+/// # Invariant
+///
+/// The wrapped pointer is non-null and points to a live, well-formed rep
+/// (directly, or as the header of a derived flat, external, substring or
+/// btree node; see the [module doc](self)) that is not mutated — other than
+/// through its interior-mutable refcount — for the duration of `'a` (this
+/// is what lets [`data`](Self::data) hand out a `&'a [u8]`).
+/// Established once, at the sole constructor [`from_raw`](Self::from_raw);
+/// every other method on this type is safe because it needs nothing more
+/// than this invariant.
+#[derive(Clone, Copy)]
+pub(crate) struct RepRef<'a> {
+    ptr: NonNull<CordRep>,
+    _marker: PhantomData<&'a CordRep>,
+}
+
+impl<'a> RepRef<'a> {
+    /// Wraps `ptr` as a handle borrowed for `'a`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be non-null and point to a live, well-formed rep (directly,
+    /// or as the header of a derived flat, external, substring or btree
+    /// node). The caller must guarantee — by holding, or borrowing, a
+    /// reference on it — that it stays live, and is not mutated other than
+    /// through its interior-mutable refcount, for `'a`.
+    #[inline]
+    pub(crate) unsafe fn from_raw(ptr: *mut CordRep) -> Self {
+        debug_assert!(!ptr.is_null());
+        // SAFETY: non-null per the debug_assert above (and per this fn's own
+        // precondition on `ptr` in release builds).
+        Self { ptr: unsafe { NonNull::new_unchecked(ptr) }, _marker: PhantomData }
+    }
+
+    /// This handle's `length`.
+    #[inline]
+    pub(crate) fn len(self) -> usize {
+        // SAFETY: `self`'s invariant (struct doc) guarantees `self.ptr` is a
+        // live rep for the call's duration.
+        unsafe { self.ptr.as_ptr().length() }
+    }
+
+    /// This handle's tag byte.
+    #[inline]
+    pub(crate) fn tag(self) -> u8 {
+        // SAFETY: see `len`.
+        unsafe { self.ptr.as_ptr().tag() }
+    }
+
+    /// `true` if this handle is a [`CordRepSubstring`].
+    #[inline]
+    pub(crate) fn is_substring(self) -> bool {
+        self.tag() == SUBSTRING
+    }
+
+    /// `true` if this handle is a [`btree::CordRepBtree`].
+    #[inline]
+    pub(crate) fn is_btree(self) -> bool {
+        self.tag() == BTREE
+    }
+
+    /// `true` if this handle is a [`external::CordRepExternal`].
+    #[inline]
+    pub(crate) fn is_external(self) -> bool {
+        self.tag() == EXTERNAL
+    }
+
+    /// `true` if this handle is a flat node.
+    #[inline]
+    pub(crate) fn is_flat(self) -> bool {
+        self.tag() >= FLAT
+    }
+
+    /// `true` if this handle is a data edge: a flat, external, or substring
+    /// of one. See [`is_data_edge`].
+    #[inline]
+    pub(crate) fn is_data_edge(self) -> bool {
+        // SAFETY: see `len`.
+        unsafe { is_data_edge(self.ptr.as_ptr()) }
+    }
+
+    /// `true` if this handle's reference count is exactly one.
+    #[inline]
+    pub(crate) fn ref_is_one(self) -> bool {
+        // SAFETY: see `len`.
+        unsafe { self.ptr.as_ptr().ref_is_one() }
+    }
+
+    /// This handle's current reference count.
+    #[inline]
+    pub(crate) fn ref_get(self) -> usize {
+        // SAFETY: see `len`.
+        unsafe { self.ptr.as_ptr().ref_get() }
+    }
+
+    /// The bytes referenced by this data edge. Requires
+    /// [`is_data_edge`](Self::is_data_edge).
+    ///
+    /// The bounded-lifetime replacement for the free function [`edge_data`],
+    /// whose returned `&'a [u8]` has an inferred, unconstrained lifetime at
+    /// its call sites.
+    #[inline]
+    pub(crate) fn data(self) -> &'a [u8] {
+        // SAFETY: `self`'s invariant makes `self.ptr` a live rep for `'a`;
+        // `edge_data` re-checks `is_data_edge` itself (debug-only), and the
+        // same invariant keeps the referenced bytes valid and unmutated for
+        // `'a`.
+        unsafe { edge_data(self.ptr.as_ptr()) }
+    }
+
+    /// The checked, typed view of this handle: one tag read, then a
+    /// dispatch to the concrete node kind (mirrors [`destroy`]'s dispatch).
+    #[inline]
+    pub(crate) fn view(self) -> RepView<'a> {
+        let ptr = self.ptr.as_ptr();
+        match self.tag() {
+            BTREE => RepView::Btree(unsafe { btree::BtreeRef::from_raw(ptr.cast()) }),
+            SUBSTRING => {
+                let sub: *mut CordRepSubstring = ptr.cast();
+                // SAFETY: tag == SUBSTRING guarantees this cast is sound
+                // (the module's tag invariant); the substring holds a
+                // reference on `child`, keeping it live for exactly as long
+                // as `self`, i.e. `'a`.
+                let (start, child) = unsafe { ((*sub).start, (*sub).child) };
+                RepView::Substring { start, child: unsafe { RepRef::from_raw(child) } }
+            }
+            EXTERNAL => RepView::External(unsafe { external::ExternalRef::from_raw(ptr.cast()) }),
+            tag if tag >= FLAT => RepView::Flat(unsafe { flat::FlatRef::from_raw(ptr) }),
+            tag => unreachable!("cord-rs: unexpected rep tag {tag}"),
+        }
+    }
+
+    /// Takes a fresh, owned reference on this handle's rep.
+    ///
+    /// Safe because `self`'s invariant already guarantees liveness, which is
+    /// exactly [`ref_inc`](RepPtr::ref_inc)'s precondition.
+    #[inline]
+    pub(crate) fn to_owned(self) -> OwnedRep {
+        let ptr = self.ptr.as_ptr();
+        // SAFETY: `self`'s invariant makes `ptr` live; incrementing its
+        // count and adopting the new reference into `OwnedRep` is sound.
+        unsafe {
+            ptr.ref_inc();
+            OwnedRep::from_raw(ptr)
+        }
+    }
+
+    /// Escape hatch to the raw pointer, for code not yet converted to the
+    /// handle types.
+    #[inline]
+    pub(crate) fn as_ptr(self) -> *mut CordRep {
+        self.ptr.as_ptr()
+    }
+}
+
+/// RAII owner of exactly one reference on a rep.
+///
+/// [`Drop`] unrefs it; [`into_raw`](Self::into_raw) transfers the owned
+/// reference back out to the crate's raw-pointer adopt/transfer convention
+/// (see the [module doc](self)) for code not yet converted to this type.
+pub(crate) struct OwnedRep {
+    ptr: NonNull<CordRep>,
+}
+
+impl OwnedRep {
+    /// Adopts one reference on `ptr`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be non-null and point to a live, well-formed rep, and the
+    /// caller must be transferring (adopting away) exactly one reference it
+    /// owns on `ptr` to the returned `OwnedRep`, per the [module's
+    /// reference-counting convention](self).
+    #[inline]
+    pub(crate) unsafe fn from_raw(ptr: *mut CordRep) -> Self {
+        debug_assert!(!ptr.is_null());
+        // SAFETY: non-null per the debug_assert above.
+        Self { ptr: unsafe { NonNull::new_unchecked(ptr) } }
+    }
+
+    /// Transfers the owned reference back out as a raw pointer, per the
+    /// crate's adopt/transfer convention: the caller becomes responsible for
+    /// eventually releasing it (via [`unref`] or another `OwnedRep`).
+    #[inline]
+    pub(crate) fn into_raw(self) -> *mut CordRep {
+        // `ManuallyDrop` suppresses `Drop::drop` (which would unref the very
+        // reference this fn is transferring out) while still moving out of
+        // `self`.
+        let this = core::mem::ManuallyDrop::new(self);
+        this.ptr.as_ptr()
+    }
+
+    /// Borrows this owned reference as a [`RepRef`] tied to the borrow.
+    #[inline]
+    pub(crate) fn as_ref(&self) -> RepRef<'_> {
+        // SAFETY: `self` owns a live reference on `self.ptr`, which outlives
+        // the `'_` borrow of `self` taken here.
+        unsafe { RepRef::from_raw(self.ptr.as_ptr()) }
+    }
+
+    /// This rep's `length`.
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        self.as_ref().len()
+    }
+}
+
+impl Drop for OwnedRep {
+    #[inline]
+    fn drop(&mut self) {
+        // SAFETY: `self` owns exactly one reference on `self.ptr` (struct
+        // invariant), which this call relinquishes exactly once.
+        unsafe { unref(self.ptr.as_ptr()) };
+    }
+}
+
+impl Clone for OwnedRep {
+    #[inline]
+    fn clone(&self) -> Self {
+        let ptr = self.ptr.as_ptr();
+        // SAFETY: `self` proves `ptr` is live, so incrementing its count and
+        // adopting the fresh reference into a new `OwnedRep` is sound.
+        unsafe {
+            ptr.ref_inc();
+            Self::from_raw(ptr)
+        }
+    }
+}
+
+// SAFETY: mirrors `Cord`'s own `unsafe impl Send`/`Sync` (see cord.rs):
+// nodes shared between cords/handles are immutable, reference counts are
+// atomic, and external owners are required to be `Send + Sync`.
+unsafe impl Send for OwnedRep {}
+// SAFETY: see `Send` above.
+unsafe impl Sync for OwnedRep {}
+
+/// Checked, typed view of a rep: the result of [`RepRef::view`].
+pub(crate) enum RepView<'a> {
+    /// A [`btree::CordRepBtree`] node.
+    Btree(btree::BtreeRef<'a>),
+    /// A [`CordRepSubstring`].
+    Substring {
+        /// Starting offset of the substring inside `child`.
+        start: usize,
+        /// The referenced flat or external node.
+        child: RepRef<'a>,
+    },
+    /// A [`external::CordRepExternal`] node.
+    External(external::ExternalRef<'a>),
+    /// A flat node.
+    Flat(flat::FlatRef<'a>),
 }
 
 // --- Small memmove ---------------------------------------------------------
