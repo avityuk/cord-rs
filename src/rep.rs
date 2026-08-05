@@ -445,6 +445,73 @@ pub(crate) struct CordRepSubstring {
     pub(crate) child: *mut CordRep,
 }
 
+/// Core substring-node constructor, shared by every substring-creating
+/// function in the rep layer ([`CordRepSubstring::create`],
+/// [`CordRepSubstring::substring`], [`btree`]'s `make_substring`/
+/// `make_substring_from`/`resize_edge`, and [`navigator`]'s `substring`/
+/// `substring_from`): builds a `CordRepSubstring` covering `n` bytes starting
+/// `offset` bytes into `rep`, following (at most) one level of
+/// substring-of-substring flattening exactly like abseil's
+/// `CordRepBtree::MakeSubstring` does. This function never applies the
+/// `n == 0` / `n == rep.length()` / `offset == 0` shortcuts its callers rely
+/// on — it always allocates — so those load-bearing early returns stay in
+/// each thin wrapper, at the call site that knows whether they apply.
+///
+/// If `ADOPT`, the caller donates its reference on `rep`: it is consumed
+/// (and, if flattening walks to a child, immediately re-established there
+/// via `ref_rep` before the substring wrapper's own reference is released,
+/// so the child never dips to zero refs in between) and installed as the new
+/// node's `child` with no further `ref_rep`. If `ADOPT` is `false`, the
+/// caller keeps its own reference on `rep`; the new node's `child` carries
+/// an independently acquired reference (`ref_rep`), taken after flattening.
+///
+/// # Safety
+///
+/// `rep` must be a non-null pointer to a live flat, external, or substring
+/// node with `n != 0 && offset + n <= rep.length()`. If `ADOPT`, the caller
+/// must be transferring exactly one reference it owns on `rep`.
+#[expect(
+    clippy::inline_always,
+    reason = "six formerly straight-line callers; interleaved benching showed a \
+              measurable partial-inlining cost with plain #[inline]"
+)]
+#[inline(always)]
+unsafe fn substring_impl<const ADOPT: bool>(
+    mut rep: *mut CordRep,
+    mut offset: usize,
+    n: usize,
+) -> *mut CordRep {
+    // SAFETY: `rep` is a live rep per this fn's contract. If it is a
+    // SUBSTRING, its tag guarantees the cast, and its `child` field is live
+    // because the substring holds a reference on it; in the `ADOPT` case we
+    // take a fresh reference on `child` *before* releasing the substring
+    // wrapper's own reference via `unref`, so `child` stays referenced
+    // throughout even if that `unref` frees the wrapper. The final
+    // `Box::new` allocation and initialization is ordinary safe code —
+    // storing `child`'s pointer value doesn't dereference it.
+    unsafe {
+        debug_assert!(!rep.is_null());
+        debug_assert!(n != 0);
+        debug_assert!(offset + n <= rep.length());
+        debug_assert!(offset != 0 || n != rep.length());
+        if rep.tag() == SUBSTRING {
+            let sub: *mut CordRepSubstring = rep.cast();
+            offset += (*sub).start;
+            if ADOPT {
+                let child = ref_rep((*sub).child);
+                unref(rep);
+                rep = child;
+            } else {
+                rep = (*sub).child;
+            }
+        }
+        debug_assert!(rep.is_external() || rep.is_flat());
+        let child = if ADOPT { rep } else { ref_rep(rep) };
+        Box::into_raw(Box::new(CordRepSubstring { rep: CordRep::new(n, SUBSTRING), start: offset, child }))
+            .cast()
+    }
+}
+
 impl CordRepSubstring {
     /// Creates a substring on `child`, adopting a reference on `child`.
     ///
@@ -471,10 +538,12 @@ impl CordRepSubstring {
                 "cord-rs: unexpected node type {} for substring child",
                 child.tag()
             );
+            // `child`'s contract already rules out SUBSTRING, so
+            // `substring_impl`'s flatten branch is dead code here and this
+            // is exactly `create`'s original unconditional
+            // `Box::into_raw(Box::new(CordRepSubstring { .. }))`.
+            substring_impl::<true>(child, pos, n).cast()
         }
-        // Storing `child`'s pointer value doesn't dereference it, so
-        // constructing and boxing the new node is ordinary safe code.
-        Box::into_raw(Box::new(CordRepSubstring { rep: CordRep::new(n, SUBSTRING), start: pos, child }))
     }
 
     /// Creates a substring of `rep` **without** adopting a reference on `rep`.
@@ -493,15 +562,7 @@ impl CordRepSubstring {
     /// already held, and the new substring (or the `ref_rep(rep)` result)
     /// carries its own, independently acquired reference.
     #[inline]
-    pub(crate) unsafe fn substring(mut rep: *mut CordRep, mut pos: usize, n: usize) -> *mut CordRep {
-        // SAFETY: `rep` is a live rep per this fn's contract. `n ==
-        // rep.length()` returns a fresh reference via `ref_rep`. Otherwise,
-        // when `rep` is itself a SUBSTRING (a valid cast because its tag
-        // says so), we walk to its `child` and adjust `pos`, mirroring
-        // abseil's substring-of-substring flattening; `child` is guaranteed
-        // live because the substring being read holds a reference on it.
-        // The final `ref_rep(rep)` acquires the independent reference the
-        // new node needs before it is boxed and returned.
+    pub(crate) unsafe fn substring(rep: *mut CordRep, pos: usize, n: usize) -> *mut CordRep {
         unsafe {
             debug_assert!(!rep.is_null());
             debug_assert!(n != 0);
@@ -510,17 +571,7 @@ impl CordRepSubstring {
             if n == rep.length() {
                 return ref_rep(rep);
             }
-            if rep.is_substring() {
-                let sub: *mut CordRepSubstring = rep.cast();
-                pos += (*sub).start;
-                rep = (*sub).child;
-            }
-            let substring = Box::new(CordRepSubstring {
-                rep: CordRep::new(n, SUBSTRING),
-                start: pos,
-                child: ref_rep(rep),
-            });
-            Box::into_raw(substring).cast()
+            substring_impl::<false>(rep, pos, n)
         }
     }
 

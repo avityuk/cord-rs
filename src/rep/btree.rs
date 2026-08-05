@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
     BTREE, CordRep, CordRepSubstring, EXTERNAL, FLAT, RepPtr, SUBSTRING, edge_data, external, flat,
-    is_data_edge, ref_rep, small_u8, unref,
+    is_data_edge, ref_rep, small_u8, substring_impl, unref,
 };
 
 /// Converts a node height to the signed form used by the copy / sub-tree
@@ -137,39 +137,12 @@ pub(crate) fn is_exhaustive_validation_enabled() -> bool {
 }
 
 // --- Substring helpers (consuming variants) -------------------------------
-
-/// Creates a substring of `rep` **adopting** a reference on `rep`.
-/// Requires `n != 0 && offset + n <= rep.length && (offset != 0 || n != length)`.
-///
-/// # Safety
-///
-/// `rep` must be a non-null pointer to a live flat, external, or substring
-/// node, satisfying `n != 0 && offset + n <= rep.length() && (offset != 0 ||
-/// n != rep.length())`. The caller donates its reference on `rep` (it is
-/// consumed: unwrapped and re-referenced onto its child if `rep` is itself a
-/// substring, otherwise incorporated directly as the new substring's
-/// child); the returned pointer carries the freshly allocated node's own
-/// reference back to the caller.
-unsafe fn create_substring(mut rep: *mut CordRep, mut offset: usize, n: usize) -> *mut CordRep {
-    unsafe {
-        debug_assert!(n != 0);
-        debug_assert!(offset + n <= rep.length());
-        debug_assert!(offset != 0 || n != rep.length());
-        if rep.tag() == SUBSTRING {
-            let substring: *mut CordRepSubstring = rep.cast();
-            offset += (*substring).start;
-            rep = ref_rep((*substring).child);
-            unref(substring.cast());
-        }
-        debug_assert!(rep.is_external() || rep.is_flat());
-        Box::into_raw(Box::new(CordRepSubstring {
-            rep: CordRep::new(n, SUBSTRING),
-            start: offset,
-            child: rep,
-        }))
-        .cast()
-    }
-}
+//
+// Both wrappers below delegate their actual node construction (and the
+// substring-of-substring flattening) to `super::substring_impl::<true>`, the
+// one core substring constructor shared crate-wide; see its doc for the
+// full list of callers and the `ADOPT` semantics. Each wrapper keeps only
+// the shortcut it is responsible for.
 
 /// Returns `rep` if `n == rep.length`, null (unreffing `rep`) if `n == 0`,
 /// else a substring. Adopts a reference on `rep`.
@@ -190,7 +163,7 @@ unsafe fn make_substring(rep: *mut CordRep, offset: usize, n: usize) -> *mut Cor
             unref(rep);
             return core::ptr::null_mut();
         }
-        create_substring(rep, offset, n)
+        substring_impl::<true>(rep, offset, n)
     }
 }
 
@@ -207,7 +180,7 @@ unsafe fn make_substring_from(rep: *mut CordRep, offset: usize) -> *mut CordRep 
         if offset == 0 {
             return rep;
         }
-        create_substring(rep, offset, rep.length() - offset)
+        substring_impl::<true>(rep, offset, rep.length() - offset)
     }
 }
 
@@ -237,7 +210,7 @@ unsafe fn resize_edge(edge: *mut CordRep, length: usize, is_mutable: bool) -> *m
             edge.set_length(length);
             return edge;
         }
-        create_substring(edge, 0, length)
+        substring_impl::<true>(edge, 0, length)
     }
 }
 
@@ -1611,6 +1584,36 @@ impl CordRepBtree {
         }
     }
 
+    /// Allocates one flat sized for `data` (plus `extra` header bytes),
+    /// copies up to its capacity from `data`'s consumed end into it (per
+    /// `IS_BACK`, see [`consume_copy`]), and installs it as `this`'s edge
+    /// `idx`. Returns the copied length and the remainder of `data`.
+    ///
+    /// The shared body of the four (per `new_leaf`/`add_data_to_leaf` ×
+    /// `IS_BACK`) flat-fill loops; the cursor bookkeeping and loop-exit
+    /// conditions, which differ between the four, stay in each caller.
+    ///
+    /// # Safety
+    ///
+    /// `this` must be a non-null pointer to a live, well-formed, uniquely
+    /// owned btree node with `idx < this.capacity()`. `data` must be
+    /// non-empty.
+    #[inline]
+    unsafe fn fill_one_flat<const IS_BACK: bool>(
+        this: *mut CordRepBtree,
+        idx: usize,
+        data: &[u8],
+        extra: usize,
+    ) -> (usize, &[u8]) {
+        unsafe {
+            let f = flat::new(data.len() + extra);
+            let n = data.len().min(flat::capacity(f));
+            f.set_length(n);
+            this.set_edge_ptr(idx, f);
+            (n, consume_copy::<IS_BACK>(flat::data(f), data, n))
+        }
+    }
+
     /// Creates a new leaf containing as much of `data` as possible.
     ///
     /// # Safety
@@ -1625,13 +1628,10 @@ impl CordRepBtree {
             if IS_BACK {
                 let mut end = 0;
                 while !data.is_empty() && end != cap {
-                    let f = flat::new(data.len() + extra);
-                    let n = data.len().min(flat::capacity(f));
-                    f.set_length(n);
+                    let n;
+                    (n, data) = Self::fill_one_flat::<IS_BACK>(leaf, end, data, extra);
                     length += n;
-                    leaf.set_edge_ptr(end, f);
                     end += 1;
-                    data = consume_copy::<IS_BACK>(flat::data(f), data, n);
                 }
                 leaf.set_length(length);
                 leaf.set_end(end);
@@ -1639,13 +1639,10 @@ impl CordRepBtree {
                 let mut begin = cap;
                 leaf.set_end(cap);
                 while !data.is_empty() && begin != 0 {
-                    let f = flat::new(data.len() + extra);
-                    let n = data.len().min(flat::capacity(f));
-                    f.set_length(n);
-                    length += n;
                     begin -= 1;
-                    leaf.set_edge_ptr(begin, f);
-                    data = consume_copy::<IS_BACK>(flat::data(f), data, n);
+                    let n;
+                    (n, data) = Self::fill_one_flat::<IS_BACK>(leaf, begin, data, extra);
+                    length += n;
                 }
                 leaf.set_length(length);
                 leaf.set_begin(begin);
@@ -1674,12 +1671,8 @@ impl CordRepBtree {
                 Self::align_begin(this);
                 let cap = this.capacity();
                 loop {
-                    let f = flat::new(data.len() + extra);
-                    let n = data.len().min(flat::capacity(f));
-                    f.set_length(n);
                     let idx = this.fetch_add_end(1);
-                    this.set_edge_ptr(idx, f);
-                    data = consume_copy::<IS_BACK>(flat::data(f), data, n);
+                    (_, data) = Self::fill_one_flat::<IS_BACK>(this, idx, data, extra);
                     if data.is_empty() || this.end() == cap {
                         break;
                     }
@@ -1687,12 +1680,8 @@ impl CordRepBtree {
             } else {
                 Self::align_end(this);
                 loop {
-                    let f = flat::new(data.len() + extra);
-                    let n = data.len().min(flat::capacity(f));
-                    f.set_length(n);
                     let idx = this.sub_fetch_begin(1);
-                    this.set_edge_ptr(idx, f);
-                    data = consume_copy::<IS_BACK>(flat::data(f), data, n);
+                    (_, data) = Self::fill_one_flat::<IS_BACK>(this, idx, data, extra);
                     if data.is_empty() || this.begin() == 0 {
                         break;
                     }

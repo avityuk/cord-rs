@@ -80,25 +80,13 @@ Cargo features:
 
 ## Relationship to abseil's `absl::Cord`
 
-`cord-rs` is a faithful port of [`absl::Cord`][absl-cord] — the same data
-structure Google uses for protobuf `bytes`/`string` fields and RPC payloads —
-preserving its representation and optimizations, so its well-tuned
-performance characteristics carry over:
-
-| abseil                                   | cord-rs                                              |
-| ---------------------------------------- | ---------------------------------------------------- |
-| 16 byte `Cord`, 15 byte inline data      | `size_of::<Cord>() == 16`, 15 byte inline data       |
-| Tag byte dispatch instead of vtables     | Same node layouts (`FLAT`, `EXTERNAL`, `SUBSTRING`, `BTREE`) |
-| Size-classed flat buffers (32 B – 256 KiB) | Identical size classes and tag encoding             |
-| B-tree of 6 edges / 64 bytes per node    | Same fan-out, node size and max height (12)          |
-| In-place append into private buffers     | `append` reuses spare capacity when unshared         |
-| Copy-vs-share threshold (511 bytes)      | Same threshold for cords, `Vec<u8>`, `String`, `Arc` |
-| Amortized 10 % growth of new flats       | Same                                                 |
-| `CordBuffer` with SSO                    | `CordBuffer` (15 byte inline, `Vec`-style uninit API) |
-| `GetAppendBuffer`                        | `take_append_buffer`                                 |
-| `EstimatedMemoryUsage` (3 modes)         | `estimated_memory_usage(MemoryAccounting)`           |
-
-Not ported: the Cordz sampling / profiling layer and the CRC checksum node.
+`cord-rs` is a port of [`absl::Cord`][absl-cord] — the same data structure
+Google uses for protobuf `bytes`/`string` fields and RPC payloads — with some
+changes along the way: an idiomatic Rust API, and internals that started from
+abseil's design (16-byte handle with inline storage, size-classed buffers, a
+shallow b-tree, the same sharing thresholds and growth policy) and evolve
+independently where that makes the crate simpler or the trees smaller. The
+Cordz sampling / profiling layer and the CRC checksum node are not ported.
 
 <details>
 <summary>abseil → cord-rs API mapping</summary>
@@ -126,8 +114,8 @@ Not ported: the Cordz sampling / profiling layer and the CRC checksum node.
 
 ## Safety and testing
 
-The core is a faithful port of abseil's raw-pointer, reference-counted tree
-and is therefore `unsafe` internally; the public API is safe. Verification:
+The core is a reference-counted tree in the abseil tradition and uses
+`unsafe` internally; the public API is safe. Verification:
 
 - abseil's own test suites are ported: `cord_test.cc`, `cord_buffer_test.cc`,
   `cord_rep_btree_test.cc`, `cord_rep_btree_navigator_test.cc`,

@@ -8,7 +8,7 @@
 use core::ptr::NonNull;
 
 use super::btree::{BACK, BtreePtr, CordRepBtree, FRONT, MAX_DEPTH, MAX_HEIGHT, as_btree};
-use super::{CordRep, CordRepSubstring, RepPtr, SUBSTRING, is_data_edge, ref_rep, small_u8, unref};
+use super::{CordRep, RepPtr, is_data_edge, ref_rep, small_u8, substring_impl, unref};
 
 // `Option<NonNull<T>>` is niche-optimized to the same size as `*mut T`
 // (`None` is the all-zero / null bit pattern), so wrapping the genuine null
@@ -48,7 +48,7 @@ pub(crate) struct ReadResult {
 /// caller keeps its own and remains responsible for eventually `unref`ing
 /// it; the returned pointer (if non-null) carries a fresh reference that
 /// the caller now owns.
-unsafe fn substring(mut rep: *mut CordRep, mut offset: usize, n: usize) -> *mut CordRep {
+unsafe fn substring(rep: *mut CordRep, offset: usize, n: usize) -> *mut CordRep {
     unsafe {
         debug_assert!(n <= rep.length());
         debug_assert!(offset < rep.length());
@@ -60,18 +60,7 @@ unsafe fn substring(mut rep: *mut CordRep, mut offset: usize, n: usize) -> *mut 
         if n == rep.length() {
             return ref_rep(rep);
         }
-        if rep.tag() == SUBSTRING {
-            let sub: *mut CordRepSubstring = rep.cast();
-            offset += (*sub).start;
-            rep = (*sub).child;
-        }
-        debug_assert!(rep.is_external() || rep.is_flat());
-        Box::into_raw(Box::new(CordRepSubstring {
-            rep: CordRep::new(n, SUBSTRING),
-            start: offset,
-            child: ref_rep(rep),
-        }))
-        .cast()
+        substring_impl::<false>(rep, offset, n)
     }
 }
 
