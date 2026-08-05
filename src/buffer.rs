@@ -5,8 +5,8 @@ use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 
-use crate::rep::flat::{self, FLAT_OVERHEAD, MAX_FLAT_LENGTH, MAX_LARGE_FLAT_SIZE};
-use crate::rep::{CordRep, RepPtr, small_u8};
+use crate::rep::flat::{self, FLAT_OVERHEAD, FlatRef, MAX_FLAT_LENGTH, MAX_LARGE_FLAT_SIZE};
+use crate::rep::{CordRep, UniqueRep, small_u8};
 
 /// Inline (small buffer) capacity of a `CordBuffer`.
 const INLINE_CAPACITY: usize = core::mem::size_of::<usize>() * 2 - 1;
@@ -63,12 +63,75 @@ union Rep {
 const _: () = assert!(core::mem::size_of::<Rep>() == 2 * core::mem::size_of::<usize>());
 const _: () = assert!(core::mem::size_of::<Short>() == core::mem::size_of::<Long>());
 
+impl Short {
+    #[inline]
+    fn len(&self) -> usize {
+        (self.raw_size >> 1) as usize
+    }
+
+    #[inline]
+    fn set_len(&mut self, length: usize) {
+        debug_assert!(length <= INLINE_CAPACITY);
+        self.raw_size = small_u8((length << 1) + 1);
+    }
+}
+
+/// The safe, read-only view of a [`Rep`]'s union: the single site (besides
+/// [`Rep::view_mut`]) that reads its discriminant.
+#[derive(Clone, Copy)]
+enum BufRepr<'a> {
+    /// Inline (small buffer) form.
+    Short(&'a Short),
+    /// Heap allocated flat form.
+    Flat(FlatRef<'a>),
+}
+
+impl<'a> BufRepr<'a> {
+    #[inline]
+    fn len(self) -> usize {
+        match self {
+            Self::Short(s) => s.len(),
+            Self::Flat(f) => f.len(),
+        }
+    }
+
+    #[inline]
+    fn capacity(self) -> usize {
+        match self {
+            Self::Short(_) => INLINE_CAPACITY,
+            Self::Flat(f) => f.capacity(),
+        }
+    }
+
+    #[inline]
+    fn data(self) -> &'a [u8] {
+        match self {
+            Self::Short(s) => &s.data[..s.len()],
+            Self::Flat(f) => f.data(),
+        }
+    }
+}
+
+/// The mutable counterpart of [`BufRepr`]: the result of [`Rep::view_mut`].
+enum BufReprMut<'a> {
+    /// Inline (small buffer) form.
+    Short(&'a mut Short),
+    /// Heap allocated flat form. A [`UniqueRep`] rather than a raw pointer:
+    /// see [`Rep::view_mut`]'s doc for why constructing one here is sound.
+    Flat(UniqueRep<'a>),
+}
+
 impl Rep {
     #[inline]
     const fn new_short() -> Self {
         Self { short: Short { raw_size: 1, data: [0; INLINE_CAPACITY] } }
     }
 
+    /// `true` if this rep holds the inline (short) form. The one low-level
+    /// union-tag read that [`view`](Self::view) and
+    /// [`view_mut`](Self::view_mut) build on; every other accessor in this
+    /// file goes through one of those two instead of reading the union
+    /// directly.
     #[inline]
     fn is_short(&self) -> bool {
         // SAFETY: `raw_size` overlaps the low byte of an even pointer in the
@@ -77,38 +140,43 @@ impl Rep {
         unsafe { self.short.raw_size & 1 != 0 }
     }
 
+    /// The safe, read-only view of this rep's union.
     #[inline]
-    fn short_length(&self) -> usize {
-        debug_assert!(self.is_short());
-        // SAFETY: short form is active.
-        unsafe { (self.short.raw_size >> 1) as usize }
+    fn view(&self) -> BufRepr<'_> {
+        if self.is_short() {
+            // SAFETY: `is_short()` (checked above) confirms the `short`
+            // variant was last written.
+            BufRepr::Short(unsafe { &self.short })
+        } else {
+            // SAFETY: long form is active (checked above); `CordBuffer`
+            // maintains a live flat rep whenever the long form is active
+            // (established by `from_flat`'s contract, and never changed
+            // to anything else afterward), kept live for `self`'s borrow.
+            BufRepr::Flat(unsafe { FlatRef::from_raw(self.long.rep) })
+        }
     }
 
+    /// The mutable counterpart of [`view`](Self::view).
+    ///
+    /// Sound because `CordBuffer`'s flat, whenever present, is
+    /// *unconditionally* exclusively owned (refcount one) for the buffer's
+    /// entire lifetime: it is only ever created by
+    /// [`CordBuffer::from_flat`] (which requires this), and `CordBuffer` is
+    /// not `Clone` and never exposes the pointer while retaining ownership.
+    /// So this `&mut self` borrow is sufficient — the same way
+    /// `OwnedRep::try_unique`'s is — to prove no other handle to the node
+    /// exists for as long as it lasts; see [`UniqueRep`]'s own soundness
+    /// note for the general pattern this mirrors (and for why it names this
+    /// fn as one of its three permitted call sites).
     #[inline]
-    fn set_short_length(&mut self, length: usize) {
-        debug_assert!(length <= INLINE_CAPACITY);
-        self.short.raw_size = small_u8((length << 1) + 1);
-    }
-
-    #[inline]
-    fn short_data(&self) -> &[u8; INLINE_CAPACITY] {
-        debug_assert!(self.is_short());
-        // SAFETY: short form is active and always fully initialized.
-        unsafe { &self.short.data }
-    }
-
-    #[inline]
-    fn short_data_mut(&mut self) -> &mut [u8; INLINE_CAPACITY] {
-        debug_assert!(self.is_short());
-        // SAFETY: short form is active and always fully initialized.
-        unsafe { &mut self.short.data }
-    }
-
-    #[inline]
-    fn rep(&self) -> *mut CordRep {
-        debug_assert!(!self.is_short());
-        // SAFETY: long form is active.
-        unsafe { self.long.rep }
+    fn view_mut(&mut self) -> BufReprMut<'_> {
+        if self.is_short() {
+            // SAFETY: see `view`.
+            BufReprMut::Short(unsafe { &mut self.short })
+        } else {
+            // SAFETY: see this fn's doc above and `view`.
+            BufReprMut::Flat(unsafe { UniqueRep::from_raw(self.long.rep) })
+        }
     }
 }
 
@@ -155,6 +223,12 @@ pub struct CordBuffer {
 }
 
 // SAFETY: the buffer exclusively owns its (possibly heap allocated) memory.
+// `Rep`'s long form stores a raw `*mut CordRep` (the tagged-pointer trick
+// overlapping its low bit with `Short::raw_size` needs a real pointer, not a
+// `NonNull`-wrapping handle), so unlike `Chunks`/`CordRepBtreeReader` this
+// type can never auto-derive `Send`/`Sync` regardless of how the rest of
+// this file is organized; kept manual, mirroring `OwnedRep`'s own impls
+// (rep.rs) with the same justification.
 unsafe impl Send for CordBuffer {}
 unsafe impl Sync for CordBuffer {}
 
@@ -301,10 +375,9 @@ impl CordBuffer {
     /// or a copy of its inline data.
     pub(crate) fn consume(self) -> ConsumedBuffer {
         let this = core::mem::ManuallyDrop::new(self);
-        if this.rep.is_short() {
-            ConsumedBuffer::Short(ShortValue { data: *this.rep.short_data(), len: this.rep.short_length() })
-        } else {
-            ConsumedBuffer::Rep(this.rep.rep())
+        match this.rep.view() {
+            BufRepr::Short(s) => ConsumedBuffer::Short(ShortValue { data: s.data, len: s.len() }),
+            BufRepr::Flat(f) => ConsumedBuffer::Rep(f.as_ptr()),
         }
     }
 
@@ -312,8 +385,7 @@ impl CordBuffer {
     #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
-        // SAFETY: the rep is live.
-        if self.rep.is_short() { self.rep.short_length() } else { unsafe { self.rep.rep().length() } }
+        self.rep.view().len()
     }
 
     /// Returns `true` if the buffer holds no initialized bytes.
@@ -328,8 +400,7 @@ impl CordBuffer {
     #[inline]
     #[must_use]
     pub fn capacity(&self) -> usize {
-        // SAFETY: the rep is live.
-        if self.rep.is_short() { INLINE_CAPACITY } else { unsafe { flat::capacity(self.rep.rep()) } }
+        self.rep.view().capacity()
     }
 
     /// Number of bytes that can still be written: `capacity() - len()`.
@@ -339,40 +410,23 @@ impl CordBuffer {
         self.capacity() - self.len()
     }
 
-    #[inline]
-    fn data_ptr(&self) -> *const u8 {
-        // SAFETY: the rep is live.
-        if self.rep.is_short() {
-            self.rep.short_data().as_ptr()
-        } else {
-            unsafe { flat::data(self.rep.rep()) }
-        }
-    }
-
-    #[inline]
-    fn data_ptr_mut(&mut self) -> *mut u8 {
-        // SAFETY: the rep is live and exclusively owned.
-        if self.rep.is_short() {
-            self.rep.short_data_mut().as_mut_ptr()
-        } else {
-            unsafe { flat::data(self.rep.rep()) }
-        }
-    }
-
     /// The initialized bytes.
     #[inline]
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
-        // SAFETY: the first `len` bytes are initialized.
-        unsafe { core::slice::from_raw_parts(self.data_ptr(), self.len()) }
+        self.rep.view().data()
     }
 
     /// The initialized bytes, mutably.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        let len = self.len();
-        // SAFETY: the first `len` bytes are initialized and exclusively owned.
-        unsafe { core::slice::from_raw_parts_mut(self.data_ptr_mut(), len) }
+        match self.rep.view_mut() {
+            BufReprMut::Short(s) => {
+                let len = s.len();
+                &mut s.data[..len]
+            }
+            BufReprMut::Flat(f) => f.flat_data_mut(),
+        }
     }
 
     /// The uninitialized spare capacity (`capacity() - len()` bytes).
@@ -392,10 +446,18 @@ impl CordBuffer {
     /// ```
     #[inline]
     pub fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<u8>] {
-        let (len, cap) = (self.len(), self.capacity());
-        // SAFETY: the allocation spans `cap` bytes and is exclusively owned.
-        unsafe {
-            core::slice::from_raw_parts_mut(self.data_ptr_mut().add(len).cast::<MaybeUninit<u8>>(), cap - len)
+        match self.rep.view_mut() {
+            BufReprMut::Short(s) => {
+                let len = s.len();
+                let ptr = s.data.as_mut_ptr().cast::<MaybeUninit<u8>>();
+                // SAFETY: `s.data` spans `INLINE_CAPACITY` bytes and `len <=
+                // INLINE_CAPACITY` (`Short`'s own invariant), so `[len,
+                // INLINE_CAPACITY)` stays in bounds; `MaybeUninit<u8>` has
+                // the same layout as `u8`, and viewing already-initialized
+                // bytes through it only weakens what's known about them.
+                unsafe { core::slice::from_raw_parts_mut(ptr.add(len), INLINE_CAPACITY - len) }
+            }
+            BufReprMut::Flat(f) => f.into_flat_spare_capacity_mut(),
         }
     }
 
@@ -418,14 +480,11 @@ impl CordBuffer {
             "CordBuffer::set_len: len {len} exceeds capacity {}",
             self.capacity()
         );
-        if self.rep.is_short() {
-            self.rep.set_short_length(len);
-        } else {
-            // SAFETY: the rep is live and exclusively owned by this buffer
-            // (per this fn's `# Safety` contract that the first `len` bytes
-            // are initialized, and `CordBuffer` never shares its rep), and
-            // `len` was just checked against `capacity()` above.
-            unsafe { self.rep.rep().set_length(len) };
+        // `len` was just checked against `capacity()` above; the first `len`
+        // bytes being initialized is this fn's own `# Safety` contract.
+        match self.rep.view_mut() {
+            BufReprMut::Short(s) => s.set_len(len),
+            BufReprMut::Flat(mut f) => f.set_len(len),
         }
     }
 
@@ -443,11 +502,12 @@ impl CordBuffer {
             src.len(),
             self.available()
         );
-        // SAFETY: `src` fits in the spare capacity; the copy initializes it.
-        unsafe {
-            core::ptr::copy_nonoverlapping(src.as_ptr(), self.data_ptr_mut().add(len), src.len());
-            self.set_len(len + src.len());
-        }
+        let spare = self.spare_capacity_mut();
+        spare[..src.len()].write_copy_of_slice(src);
+        // SAFETY: the copy above just initialized `src.len()` bytes at the
+        // front of the spare capacity, extending the initialized prefix to
+        // `len + src.len()`.
+        unsafe { self.set_len(len + src.len()) };
     }
 
     /// Appends as many bytes of `src` as fit and returns how many were
@@ -494,9 +554,10 @@ impl Default for CordBuffer {
 impl Drop for CordBuffer {
     #[inline]
     fn drop(&mut self) {
-        if !self.rep.is_short() {
-            // SAFETY: we exclusively own the flat.
-            unsafe { flat::delete(self.rep.rep()) };
+        if let BufRepr::Flat(f) = self.rep.view() {
+            // SAFETY: we exclusively own the flat (`CordBuffer`'s
+            // invariant; see `Rep::view_mut`'s doc).
+            unsafe { flat::delete(f.as_ptr()) };
         }
     }
 }

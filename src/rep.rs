@@ -318,7 +318,10 @@ impl RepPtr for *mut CordRep {
 }
 
 /// Debug-only check that `rep` is non-null and non-empty — the adoption
-/// contract of `Cord::from_rep`. Compiles away in release builds.
+/// contract of [`OwnedRep::from_raw`] / [`Cord::from_owned_rep`]. Compiles
+/// away in release builds.
+///
+/// [`Cord::from_owned_rep`]: crate::cord::Cord::from_owned_rep
 ///
 /// # Safety
 ///
@@ -776,6 +779,20 @@ impl<'a> RepRef<'a> {
     }
 }
 
+// SAFETY: mirrors `OwnedRep`'s own `unsafe impl Send`/`Sync` below: a
+// `RepRef` only ever reads through the node it borrows (or scopes a borrow
+// to the interior-mutable refcount, exactly like `RepPtr`'s impl), and its
+// invariant (struct doc) already requires the node to be live and
+// unmutated (other than through that refcount) for `'a` — precisely the
+// condition under which sharing a read-only view across threads is sound,
+// the same way `&CordRep` would be if `CordRep` itself were `Sync` (its
+// fields are all plain, `Sync` data). Needed so types that hold a `RepRef`
+// field (e.g. `Chunks` in iter.rs) can derive `Send`/`Sync` instead of
+// asserting them manually.
+unsafe impl Send for RepRef<'_> {}
+// SAFETY: see above.
+unsafe impl Sync for RepRef<'_> {}
+
 /// RAII owner of exactly one reference on a rep.
 ///
 /// [`Drop`] unrefs it; [`into_raw`](Self::into_raw) transfers the owned
@@ -899,10 +916,11 @@ pub(crate) enum RepView<'a> {
 ///
 /// The sole constructor, [`from_raw`](Self::from_raw), is a crate-private
 /// `unsafe fn` documented to be called *only* from
-/// [`OwnedRep::try_unique`] and [`crate::inline_data::InlineData::tree_unique`]
-/// — both of which take `&mut self` and both of which check
-/// [`ref_is_one`](RepRef::ref_is_one) themselves right before constructing.
-/// That `&mut` borrow is what makes the combination sound: it proves no
+/// [`OwnedRep::try_unique`], [`crate::inline_data::InlineData::tree_unique`]
+/// and [`crate::buffer::CordBuffer`]'s internal `Rep::view_mut` (see that
+/// type's own doc) — the first two take `&mut self` and check
+/// [`ref_is_one`](RepRef::ref_is_one) themselves right before constructing;
+/// that `&mut` borrow is what makes the combination sound: it proves no
 /// *other* copy of the owning slot (the `OwnedRep` value, or the
 /// `Cord`/`InlineData` it lives in) can be read or written for as long as
 /// the resulting `UniqueRep` exists, so together with `ref_is_one()` this
@@ -910,14 +928,21 @@ pub(crate) enum RepView<'a> {
 /// from a `Copy` [`RepRef`] instead would break this: two independent
 /// copies of the same `RepRef` could each separately observe
 /// `ref_is_one()` and each construct a `UniqueRep`, yielding two
-/// "exclusive" mutable views of the same node at once. No other code in
-/// the crate may call `from_raw`.
+/// "exclusive" mutable views of the same node at once. `CordBuffer`'s call
+/// site proves the same thing a different way: it never checks
+/// `ref_is_one()` dynamically, because its flat rep, whenever present, is
+/// *unconditionally* exclusively owned for the buffer's entire lifetime (by
+/// construction: only [`CordBuffer::from_flat`] creates one, which requires
+/// this, and `CordBuffer` is not `Clone` and never exposes the pointer
+/// while retaining ownership) — so its own `&mut self` borrow is, if
+/// anything, a strictly stronger proof than the dynamic check. No other
+/// code in the crate may call `from_raw`.
 pub(crate) struct UniqueRep<'a> {
     ptr: NonNull<CordRep>,
     _marker: PhantomData<&'a mut CordRep>,
 }
 
-impl UniqueRep<'_> {
+impl<'a> UniqueRep<'a> {
     /// # Safety
     ///
     /// `ptr` must be non-null and point to a live, well-formed rep with
@@ -972,6 +997,49 @@ impl UniqueRep<'_> {
         // back as initialized `u8`) up to `capacity`; the pointer is
         // derived from the flat's own allocation via `flat::data`, valid
         // for reads/writes over the whole capacity per its own contract.
+        unsafe {
+            let len = ptr.length();
+            let capacity = flat::capacity(ptr);
+            let spare = flat::data(ptr).add(len).cast::<MaybeUninit<u8>>();
+            core::slice::from_raw_parts_mut(spare, capacity - len)
+        }
+    }
+
+    /// The initialized payload of a flat, mutably (`length()` bytes), tied
+    /// to `'a` rather than to this call's own borrow — unlike
+    /// [`flat_spare_capacity_mut`](Self::flat_spare_capacity_mut), this
+    /// *consumes* `self` (it is not `Copy`) precisely so the returned slice
+    /// can outlive the call: giving up the witness in exchange for the
+    /// slice means there is no way to mint a second live view through it
+    /// afterward. Requires this handle's rep to be a flat node (tag in
+    /// `FLAT..=MAX_FLAT_TAG`).
+    #[inline]
+    pub(crate) fn flat_data_mut(self) -> &'a mut [u8] {
+        debug_assert!(self.as_ref().is_flat());
+        let ptr = self.ptr.as_ptr();
+        // SAFETY: exclusive access per `self`'s invariant, consumed by this
+        // call, makes it sound to hand out a mutable view of the
+        // initialized payload for the full `'a`; the pointer is derived
+        // from the flat's own allocation via `flat::data`, and a flat's
+        // `length` never exceeds its capacity, so it stays within the
+        // bounds `flat::data`'s own contract allows writes over.
+        unsafe {
+            let len = ptr.length();
+            core::slice::from_raw_parts_mut(flat::data(ptr), len)
+        }
+    }
+
+    /// The [`flat_spare_capacity_mut`](Self::flat_spare_capacity_mut)
+    /// region, tied to `'a` rather than to this call's own borrow —
+    /// consumes `self`, for the same reason and with the same soundness
+    /// argument as [`flat_data_mut`](Self::flat_data_mut).
+    #[inline]
+    pub(crate) fn into_flat_spare_capacity_mut(self) -> &'a mut [MaybeUninit<u8>] {
+        debug_assert!(self.as_ref().is_flat());
+        let ptr = self.ptr.as_ptr();
+        // SAFETY: see `flat_spare_capacity_mut`, with exclusivity carried
+        // for the full `'a` because this call consumes `self`, the same
+        // way `flat_data_mut` above does.
         unsafe {
             let len = ptr.length();
             let capacity = flat::capacity(ptr);

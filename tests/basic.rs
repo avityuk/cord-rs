@@ -87,7 +87,8 @@ fn construction_from_various_sources() {
 fn append_and_prepend_growth() {
     let mut cord = Cord::new();
     let mut expected = Vec::new();
-    for i in 0..2000usize {
+    let iters: usize = if cfg!(miri) { 200 } else { 2000 };
+    for i in 0..iters {
         let piece = vec![(i % 256) as u8; i % 37 + 1];
         if i % 3 == 0 {
             cord.prepend(&piece[..]);
@@ -124,7 +125,12 @@ fn append_and_prepend_growth() {
 fn large_appends_cross_flat_boundaries() {
     let mut cord = Cord::from("start");
     let mut expected = b"start".to_vec();
-    for size in [1usize, 15, 16, 4082, 4083, 4084, 10_000, 100_000, 300_000] {
+    let sizes: &[usize] = if cfg!(miri) {
+        &[1, 15, 16, 4082, 4083, 4084, 10_000]
+    } else {
+        &[1, 15, 16, 4082, 4083, 4084, 10_000, 100_000, 300_000]
+    };
+    for &size in sizes {
         let piece: Vec<u8> = (0..size).map(|i| (i * 7 % 256) as u8).collect();
         cord.append(&piece[..]);
         expected.extend_from_slice(&piece);
@@ -139,13 +145,15 @@ fn large_appends_cross_flat_boundaries() {
 
 #[test]
 fn advance_truncate_slice_split() {
-    let data: Vec<u8> = (0..50_000u32).map(|i| (i % 253) as u8).collect();
+    let len: u32 = if cfg!(miri) { 6_000 } else { 50_000 };
+    let data: Vec<u8> = (0..len).map(|i| (i % 253) as u8).collect();
     let mut cord = Cord::new();
     for chunk in data.chunks(1000) {
         cord.append(chunk);
     }
     check(&cord, &data);
 
+    let n = data.len();
     for (start, end) in [
         (0, 0),
         (0, 5),
@@ -153,16 +161,16 @@ fn advance_truncate_slice_split() {
         (0, 16),
         (10, 20),
         (999, 1001),
-        (5000, 45_000),
-        (0, 50_000),
-        (49_990, 50_000),
-        (12_345, 12_345),
+        (n / 10, n - n / 10),
+        (0, n),
+        (n - 10, n),
+        (n / 4, n / 4),
     ] {
         let sub = cord.slice(start..end);
         check(&sub, &data[start..end]);
         assert_eq!(cord.try_slice(start..end).unwrap(), sub);
     }
-    assert!(cord.try_slice(10..50_001).is_none());
+    assert!(cord.try_slice(10..=n).is_none());
     #[allow(clippy::reversed_empty_ranges)]
     let reversed = 11..10;
     assert!(cord.try_slice(reversed).is_none());
@@ -174,28 +182,30 @@ fn advance_truncate_slice_split() {
     check(&c, &data);
     c.advance(1);
     check(&c, &data[1..]);
-    c.advance(20_000);
-    check(&c, &data[20_001..]);
-    c.truncate(100_000);
-    check(&c, &data[20_001..]);
-    c.truncate(10_000);
-    check(&c, &data[20_001..30_001]);
+    let adv = n * 2 / 5;
+    c.advance(adv);
+    check(&c, &data[adv + 1..]);
+    c.truncate(n * 2);
+    check(&c, &data[adv + 1..]);
+    c.truncate(n / 5);
+    check(&c, &data[adv + 1..adv + 1 + n / 5]);
     c.truncate(10);
-    check(&c, &data[20_001..20_011]);
+    check(&c, &data[adv + 1..adv + 11]);
     c.advance(10);
     check(&c, b"");
     assert!(!internal::is_tree(&c));
 
     let mut c = cord.clone();
-    let tail = c.split_off(30_000);
-    check(&c, &data[..30_000]);
-    check(&tail, &data[30_000..]);
+    let sp = n * 3 / 5;
+    let tail = c.split_off(sp);
+    check(&c, &data[..sp]);
+    check(&tail, &data[sp..]);
     let head = c.split_to(1000);
     check(&head, &data[..1000]);
-    check(&c, &data[1000..30_000]);
+    check(&c, &data[1000..sp]);
     let all = c.split_to(c.len());
     check(&c, b"");
-    check(&all, &data[1000..30_000]);
+    check(&all, &data[1000..sp]);
     let none = c.split_off(0);
     check(&none, b"");
 
@@ -235,7 +245,8 @@ fn index_out_of_bounds_panics() {
 
 #[test]
 fn indexing_and_get() {
-    let data: Vec<u8> = (0..20_000u32).map(|i| (i * 13 % 256) as u8).collect();
+    let len: u32 = if cfg!(miri) { 4_000 } else { 20_000 };
+    let data: Vec<u8> = (0..len).map(|i| (i * 13 % 256) as u8).collect();
     let mut cord = Cord::new();
     for chunk in data.chunks(300) {
         cord.append(chunk);
@@ -310,7 +321,8 @@ fn hash_is_structure_independent() {
         h.hash(&mut s);
         s.finish()
     }
-    let data: Vec<u8> = (0..30_000u32).map(|i| (i % 7) as u8).collect();
+    let len: u32 = if cfg!(miri) { 4_000 } else { 30_000 };
+    let data: Vec<u8> = (0..len).map(|i| (i % 7) as u8).collect();
     let flat = Cord::from(&data[..]);
     let mut chunked = Cord::new();
     for chunk in data.chunks(333) {
@@ -330,7 +342,8 @@ fn hash_is_structure_independent() {
 
 #[test]
 fn iteration_and_cursor() {
-    let data: Vec<u8> = (0..10_000u32).map(|i| (i % 255) as u8).collect();
+    let len: u32 = if cfg!(miri) { 5_000 } else { 10_000 };
+    let data: Vec<u8> = (0..len).map(|i| (i % 255) as u8).collect();
     let mut cord = Cord::new();
     for chunk in data.chunks(123) {
         cord.append(chunk);
@@ -373,7 +386,7 @@ fn iteration_and_cursor() {
     assert_eq!(cord.bytes().len(), data.len());
     assert_eq!((&cord).into_iter().count(), cord.chunks().count());
     let mut c = cord.cursor();
-    assert_eq!(c.nth(9999), Some(data[9999]));
+    assert_eq!(c.nth(data.len() - 1), Some(data[data.len() - 1]));
     assert_eq!(c.next(), None);
 }
 

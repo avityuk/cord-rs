@@ -232,7 +232,7 @@ impl InlineData {
 
     /// Read-only pointer to the inline character data. Requires `!is_tree()`.
     ///
-    /// Kept as a raw-pointer escape hatch for `iter.rs` call sites not yet
+    /// Kept as a raw-pointer escape hatch for `cord.rs` call sites not yet
     /// converted to the safe editing API below (`push_back_inline` etc.);
     /// new code should prefer those, or [`tail`](Self::tail).
     #[inline]
@@ -240,19 +240,6 @@ impl InlineData {
         debug_assert!(!self.is_tree());
         // SAFETY: pointer into the always-initialized byte array.
         unsafe { self.bytes.as_ptr().add(1) }
-    }
-
-    /// Mutable pointer to the inline character data (15 bytes).
-    ///
-    /// Intended for write-only use when setting an inline value; the size may
-    /// be set before or after writing the data. Kept as a raw-pointer escape
-    /// hatch for `iter.rs` call sites not yet converted to the safe editing
-    /// API below; new code should prefer those, or
-    /// [`tail_mut`](Self::tail_mut).
-    #[inline]
-    pub(crate) fn as_chars_mut(&mut self) -> *mut u8 {
-        // SAFETY: pointer into the always-initialized byte array.
-        unsafe { self.bytes.as_mut_ptr().add(1) }
     }
 
     /// The inline data as a slice. Requires `!is_tree()`.

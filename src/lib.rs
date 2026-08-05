@@ -99,7 +99,7 @@ pub mod internal {
 
     use crate::Cord;
     use crate::rep::btree::{CordRepBtree, as_btree};
-    use crate::rep::{self, RepPtr, RepRef, RepView};
+    use crate::rep::{self, OwnedRep, RepPtr, RepRef, RepView};
 
     /// Maximum inline size of a `Cord`.
     pub const MAX_INLINE: usize = rep::MAX_INLINE;
@@ -122,10 +122,7 @@ pub mod internal {
 
     /// Wraps `cord`'s root tree pointer, if any, as a borrowed [`RepRef`].
     fn root(cord: &Cord) -> Option<RepRef<'_>> {
-        // SAFETY: `Cord::tree()` returns a pointer to a live root node kept
-        // alive by `cord` itself, so wrapping it as a `RepRef` borrowed for
-        // the lifetime of this `&Cord` reference is sound.
-        cord.tree().map(|t| unsafe { RepRef::from_raw(t) })
+        cord.tree_ref()
     }
 
     /// Whether `cord` holds a btree.
@@ -217,7 +214,8 @@ pub mod internal {
             return Cord::new();
         }
         // SAFETY: a fresh, non-empty external rep.
-        unsafe { Cord::from_rep(rep::external::CordRepExternal::create(data.to_vec())) }
+        let owned = unsafe { OwnedRep::from_raw(rep::external::CordRepExternal::create(data.to_vec())) };
+        Cord::from_owned_rep(owned)
     }
 
     /// Creates a cord holding a substring node over the flat or external node
@@ -228,14 +226,15 @@ pub mod internal {
         let tree = src.tree().expect("make_substring: src must not be inline");
         // SAFETY: `create` adopts the added reference; preconditions checked
         // by `create`.
-        unsafe {
+        let owned = unsafe {
             assert!(
                 tree.is_flat() || tree.is_external(),
                 "make_substring: src must be a flat or external node"
             );
             let rep = rep::CordRepSubstring::create(rep::ref_rep(tree), offset, len);
-            Cord::from_rep(rep.cast())
-        }
+            OwnedRep::from_raw(rep.cast())
+        };
+        Cord::from_owned_rep(owned)
     }
 
     /// The allocated size of the flat node held by `cord`, if it holds one.

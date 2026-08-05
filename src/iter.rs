@@ -3,9 +3,9 @@
 use core::marker::PhantomData;
 
 use crate::cord::Cord;
-use crate::rep::btree::as_btree;
+use crate::inline_data::InlineData;
 use crate::rep::reader::CordRepBtreeReader;
-use crate::rep::{CordRep, CordRepSubstring, MAX_BYTES_TO_COPY, MAX_INLINE, RepPtr, edge_data, ref_rep};
+use crate::rep::{CordRepSubstring, MAX_BYTES_TO_COPY, MAX_INLINE, OwnedRep, RepRef, RepView};
 
 /// Iterator over the contiguous chunks of a [`Cord`], created by
 /// [`Cord::chunks`].
@@ -18,32 +18,32 @@ pub struct Chunks<'a> {
     /// A view of the bytes of the current chunk (possibly a suffix of the
     /// current data edge when used by a [`Cursor`]). Empty at the end.
     current_chunk: &'a [u8],
-    /// The current leaf if the cord is a single (non-btree) data edge, null
+    /// The current leaf if the cord is a single (non-btree) data edge, `None`
     /// otherwise. Used to share memory when reading sub-cords.
-    current_leaf: *mut CordRep,
+    current_leaf: Option<RepRef<'a>>,
+    /// Bytes of `current_leaf`'s own data consumed so far, i.e. `current_leaf`'s
+    /// data (unadjusted for any `Substring` indirection) sliced from this
+    /// offset equals `current_chunk`. Meaningless (and never read) while
+    /// `current_leaf` is `None`. A carried counter rather than recovering the
+    /// same value later via pointer subtraction between `current_chunk` and
+    /// the leaf's base address (provenance-fragile: the two pointers don't
+    /// obviously derive from one another at the point of subtraction).
+    leaf_offset: usize,
     /// Number of bytes left, counting from the start of `current_chunk`.
     bytes_remaining: usize,
     /// Reader for btree cords; empty otherwise.
-    btree_reader: CordRepBtreeReader,
+    btree_reader: CordRepBtreeReader<'a>,
     _marker: PhantomData<&'a Cord>,
 }
-
-// SAFETY: the raw pointers reference immutable, reference counted nodes kept
-// alive by the borrowed cord.
-unsafe impl Send for Chunks<'_> {}
-unsafe impl Sync for Chunks<'_> {}
 
 impl<'a> Chunks<'a> {
     /// Creates an iterator positioned at the first chunk of `cord`.
     pub(crate) fn new(cord: &'a Cord) -> Self {
         let mut it = Self::empty();
-        if let Some(tree) = cord.tree() {
-            // SAFETY: the tree is kept alive by `cord` for `'a`.
-            unsafe {
-                it.bytes_remaining = tree.length();
-                if it.bytes_remaining != 0 {
-                    it.init_tree(tree);
-                }
+        if let Some(tree) = cord.tree_ref() {
+            it.bytes_remaining = tree.len();
+            if it.bytes_remaining != 0 {
+                it.init_tree(tree);
             }
         } else {
             it.current_chunk = cord.inline_slice();
@@ -64,29 +64,24 @@ impl<'a> Chunks<'a> {
     pub(crate) fn empty() -> Self {
         Self {
             current_chunk: &[],
-            current_leaf: core::ptr::null_mut(),
+            current_leaf: None,
+            leaf_offset: 0,
             bytes_remaining: 0,
             btree_reader: CordRepBtreeReader::new(),
             _marker: PhantomData,
         }
     }
 
-    /// # Safety
-    ///
-    /// `tree` must be a non-null pointer to a live rep tree that outlives
-    /// `self` for `'a` (borrowed, not adopted: this call does not affect
-    /// `tree`'s refcount, matching the borrowed-`Cord` lifetime tracked by
-    /// `self._marker`).
-    unsafe fn init_tree(&mut self, tree: *mut CordRep) {
-        // SAFETY: `tree` is live per the caller contract above, which is all
-        // `is_btree`, `as_btree`, `btree_reader.init` and `edge_data` require.
-        unsafe {
-            if tree.is_btree() {
-                self.current_chunk = self.btree_reader.init(as_btree(tree));
-            } else {
-                self.current_leaf = tree;
-                self.current_chunk = edge_data(tree);
-            }
+    /// Positions `self` at `tree`'s first chunk. Requires `tree`'s length to
+    /// be non-zero (checked by the sole caller, `new`, before calling this).
+    fn init_tree(&mut self, tree: RepRef<'a>) {
+        if let RepView::Btree(btree) = tree.view() {
+            self.current_chunk = self.btree_reader.init(btree);
+        } else {
+            // SUBSTRING, EXTERNAL or FLAT: all are data edges.
+            debug_assert!(tree.is_data_edge());
+            self.current_leaf = Some(tree);
+            self.current_chunk = tree.data();
         }
     }
 
@@ -105,8 +100,7 @@ impl<'a> Chunks<'a> {
         self.bytes_remaining -= self.current_chunk.len();
         if self.bytes_remaining > 0 {
             if self.btree_reader.is_some() {
-                // SAFETY: the reader references a live tree.
-                self.current_chunk = unsafe { self.btree_reader.next() };
+                self.current_chunk = self.btree_reader.next();
                 return;
             }
             debug_assert!(!self.current_chunk.is_empty(), "step() on an invalid iterator");
@@ -121,6 +115,7 @@ impl<'a> Chunks<'a> {
         debug_assert!(n < self.current_chunk.len());
         self.current_chunk = &self.current_chunk[n..];
         self.bytes_remaining -= n;
+        self.leaf_offset += n;
     }
 
     /// Skips `n` bytes. Requires `n <= bytes_remaining`.
@@ -141,100 +136,97 @@ impl<'a> Chunks<'a> {
     fn advance_bytes_btree(&mut self, n: usize) {
         debug_assert!(n >= self.current_chunk.len());
         self.bytes_remaining -= n;
-        // SAFETY: the reader references a live tree.
-        unsafe {
-            if self.bytes_remaining != 0 {
-                if n == self.current_chunk.len() {
-                    self.current_chunk = self.btree_reader.next();
-                } else {
-                    let offset = self.btree_reader.length() - self.bytes_remaining;
-                    self.current_chunk = self.btree_reader.seek(offset);
-                }
+        if self.bytes_remaining != 0 {
+            if n == self.current_chunk.len() {
+                self.current_chunk = self.btree_reader.next();
             } else {
-                self.current_chunk = &[];
+                let offset = self.btree_reader.length() - self.bytes_remaining;
+                self.current_chunk = self.btree_reader.seek(offset);
             }
+        } else {
+            self.current_chunk = &[];
         }
     }
 
     /// Reads the next `n` bytes into a new cord, sharing memory with the
     /// iterated cord where possible, and advances past them. Requires
     /// `n <= bytes_remaining`.
-    pub(crate) fn read_bytes(&mut self, mut n: usize) -> Cord {
+    pub(crate) fn read_bytes(&mut self, n: usize) -> Cord {
         debug_assert!(self.bytes_remaining >= n);
-        let mut subcord = Cord::new();
 
         if n <= MAX_INLINE {
-            // The range fits inline: flatten it.
-            subcord.data.set_inline_size(n);
-            // SAFETY: we copy exactly `n <= 15` bytes into the inline buffer.
-            unsafe {
-                let mut data = subcord.data.as_chars_mut();
-                while n > self.current_chunk.len() {
-                    core::ptr::copy_nonoverlapping(
-                        self.current_chunk.as_ptr(),
-                        data,
-                        self.current_chunk.len(),
-                    );
-                    data = data.add(self.current_chunk.len());
-                    n -= self.current_chunk.len();
-                    self.step();
-                }
-                core::ptr::copy_nonoverlapping(self.current_chunk.as_ptr(), data, n);
-            }
-            if n < self.current_chunk.len() {
-                self.remove_chunk_prefix(n);
-            } else if n > 0 {
-                self.step();
-            }
-            return subcord;
+            // The range fits inline: flatten it. Gather from a cheap clone
+            // (cloning never bumps refcounts or mutates `self`; see
+            // `Chunks`' doc) so `fill_inline_from` can consume whole chunks
+            // via the ordinary `Iterator` impl, then reposition the real
+            // `self` in one step via `advance_bytes`, which already knows
+            // how to land inside a chunk without walking it byte by byte.
+            let data = InlineData::fill_inline_from(self.clone(), n);
+            self.advance_bytes(n);
+            return Cord { data };
         }
 
         if self.btree_reader.is_some() {
             let chunk_size = self.current_chunk.len();
-            // SAFETY: the reader references a live tree; `read` returns a
-            // new reference.
-            unsafe {
-                if n <= chunk_size && n <= MAX_BYTES_TO_COPY {
-                    subcord = Cord::copy_from_slice(&self.current_chunk[..n]);
-                    if n < chunk_size {
-                        self.current_chunk = &self.current_chunk[n..];
-                    } else {
-                        self.current_chunk = self.btree_reader.next();
-                    }
+            let subcord = if n <= chunk_size && n <= MAX_BYTES_TO_COPY {
+                let subcord = Cord::copy_from_slice(&self.current_chunk[..n]);
+                if n < chunk_size {
+                    self.current_chunk = &self.current_chunk[n..];
                 } else {
-                    let (chunk, rep) = self.btree_reader.read(n, chunk_size);
-                    self.current_chunk = chunk;
-                    subcord = Cord::from_rep(rep);
+                    self.current_chunk = self.btree_reader.next();
                 }
-            }
+                subcord
+            } else {
+                let (chunk, tree) = self.btree_reader.read(n, chunk_size);
+                self.current_chunk = chunk;
+                debug_assert!(tree.is_some(), "read_bytes: n <= bytes_remaining rules out an exceeded read");
+                // SAFETY: `n <= self.bytes_remaining` (this fn's precondition,
+                // checked above) guarantees this read does not exceed the
+                // reader's remaining data, so `CordRepBtreeReader::read`
+                // always returns `Some` here (see its doc for when it
+                // returns `None`).
+                Cord::from_owned_rep(unsafe { tree.unwrap_unchecked() })
+            };
             self.bytes_remaining -= n;
             return subcord;
         }
 
         // A single data edge.
-        debug_assert!(!self.current_leaf.is_null());
-        // SAFETY: `current_leaf` is a live data edge.
-        unsafe {
-            if n == self.current_leaf.length() {
-                // Reading the entire edge: share it.
-                self.bytes_remaining = 0;
-                self.current_chunk = &[];
-                return Cord::from_rep(ref_rep(self.current_leaf));
-            }
-            // A partial substring node: compute the offset into the flat or
-            // external payload.
-            let payload = if self.current_leaf.is_substring() {
-                (*self.current_leaf.cast::<CordRepSubstring>()).child
-            } else {
-                self.current_leaf
-            };
-            let base = edge_data(payload).as_ptr();
-            let offset = self.current_chunk.as_ptr().addr() - base.addr();
-            let tree = CordRepSubstring::substring(payload, offset, n);
-            subcord = Cord::from_rep(tree);
+        debug_assert!(self.current_leaf.is_some());
+        // SAFETY: `current_leaf` is always set whenever `btree_reader` is
+        // empty and the cord holds a tree (established by `init_tree`,
+        // never cleared while `btree_reader` stays empty), matching this
+        // branch's precondition (mirrored by the debug_assert above).
+        let leaf = unsafe { self.current_leaf.unwrap_unchecked() };
+        if n == leaf.len() {
+            // Reading the entire edge: share it.
+            self.bytes_remaining = 0;
+            self.current_chunk = &[];
+            return Cord::from_owned_rep(leaf.to_owned());
         }
+        // A partial substring node: compute the offset into the flat or
+        // external payload.
+        let (payload, base_offset) = match leaf.view() {
+            RepView::Substring { start, child } => (child, start),
+            _ => (leaf, 0),
+        };
+        let offset = base_offset + self.leaf_offset;
+        // SAFETY: `payload` is a live flat or external data edge (`leaf`'s
+        // own invariant, plus `RepRef::view`'s dispatch, guarantees this:
+        // the `Substring` arm's `child` and the fallback arm's `leaf` are
+        // never anything else, since `current_leaf` is only ever set to a
+        // substring, flat, or external node). `offset`/`n` form a valid,
+        // non-empty sub-range of it: `n < leaf.len()` was just established
+        // above, and the single-data-edge invariant `bytes_remaining ==
+        // current_chunk.len() == leaf.len() - offset` (maintained by
+        // `remove_chunk_prefix`/`init_tree`) together with this fn's
+        // precondition `n <= bytes_remaining` bounds `offset + n <=
+        // leaf.len()`.
+        let tree = unsafe { CordRepSubstring::substring(payload.as_ptr(), offset, n) };
+        let subcord = Cord::from_owned_rep(unsafe { OwnedRep::from_raw(tree) });
         self.bytes_remaining -= n;
         self.current_chunk = &self.current_chunk[n..];
+        self.leaf_offset += n;
         subcord
     }
 }

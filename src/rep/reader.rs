@@ -2,24 +2,40 @@
 //!
 //! Port of abseil's `cord_rep_btree_reader.{h,cc}`.
 
-use core::ptr::NonNull;
+use core::marker::PhantomData;
 
-use super::btree::{BtreePtr, CordRepBtree};
+use super::btree::{BtreePtr, BtreeRef, CordRepBtree};
 use super::navigator::CordRepBtreeNavigator;
-use super::{CordRep, RepPtr, edge_data};
+use super::{OwnedRep, RepPtr, RepRef, edge_data};
 
-/// See the [module documentation](self).
+/// See the [module documentation](self). Borrows the `CordRepBtree` it is
+/// [`init`](Self::init)ialized with for `'a`: that borrow is this type's
+/// only liveness invariant, established once, at `init`, after which every
+/// other method is a safe read through the raw pointers the navigator
+/// tracks internally.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct CordRepBtreeReader {
+pub(crate) struct CordRepBtreeReader<'a> {
     /// Bytes remaining after the end of the last returned chunk.
     remaining: usize,
     navigator: CordRepBtreeNavigator,
+    _marker: PhantomData<&'a CordRepBtree>,
 }
 
-impl CordRepBtreeReader {
+// SAFETY: a reader only ever reads through the raw pointers it stores
+// internally (never exposing interior mutability beyond a live rep's own
+// atomic refcount, same as `RepRef`/`BtreeRef`), and its invariant (struct
+// doc) requires the tree they reference to be live and unmutated for `'a` —
+// exactly the condition under which sharing a read-only view across threads
+// is sound. Needed so `Chunks` (iter.rs), which holds a reader field, can
+// derive `Send`/`Sync` instead of asserting them manually.
+unsafe impl Send for CordRepBtreeReader<'_> {}
+// SAFETY: see above.
+unsafe impl Sync for CordRepBtreeReader<'_> {}
+
+impl<'a> CordRepBtreeReader<'a> {
     /// An empty reader.
     pub(crate) const fn new() -> Self {
-        Self { remaining: 0, navigator: CordRepBtreeNavigator::new() }
+        Self { remaining: 0, navigator: CordRepBtreeNavigator::new(), _marker: PhantomData }
     }
 
     /// Returns `true` if not empty.
@@ -28,39 +44,24 @@ impl CordRepBtreeReader {
         self.navigator.is_some()
     }
 
-    /// The tree referenced, or null if empty.
-    #[inline]
-    pub(crate) fn btree(&self) -> *mut CordRepBtree {
-        self.navigator.btree()
-    }
-
     /// The current data edge. Requires a non-empty reader.
-    ///
-    /// # Safety
-    ///
-    /// The reader must be non-empty (`self.is_some()`, i.e. previously
-    /// positioned by [`init`](Self::init)) and the tree it was initialized
-    /// with must still be live and unmutated: this type stores raw pointers
-    /// into the tree without owning a reference on it, so the caller is
-    /// responsible for keeping it alive for as long as the reader is used.
     #[inline]
-    pub(crate) unsafe fn node(&self) -> *mut CordRep {
-        unsafe { self.navigator.current() }
+    pub(crate) fn node(&self) -> RepRef<'a> {
+        debug_assert!(self.is_some());
+        // SAFETY: non-empty per the debug_assert above (this fn's own
+        // precondition), so the navigator's current position refers to a
+        // live data edge reachable from the tree this reader was
+        // initialized with, kept live and unmutated for `'a` per `init`'s
+        // contract (this type's own invariant, struct doc).
+        unsafe { RepRef::from_raw(self.navigator.current()) }
     }
 
     /// Length of the referenced tree. Requires a non-empty reader.
-    ///
-    /// # Safety
-    ///
-    /// Same contract as [`node`](Self::node).
     #[inline]
-    pub(crate) unsafe fn length(&self) -> usize {
-        unsafe {
-            // SAFETY: the contract above guarantees `self.btree()` is a live
-            // btree node, so reading its `.length()` is sound.
-            debug_assert!(!self.btree().is_null());
-            self.btree().length()
-        }
+    pub(crate) fn length(&self) -> usize {
+        debug_assert!(self.is_some());
+        // SAFETY: see `node`.
+        unsafe { BtreeRef::from_raw(self.navigator.btree()).len() }
     }
 
     /// Bytes remaining after the last returned chunk. Zero after the last
@@ -76,45 +77,35 @@ impl CordRepBtreeReader {
         self.navigator.reset();
     }
 
-    /// Initializes with `tree`, returning its first data edge.
-    ///
-    /// # Safety
-    ///
-    /// `tree` must be non-null, point to a live `CordRepBtree` with
-    /// `size() > 0` and `height() <= MAX_HEIGHT` (see
-    /// [`CordRepBtreeNavigator::init_first`]). Does not adopt a reference on
-    /// `tree`. The returned slice's lifetime `'a` is not tied to any actual
-    /// borrow: the caller must not use it beyond the scope in which `tree`
-    /// stays live and unmutated.
+    /// Initializes with `tree`, returning its first data edge. This is the
+    /// sole place `self`'s `'a` liveness invariant (struct doc) is
+    /// established: `tree`'s own invariant (a live, well-formed
+    /// `CordRepBtree` for `'a`) is exactly what every other method here
+    /// relies on afterward.
     #[inline]
-    pub(crate) unsafe fn init<'a>(&mut self, tree: *mut CordRepBtree) -> &'a [u8] {
+    pub(crate) fn init(&mut self, tree: BtreeRef<'a>) -> &'a [u8] {
+        let ptr = tree.as_ptr();
+        // SAFETY: `tree`'s invariant guarantees `ptr` is a live,
+        // well-formed `CordRepBtree` with `size() > 0` (a `BtreeRef` can
+        // only wrap a well-formed node) for `'a`, matching
+        // `init_first`/`edge_data`'s contract.
         unsafe {
-            // SAFETY: `tree`'s validity is the caller's contract above;
-            // `init_first` and `edge_data` each require exactly that (a live
-            // tree / a live data edge respectively), which the navigator's own
-            // invariants (see `navigator.rs`) guarantee the returned edge to be.
-            debug_assert!(!tree.is_null());
-            let edge = self.navigator.init_first(tree);
-            self.remaining = tree.length() - edge.length();
+            let edge = self.navigator.init_first(ptr);
+            self.remaining = ptr.length() - edge.length();
             edge_data(edge)
         }
     }
 
     /// Navigates to and returns the next data edge, or an empty slice at EOF.
-    ///
-    /// # Safety
-    ///
-    /// Same contract as [`node`](Self::node); the returned slice's lifetime
-    /// is unbound in the same way as [`init`](Self::init)'s.
     #[inline]
-    pub(crate) unsafe fn next<'a>(&mut self) -> &'a [u8] {
+    pub(crate) fn next(&mut self) -> &'a [u8] {
+        if self.remaining == 0 {
+            return &[];
+        }
+        // SAFETY: per this reader's invariant (established at `init`), the
+        // tree is live for `'a`, so `self.navigator.next()` and `edge_data`
+        // on its non-null result are sound.
         unsafe {
-            // SAFETY: per the contract above the reader is positioned on a live
-            // tree, so `self.navigator.next()` and `edge_data` on its
-            // non-null result are sound.
-            if self.remaining == 0 {
-                return &[];
-            }
             let edge = self.navigator.next();
             debug_assert!(!edge.is_null());
             self.remaining -= edge.length();
@@ -124,17 +115,12 @@ impl CordRepBtreeReader {
 
     /// Skips `skip` bytes past the end of the current chunk and returns the
     /// data directly following them.
-    ///
-    /// # Safety
-    ///
-    /// Same contract as [`node`](Self::node); the returned slice's lifetime
-    /// is unbound in the same way as [`init`](Self::init)'s.
     #[inline]
-    pub(crate) unsafe fn skip<'a>(&mut self, skip: usize) -> &'a [u8] {
+    pub(crate) fn skip(&mut self, skip: usize) -> &'a [u8] {
+        // SAFETY: per this reader's invariant the tree is live for `'a`, so
+        // `self.navigator.current()`/`.skip()` and `edge_data` on a
+        // non-null result are sound.
         unsafe {
-            // SAFETY: per the contract above the reader is positioned on a live
-            // tree, so `self.navigator.current()`/`.skip()` and `edge_data` on
-            // a non-null result are sound.
             // We are positioned on the last consumed edge, so skip it too.
             let edge_length = self.navigator.current().length();
             let pos = self.navigator.skip(skip + edge_length);
@@ -153,17 +139,12 @@ impl CordRepBtreeReader {
 
     /// Navigates to the chunk containing `offset` and returns the data from
     /// `offset` to the end of that chunk, or empty if `offset >= length`.
-    ///
-    /// # Safety
-    ///
-    /// Same contract as [`node`](Self::node); the returned slice's lifetime
-    /// is unbound in the same way as [`init`](Self::init)'s.
     #[inline]
-    pub(crate) unsafe fn seek<'a>(&mut self, offset: usize) -> &'a [u8] {
+    pub(crate) fn seek(&mut self, offset: usize) -> &'a [u8] {
+        // SAFETY: per this reader's invariant the tree is live for `'a`, so
+        // `self.navigator.seek()`, `edge_data`, and `self.length()` are all
+        // sound to call.
         unsafe {
-            // SAFETY: per the contract above the reader is positioned on a live
-            // tree, so `self.navigator.seek()`, `edge_data`, and `self.length()`
-            // are all sound to call.
             let pos = self.navigator.seek(offset);
             let Some(edge) = pos.edge else {
                 core::hint::cold_path();
@@ -179,21 +160,17 @@ impl CordRepBtreeReader {
     /// Reads `n` bytes into a new tree. If `chunk_size` is zero the read
     /// starts at the next data edge, else at the last `chunk_size` bytes of
     /// the last returned edge. Returns the remaining data of the edge the
-    /// read ended in (empty if all data was read) and the tree (null if `n`
-    /// exceeded the remaining data).
+    /// read ended in (empty if all data was read) and the tree (`None` if
+    /// `n` exceeded the remaining data).
     ///
-    /// # Safety
-    ///
-    /// Same contract as [`node`](Self::node), plus `chunk_size <=
-    /// self.navigator.current().length()` (checked below). The returned
-    /// tree, if non-null, carries a reference the caller now owns; the
-    /// returned slice's lifetime is unbound in the same way as
-    /// [`init`](Self::init)'s.
-    pub(crate) unsafe fn read<'a>(&mut self, n: usize, chunk_size: usize) -> (&'a [u8], *mut CordRep) {
+    /// Requires `chunk_size <= self.node().len()` (checked below).
+    pub(crate) fn read(&mut self, n: usize, chunk_size: usize) -> (&'a [u8], Option<OwnedRep>) {
+        // SAFETY: per this reader's invariant the tree is live for `'a`, so
+        // `self.navigator.current()`/`.next()`/`.read()` and `edge_data` on
+        // their results are sound; `result.tree`, when `Some`, carries a
+        // fresh reference (`CordRepBtreeNavigator::read`'s own contract),
+        // adopted here into the returned `OwnedRep`.
         unsafe {
-            // SAFETY: per the contract above the reader is positioned on a live
-            // tree, so `self.navigator.current()`/`.next()`/`.read()` and
-            // `edge_data` on their results are sound.
             debug_assert!(chunk_size <= self.navigator.current().length());
 
             // Start inside the last returned edge, or at the next edge.
@@ -201,11 +178,7 @@ impl CordRepBtreeReader {
             let offset = if chunk_size != 0 { edge.length() - chunk_size } else { 0 };
 
             let result = self.navigator.read(offset, n);
-            // `read`'s own return type stays a raw pointer this phase (its
-            // sole caller, `iter.rs`, is converted in the next phase); thread
-            // `Option<NonNull>` internally and drop to a raw pointer only at
-            // this boundary.
-            let tree = result.tree.map_or(core::ptr::null_mut(), NonNull::as_ptr);
+            let tree = result.tree.map(|t| OwnedRep::from_raw(t.as_ptr()));
 
             // If the data was covered entirely by `chunk_size` we did not consume
             // any additional data and directly return the rest of the edge.

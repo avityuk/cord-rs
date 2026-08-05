@@ -219,8 +219,8 @@ fn length_overflow() -> ! {
 
 impl Cord {
     /// The tree, if this cord is not inline. Kept as a raw-pointer accessor
-    /// for `iter.rs`/`lib.rs` call sites not yet converted to the handle
-    /// types; new code in this file should prefer
+    /// for `lib.rs` call sites (`validate`/`dump`/`make_substring`) not yet
+    /// converted to the handle types; new code should prefer
     /// [`tree_ref`](Self::tree_ref).
     #[inline]
     pub(crate) fn tree(&self) -> Option<*mut CordRep> {
@@ -229,7 +229,7 @@ impl Cord {
 
     /// The tree, if this cord is not inline, as a borrowed [`RepRef`].
     #[inline]
-    fn tree_ref(&self) -> Option<RepRef<'_>> {
+    pub(crate) fn tree_ref(&self) -> Option<RepRef<'_>> {
         match self.data.view() {
             Repr::Tree(tree) => Some(tree),
             Repr::Inline(_) => None,
@@ -247,26 +247,10 @@ impl Cord {
         self.data.inline_slice()
     }
 
-    /// Creates a cord holding `rep` (which must be non-null and non-empty).
-    ///
-    /// # Safety
-    ///
-    /// `rep` must be non-null with `rep.length() != 0`. The caller transfers
-    /// its reference on `rep` to the returned `Cord`.
-    ///
-    /// Kept as a raw-pointer entry point for `lib.rs`/`iter.rs` call sites
-    /// not yet converted to `OwnedRep`; this file's own call sites use
-    /// [`from_owned_rep`](Self::from_owned_rep) directly.
-    #[inline]
-    pub(crate) unsafe fn from_rep(rep: *mut CordRep) -> Self {
-        // SAFETY: forwarded from this fn's own contract.
-        Self::from_owned_rep(unsafe { OwnedRep::from_raw(rep) })
-    }
-
     /// Creates a cord holding `rep`, adopting its reference. Requires
     /// `rep.len() != 0`.
     #[inline]
-    fn from_owned_rep(rep: OwnedRep) -> Self {
+    pub(crate) fn from_owned_rep(rep: OwnedRep) -> Self {
         debug_assert!(rep.len() != 0);
         Self { data: InlineData::from_tree(rep) }
     }

@@ -1,9 +1,9 @@
 //! Port of abseil's `cord_rep_btree_reader_test.cc`.
 
-use super::btree::{BtreePtr, CordRepBtree, MAX_CAPACITY};
+use super::btree::{BtreePtr, BtreeRef, CordRepBtree, MAX_CAPACITY};
 use super::reader::CordRepBtreeReader;
 use super::test_util::*;
-use super::unref;
+use super::{CordRep, OwnedRep, unref};
 
 const CHARS: usize = 3;
 
@@ -16,6 +16,12 @@ fn counts() -> Vec<usize> {
     }
 }
 
+/// The raw pointer backing an `OwnedRep` returned by `reader.read`, for
+/// `cord_to_string`'s read-only raw-pointer API. Does not consume `tree`.
+fn tree_ptr(tree: Option<&OwnedRep>) -> *mut CordRep {
+    tree.expect("tree: Some").as_ref().as_ptr()
+}
+
 #[test]
 fn next() {
     for count in counts() {
@@ -26,7 +32,7 @@ fn next() {
 
             let mut reader = CordRepBtreeReader::new();
             let mut remaining = data.len();
-            let mut chunk = reader.init(node);
+            let mut chunk = reader.init(BtreeRef::from_raw(node));
             assert_eq!(chunk, &data[..chunk.len()]);
 
             remaining -= chunk.len();
@@ -62,7 +68,7 @@ fn skip() {
                 for skip2 in (0..(data.len() - CHARS)).step_by(step) {
                     let mut reader = CordRepBtreeReader::new();
                     let mut remaining = data.len();
-                    let mut chunk = reader.init(node);
+                    let mut chunk = reader.init(BtreeRef::from_raw(node));
                     remaining -= chunk.len();
 
                     chunk = reader.skip(skip1);
@@ -92,7 +98,7 @@ fn skip_beyond_length() {
         let mut tree = CordRepBtree::create(make_flat(b"abc"));
         tree = CordRepBtree::append(tree, make_flat(b"def"));
         let mut reader = CordRepBtreeReader::new();
-        reader.init(tree);
+        reader.init(BtreeRef::from_raw(tree));
         assert!(reader.skip(100).is_empty());
         assert_eq!(reader.remaining(), 0);
         unref(tree.as_rep());
@@ -109,7 +115,7 @@ fn seek() {
 
             for seek in 0..(data.len() - 1) {
                 let mut reader = CordRepBtreeReader::new();
-                reader.init(node);
+                reader.init(BtreeRef::from_raw(node));
                 let chunk = reader.seek(seek);
                 assert!(!chunk.is_empty());
                 assert_eq!(chunk, &data[seek..seek + chunk.len()]);
@@ -126,7 +132,7 @@ fn seek_beyond_length() {
         let mut tree = CordRepBtree::create(make_flat(b"abc"));
         tree = CordRepBtree::append(tree, make_flat(b"def"));
         let mut reader = CordRepBtreeReader::new();
-        reader.init(tree);
+        reader.init(BtreeRef::from_raw(tree));
         assert!(reader.seek(6).is_empty());
         assert_eq!(reader.remaining(), 0);
         assert!(reader.seek(100).is_empty());
@@ -144,69 +150,63 @@ fn read() {
         let mut reader = CordRepBtreeReader::new();
 
         // Read zero bytes.
-        let chunk = reader.init(node);
+        let chunk = reader.init(BtreeRef::from_raw(node));
         let (chunk, tree) = reader.read(0, chunk.len());
-        assert!(tree.is_null());
+        assert!(tree.is_none());
         assert_eq!(chunk, b"abcde");
         assert_eq!(reader.remaining(), 10);
         assert_eq!(reader.next(), b"fghij");
 
         // Read in full.
-        let chunk = reader.init(node);
+        let chunk = reader.init(BtreeRef::from_raw(node));
         let (chunk, tree) = reader.read(15, chunk.len());
-        assert!(!tree.is_null());
-        assert_eq!(cord_to_string(tree), b"abcdefghijklmno");
+        assert_eq!(cord_to_string(tree_ptr(tree.as_ref())), b"abcdefghijklmno");
         assert_eq!(chunk, b"");
         assert_eq!(reader.remaining(), 0);
-        unref(tree);
+        drop(tree);
 
         // Read < chunk bytes.
-        let chunk = reader.init(node);
+        let chunk = reader.init(BtreeRef::from_raw(node));
         let (chunk, tree) = reader.read(3, chunk.len());
-        assert!(!tree.is_null());
-        assert_eq!(cord_to_string(tree), b"abc");
+        assert_eq!(cord_to_string(tree_ptr(tree.as_ref())), b"abc");
         assert_eq!(chunk, b"de");
         assert_eq!(reader.remaining(), 10);
         assert_eq!(reader.next(), b"fghij");
-        unref(tree);
+        drop(tree);
 
         // Read < chunk bytes at offset.
-        let chunk = reader.init(node);
+        let chunk = reader.init(BtreeRef::from_raw(node));
         let (chunk, tree) = reader.read(2, chunk.len() - 2);
-        assert!(!tree.is_null());
-        assert_eq!(cord_to_string(tree), b"cd");
+        assert_eq!(cord_to_string(tree_ptr(tree.as_ref())), b"cd");
         assert_eq!(chunk, b"e");
         assert_eq!(reader.remaining(), 10);
         assert_eq!(reader.next(), b"fghij");
-        unref(tree);
+        drop(tree);
 
         // Read from consumed chunk.
-        reader.init(node);
+        reader.init(BtreeRef::from_raw(node));
         let (chunk, tree) = reader.read(3, 0);
-        assert!(!tree.is_null());
-        assert_eq!(cord_to_string(tree), b"fgh");
+        assert_eq!(cord_to_string(tree_ptr(tree.as_ref())), b"fgh");
         assert_eq!(chunk, b"ij");
         assert_eq!(reader.remaining(), 5);
         assert_eq!(reader.next(), b"klmno");
-        unref(tree);
+        drop(tree);
 
         // Read across chunks.
-        let chunk = reader.init(node);
+        let chunk = reader.init(BtreeRef::from_raw(node));
         let (chunk, tree) = reader.read(12, chunk.len() - 2);
-        assert!(!tree.is_null());
-        assert_eq!(cord_to_string(tree), b"cdefghijklmn");
+        assert_eq!(cord_to_string(tree_ptr(tree.as_ref())), b"cdefghijklmn");
         assert_eq!(chunk, b"o");
         assert_eq!(reader.remaining(), 0);
-        unref(tree);
+        drop(tree);
 
         // Read across chunks landing on an exact edge boundary.
-        let chunk = reader.init(node);
+        let chunk = reader.init(BtreeRef::from_raw(node));
         let (chunk, tree) = reader.read(10 - 2, chunk.len() - 2);
-        assert!(!tree.is_null());
-        assert_eq!(cord_to_string(tree), b"cdefghij");
+        assert_eq!(cord_to_string(tree_ptr(tree.as_ref())), b"cdefghij");
         assert_eq!(chunk, b"klmno");
         assert_eq!(reader.remaining(), 0);
-        unref(tree);
+        drop(tree);
 
         unref(node.as_rep());
     }
@@ -228,7 +228,7 @@ fn read_exhaustive() {
 
             for read_size in [CHARS - 1, CHARS, CHARS + 7, cap * cap] {
                 let mut reader = CordRepBtreeReader::new();
-                let mut chunk = reader.init(node);
+                let mut chunk = reader.init(BtreeRef::from_raw(node));
 
                 // `consumed` tracks the end of the last consumed chunk, which
                 // is the start of the next: we always read with
@@ -239,9 +239,8 @@ fn read_exhaustive() {
                     let n = remaining.min(read_size);
                     let (next_chunk, tree) = reader.read(n, chunk.len());
                     chunk = next_chunk;
-                    assert!(!tree.is_null());
-                    assert_eq!(cord_to_string(tree), &data[consumed..consumed + n]);
-                    unref(tree);
+                    assert_eq!(cord_to_string(tree_ptr(tree.as_ref())), &data[consumed..consumed + n]);
+                    drop(tree);
 
                     consumed += n;
                     remaining -= n;
