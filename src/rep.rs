@@ -34,6 +34,7 @@
 #![allow(dead_code)]
 
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicI32, Ordering};
 
@@ -825,6 +826,24 @@ impl OwnedRep {
     pub(crate) fn len(&self) -> usize {
         self.as_ref().len()
     }
+
+    /// Attempts to obtain a mutation witness for this owned rep: `Some` iff
+    /// its reference count is exactly one, i.e. `self` is the only
+    /// outstanding reference anywhere. See [`UniqueRep`]'s soundness note
+    /// for why a `&mut self` path like this one is the only sound way to
+    /// construct one.
+    #[inline]
+    pub(crate) fn try_unique(&mut self) -> Option<UniqueRep<'_>> {
+        if self.as_ref().ref_is_one() {
+            // SAFETY: `self` owns the sole reference (struct invariant) and
+            // `ref_is_one()` just confirmed no other reference exists
+            // either, so this `&mut self` borrow is the only live handle to
+            // the node anywhere, for as long as the borrow lasts.
+            Some(unsafe { UniqueRep::from_raw(self.ptr.as_ptr()) })
+        } else {
+            None
+        }
+    }
 }
 
 impl Drop for OwnedRep {
@@ -871,6 +890,107 @@ pub(crate) enum RepView<'a> {
     External(external::ExternalRef<'a>),
     /// A flat node.
     Flat(flat::FlatRef<'a>),
+}
+
+/// Refcount-one mutation witness: proof that, for `'a`, this call is the
+/// *only* live handle to the wrapped rep, so it may be mutated in place.
+///
+/// # Soundness
+///
+/// The sole constructor, [`from_raw`](Self::from_raw), is a crate-private
+/// `unsafe fn` documented to be called *only* from
+/// [`OwnedRep::try_unique`] and [`crate::inline_data::InlineData::tree_unique`]
+/// — both of which take `&mut self` and both of which check
+/// [`ref_is_one`](RepRef::ref_is_one) themselves right before constructing.
+/// That `&mut` borrow is what makes the combination sound: it proves no
+/// *other* copy of the owning slot (the `OwnedRep` value, or the
+/// `Cord`/`InlineData` it lives in) can be read or written for as long as
+/// the resulting `UniqueRep` exists, so together with `ref_is_one()` this
+/// really is the only handle to the node anywhere. Minting a `UniqueRep`
+/// from a `Copy` [`RepRef`] instead would break this: two independent
+/// copies of the same `RepRef` could each separately observe
+/// `ref_is_one()` and each construct a `UniqueRep`, yielding two
+/// "exclusive" mutable views of the same node at once. No other code in
+/// the crate may call `from_raw`.
+pub(crate) struct UniqueRep<'a> {
+    ptr: NonNull<CordRep>,
+    _marker: PhantomData<&'a mut CordRep>,
+}
+
+impl UniqueRep<'_> {
+    /// # Safety
+    ///
+    /// `ptr` must be non-null and point to a live, well-formed rep with
+    /// `ref_is_one()` true, and the caller must additionally guarantee,
+    /// via a `&mut` borrow on the sole owner of this reference, that no
+    /// other handle to it exists or is created for `'a`. See the
+    /// [type-level soundness note](Self) for why only two call sites in
+    /// the crate may use this.
+    #[inline]
+    pub(crate) unsafe fn from_raw(ptr: *mut CordRep) -> Self {
+        debug_assert!(!ptr.is_null());
+        // SAFETY: non-null per the debug_assert above.
+        Self { ptr: unsafe { NonNull::new_unchecked(ptr) }, _marker: PhantomData }
+    }
+
+    /// This handle reinterpreted as a read-only [`RepRef`], borrowed from
+    /// `self` rather than tied to `'a` (so it cannot outlive further
+    /// mutation through `self`).
+    #[inline]
+    pub(crate) fn as_ref(&self) -> RepRef<'_> {
+        // SAFETY: `self`'s invariant guarantees `self.ptr` is live and
+        // touched only through this borrow for the returned handle's
+        // lifetime.
+        unsafe { RepRef::from_raw(self.ptr.as_ptr()) }
+    }
+
+    /// Escape hatch to the raw pointer, for code not yet converted to the
+    /// handle types (e.g. deep btree surgery, which stays raw by design).
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *mut CordRep {
+        self.ptr.as_ptr()
+    }
+
+    /// Sets this rep's `length`. Sound because `self`'s invariant is
+    /// exclusive access.
+    #[inline]
+    pub(crate) fn set_len(&mut self, len: usize) {
+        // SAFETY: exclusive access per `self`'s invariant.
+        unsafe { self.ptr.as_ptr().set_length(len) };
+    }
+
+    /// The writable region of a flat's payload, from the current `length`
+    /// up to `capacity`, as `MaybeUninit` (bytes past `length` were never
+    /// written as `u8`). Requires this handle's rep to be a flat node (tag
+    /// in `FLAT..=MAX_FLAT_TAG`).
+    #[inline]
+    pub(crate) fn flat_spare_capacity_mut(&mut self) -> &mut [MaybeUninit<u8>] {
+        debug_assert!(self.as_ref().is_flat());
+        let ptr = self.ptr.as_ptr();
+        // SAFETY: exclusive access per `self`'s invariant makes it sound to
+        // hand out a mutable view of the region beyond `length` (never read
+        // back as initialized `u8`) up to `capacity`; the pointer is
+        // derived from the flat's own allocation via `flat::data`, valid
+        // for reads/writes over the whole capacity per its own contract.
+        unsafe {
+            let len = ptr.length();
+            let capacity = flat::capacity(ptr);
+            let spare = flat::data(ptr).add(len).cast::<MaybeUninit<u8>>();
+            core::slice::from_raw_parts_mut(spare, capacity - len)
+        }
+    }
+
+    /// Mutable access to a [`CordRepSubstring`]'s `start` field. Requires
+    /// this handle's rep to be a substring (tag == SUBSTRING).
+    #[inline]
+    pub(crate) fn substring_start_mut(&mut self) -> &mut usize {
+        debug_assert!(self.as_ref().is_substring());
+        let sub: *mut CordRepSubstring = self.ptr.as_ptr().cast();
+        // SAFETY: tag == SUBSTRING (checked above) guarantees the cast is
+        // sound (the module's tag invariant); exclusive access per `self`'s
+        // invariant makes the `&mut` sound.
+        unsafe { &mut (*sub).start }
+    }
 }
 
 // --- Small memmove ---------------------------------------------------------

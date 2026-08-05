@@ -62,6 +62,11 @@ pub(crate) const fn tag_to_allocated_size(tag: u8) -> usize {
 const _: () = assert!(allocated_size_to_tag_unchecked(MIN_FLAT_SIZE) == FLAT);
 const _: () = assert!(allocated_size_to_tag_unchecked(MAX_LARGE_FLAT_SIZE) == MAX_FLAT_TAG);
 const _: () = assert!(tag_to_allocated_size(MAX_FLAT_TAG) == MAX_LARGE_FLAT_SIZE, "Bad tag logic");
+// Every flat, however small the requested length, has capacity for at
+// least a full 15-byte inline value. `InlineData::copy_max_inline_to` and
+// `Cord::make_flat_with_extra_capacity` rely on this to always have room
+// for an unconditional 15-byte write regardless of the flat's real length.
+const _: () = assert!(MIN_FLAT_LENGTH > super::MAX_INLINE);
 
 /// Rounds `n` up to the nearest multiple of the power of two `m`.
 #[inline]

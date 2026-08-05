@@ -782,6 +782,60 @@ impl<'a> BtreeRef<'a> {
             unsafe { super::RepRef::from_raw(edge) }
         })
     }
+
+    /// This node's `begin` cursor (index of the first live edge).
+    #[inline]
+    pub(crate) fn begin(self) -> usize {
+        // SAFETY: see `height`.
+        unsafe { self.ptr.as_ptr().begin() }
+    }
+
+    /// The edge at `index`, borrowed for `'a`. Requires `begin() <= index <
+    /// end()` (debug-asserted by the underlying accessor).
+    #[inline]
+    pub(crate) fn edge(self, index: usize) -> super::RepRef<'a> {
+        // SAFETY: `self`'s invariant makes `self.ptr` a live, well-formed
+        // node for `'a`; the returned edge is kept live for at least as
+        // long as its parent (this node holds a reference on it), i.e. for
+        // `'a`.
+        unsafe { super::RepRef::from_raw(self.ptr.as_ptr().edge(index)) }
+    }
+
+    /// The front or back edge, borrowed for `'a`. Requires the node to be
+    /// non-empty.
+    #[inline]
+    pub(crate) fn edge_at<const IS_BACK: bool>(self) -> super::RepRef<'a> {
+        // SAFETY: see `edge`.
+        unsafe { super::RepRef::from_raw(self.ptr.as_ptr().edge_at::<IS_BACK>()) }
+    }
+
+    /// The data of the leaf edge at `index`, borrowed for `'a`. Requires a
+    /// leaf node (`height() == 0`) and `begin() <= index < end()`.
+    #[inline]
+    pub(crate) fn data(self, index: usize) -> &'a [u8] {
+        // SAFETY: see `edge`; `BtreePtr::data` re-checks the leaf
+        // requirement itself (debug-only), and the returned slice borrows
+        // an edge kept live for at least `'a` for the same reason.
+        unsafe { self.ptr.as_ptr().data(index) }
+    }
+
+    /// Returns the index of the last edge starting on or before `offset`
+    /// and the relative offset inside that edge. Requires `offset <
+    /// len()`.
+    #[inline]
+    pub(crate) fn index_of(self, offset: usize) -> Position {
+        // SAFETY: see `height`.
+        unsafe { self.ptr.as_ptr().index_of(offset) }
+    }
+
+    /// The flat data of this (sub)tree if it is a single contiguous buffer.
+    #[inline]
+    pub(crate) fn as_flat(self) -> Option<&'a [u8]> {
+        // SAFETY: `self`'s invariant makes `self.ptr` a live, well-formed
+        // node for `'a`, and the returned slice (if any) borrows a data
+        // edge kept alive by the tree for at least as long, i.e. for `'a`.
+        unsafe { CordRepBtree::as_flat(self.ptr.as_ptr()) }
+    }
 }
 
 // --- Stack operations -------------------------------------------------------

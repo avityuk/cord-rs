@@ -90,12 +90,6 @@ impl<'a> Chunks<'a> {
         }
     }
 
-    /// The bytes of the current chunk (empty at the end).
-    #[inline]
-    pub(crate) fn current_chunk(&self) -> &'a [u8] {
-        self.current_chunk
-    }
-
     /// Bytes remaining, counting from the start of the current chunk.
     #[inline]
     #[allow(dead_code)]
