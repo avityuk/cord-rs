@@ -92,6 +92,29 @@ pub use source::{CordLike, CordSource};
 #[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 pub use bytes_impl::CordWriter;
 
+/// Compile-time guard against silently losing `Send`/`Sync` on the crate's
+/// public types. `Cord` and `CordBuffer` assert both explicitly (see their
+/// `unsafe impl` blocks); `Chunks`/`Cursor`/`Bytes` (and, with the `bytes`
+/// feature, `CordWriter`) get them for free by auto-derivation from their
+/// fields — in particular `rep::RepRef`'s own `unsafe impl` — so a future
+/// field change that broke that derivation would otherwise compile clean
+/// with no other signal anywhere. Calling `assert_send_sync::<T>()` from a
+/// `const` item forces the compiler to resolve `T: Send + Sync` for that
+/// exact `T` right here, at definition time — no value of the type, or any
+/// other call site, is needed.
+const fn assert_send_sync<T: ?Sized + Send + Sync>() {}
+
+const _: () = {
+    assert_send_sync::<Cord>();
+    assert_send_sync::<CordBuffer>();
+    assert_send_sync::<Chunks<'_>>();
+    assert_send_sync::<Cursor<'_>>();
+    assert_send_sync::<Bytes<'_>>();
+};
+
+#[cfg(feature = "bytes")]
+const _: () = assert_send_sync::<CordWriter<'_>>();
+
 /// Internal inspection hooks for tests and benchmarks. Not part of the
 /// public API; may change without notice.
 #[doc(hidden)]

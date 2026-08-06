@@ -186,8 +186,10 @@ unsafe fn release<O>(ext: *mut CordRepExternal) {
 /// # Invariant
 ///
 /// The wrapped pointer is non-null and points to a live external rep (tag
-/// == `EXTERNAL`) for the duration of `'a`, established once at the sole
-/// constructor [`from_raw`](Self::from_raw).
+/// == `EXTERNAL`) that is not mutated — other than through its
+/// interior-mutable refcount — for the duration of `'a` (this is what lets
+/// [`data`](Self::data) hand out a `&'a [u8]`). Established once, at the
+/// sole constructor [`from_raw`](Self::from_raw).
 #[derive(Clone, Copy)]
 pub(crate) struct ExternalRef<'a> {
     ptr: NonNull<CordRepExternal>,
@@ -237,8 +239,9 @@ impl<'a> ExternalRef<'a> {
         self.len() + EXTERNAL_REP_SIZE
     }
 
-    /// Escape hatch to the raw pointer, for code not yet converted to the
-    /// handle types.
+    /// Escape hatch to the raw pointer: a permanent, intentional interop
+    /// point with the raw surgery layer, not a stopgap pending conversion to
+    /// the handle types.
     #[inline]
     pub(crate) fn as_ptr(self) -> *mut CordRepExternal {
         self.ptr.as_ptr()

@@ -251,7 +251,8 @@ impl Cord {
     /// `rep.len() != 0`.
     #[inline]
     pub(crate) fn from_owned_rep(rep: OwnedRep) -> Self {
-        debug_assert!(rep.len() != 0);
+        // SAFETY: `rep` is a live rep per `OwnedRep`'s own invariant.
+        unsafe { rep::debug_assert_nonempty_rep(rep.as_ref().as_ptr()) };
         Self { data: InlineData::from_tree(rep) }
     }
 
@@ -757,8 +758,13 @@ impl Cord {
     /// other cords have their reference counts decremented.
     #[inline]
     pub fn clear(&mut self) {
-        self.data.take_tree(); // Drops (unrefs) the old tree, if any.
-        self.data = InlineData::new();
+        // `take_tree` already resets `self.data` to empty inline data when
+        // there was a tree to drop (unref); only the no-tree case (already
+        // inline, possibly non-empty) still needs the explicit reset below,
+        // so this never stores the empty value twice.
+        if self.data.take_tree().is_none() {
+            self.data = InlineData::new();
+        }
     }
 
     /// Appends `src` to the cord.

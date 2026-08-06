@@ -232,9 +232,11 @@ impl InlineData {
 
     /// Read-only pointer to the inline character data. Requires `!is_tree()`.
     ///
-    /// Kept as a raw-pointer escape hatch for `cord.rs` call sites not yet
-    /// converted to the safe editing API below (`push_back_inline` etc.);
-    /// new code should prefer those, or [`tail`](Self::tail).
+    /// A permanent, intentional escape hatch to the raw pointer: `cord.rs`'s
+    /// one call site needs it for a `copy_nonoverlapping` bulk copy, which
+    /// the safe editing API below (`push_back_inline` etc.) has no slice-based
+    /// equivalent for by design. New code that isn't doing that kind of raw
+    /// bulk copy should prefer those, or [`tail`](Self::tail).
     #[inline]
     pub(crate) fn as_chars(&self) -> *const u8 {
         debug_assert!(!self.is_tree());

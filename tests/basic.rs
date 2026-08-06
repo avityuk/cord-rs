@@ -599,9 +599,11 @@ fn clone_and_sharing_semantics() {
 
 #[test]
 fn send_sync_across_threads() {
-    let data: Vec<u8> = (0..100_000u32).map(|i| (i % 200) as u8).collect();
+    let len: u32 = if cfg!(miri) { 2_000 } else { 100_000 };
+    let num_threads: u32 = if cfg!(miri) { 3 } else { 8 };
+    let data: Vec<u8> = (0..len).map(|i| (i % 200) as u8).collect();
     let cord = Cord::from(data.clone());
-    let handles: Vec<_> = (0..8)
+    let handles: Vec<_> = (0..num_threads)
         .map(|t| {
             let mut c = cord.clone();
             let data = data.clone();

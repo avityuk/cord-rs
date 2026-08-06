@@ -198,13 +198,18 @@ impl<'a> Chunks<'a> {
             return subcord;
         }
 
-        // A single data edge.
-        debug_assert!(self.current_leaf.is_some());
-        // SAFETY: `current_leaf` is always set whenever `btree_reader` is
-        // empty and the cord holds a tree (established by `init_tree`,
-        // never cleared while `btree_reader` stays empty), matching this
-        // branch's precondition (mirrored by the debug_assert above).
-        let leaf = unsafe { self.current_leaf.unwrap_unchecked() };
+        // A single data edge. `current_leaf` is always set here for a
+        // `Chunks` built from a `Cord` (`Chunks::new` -> `init_tree` sets it
+        // whenever `btree_reader` stays empty and the cord holds a tree, and
+        // nothing clears it afterwards) — the only path that can reach
+        // `read_bytes` at all, since `Cursor` (this fn's sole caller via
+        // `Cursor::read`) is only ever built over a `Cord` by `Cursor::new`.
+        // `Chunks::single` (used by `CordLike::chunks`, e.g. `&[u8]`) leaves
+        // `current_leaf` unset, but a `Cursor` is never built over one, so
+        // that state can't reach here; `expect` (not the unchecked cousin)
+        // keeps that a debug-and-release-checked invariant rather than one
+        // provable only by tracing every call site.
+        let leaf = self.current_leaf.expect("read_bytes: single data edge with no current_leaf");
         if n == leaf.len() {
             // Reading the entire edge: share it.
             self.bytes_remaining = 0;
@@ -230,6 +235,8 @@ impl<'a> Chunks<'a> {
         // precondition `n <= bytes_remaining` bounds `offset + n <=
         // leaf.len()`.
         let tree = unsafe { CordRepSubstring::substring(payload.as_ptr(), offset, n) };
+        // SAFETY: `substring` (called without `ADOPT`) returns a fresh,
+        // independently owned reference, which `OwnedRep::from_raw` adopts.
         let subcord = Cord::from_owned_rep(unsafe { OwnedRep::from_raw(tree) });
         self.bytes_remaining -= n;
         self.current_chunk = &self.current_chunk[n..];

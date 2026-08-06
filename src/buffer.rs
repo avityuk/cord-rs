@@ -518,23 +518,16 @@ impl CordBuffer {
         n
     }
 
-    /// Sets the length to `len`, clamped to the current length. Clamping
-    /// means this can only shrink (or no-op), which can never expose
-    /// uninitialized bytes, so it is sound as a safe fn (unlike `set_len`,
-    /// which can also grow).
+    /// Shortens the initialized data to `len` bytes. No effect if `len >=
+    /// self.len()`. Does not release memory. Clamping means this can only
+    /// shrink (or no-op), which can never expose uninitialized bytes, so it
+    /// is sound as a safe fn (unlike `set_len`, which can also grow).
     #[inline]
-    fn truncate_len(&mut self, len: usize) {
+    pub fn truncate(&mut self, len: usize) {
         let len = len.min(self.len());
         // SAFETY: `len <= self.len()`, so every byte up to it is already
         // initialized.
         unsafe { self.set_len(len) };
-    }
-
-    /// Shortens the initialized data to `len` bytes. No effect if `len >=
-    /// self.len()`. Does not release memory.
-    #[inline]
-    pub fn truncate(&mut self, len: usize) {
-        self.truncate_len(len);
     }
 
     /// Sets the length to zero. Does not release memory.

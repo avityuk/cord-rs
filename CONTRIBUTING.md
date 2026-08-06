@@ -187,9 +187,12 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
     once" note is not worth writing, the test demonstrates it by construction
     and runs under Miri.
   - **Current unsafe footprint.** As of 2026-08-31 (`unsafe fn` / `unsafe {}`
-    blocks, non-test files): upper layers (`cord.rs`, `iter.rs`, `io.rs`,
-    `buffer.rs`, `inline_data.rs`, `lib.rs`) are at 5/78 combined, down from
-    a recorded baseline of 23/99 — `cord.rs` itself went from 19/49 to 3/34.
+    blocks, counted per file as a whole — including any inline `#[cfg(test)]`
+    module it carries, e.g. `inline_data.rs`'s; only the dedicated
+    `*_tests.rs` / `test_util.rs` files under `src/rep/` are excluded): upper
+    layers (`cord.rs`, `iter.rs`, `io.rs`, `buffer.rs`, `inline_data.rs`,
+    `lib.rs`) are at 5/78 combined, down from a recorded baseline of 23/99 —
+    `cord.rs` itself went from 19/49 to 3/34.
     `unsafe fn` is the number that tracks the actual win: upper-layer call
     sites essentially never need to *be* unsafe anymore. Blocks didn't shrink
     the same way, and that's expected, not a miss — the raw operations moved

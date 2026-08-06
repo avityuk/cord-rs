@@ -2,10 +2,12 @@
 //! `rep/btree.rs`: `RepRef`, `OwnedRep`, `RepView`, `FlatRef`, `ExternalRef`
 //! and `BtreeRef`.
 
+use crate::inline_data::InlineData;
+
 use super::btree::{BtreePtr, CordRepBtree};
 use super::external::EXTERNAL_REP_SIZE;
 use super::test_util::*;
-use super::{CordRep, OwnedRep, RepPtr, RepRef, RepView, flat, unref};
+use super::{CordRep, OwnedRep, RepPtr, RepRef, RepView, flat, ref_rep, unref};
 
 const VALUE: &[u8] = b"Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
 
@@ -228,5 +230,137 @@ fn btree_ref_accessors_and_edges() {
         assert_eq!(collected, expected);
 
         unref(tree.as_rep());
+    }
+}
+
+// --- UniqueRep -------------------------------------------------------------
+//
+// `UniqueRep` is the crate's central mutation witness (see its soundness
+// note in `rep.rs`), so two of its three legitimate `&mut`-borrow
+// constructors (`OwnedRep::try_unique`, `InlineData::tree_unique`; the
+// third, `CordBuffer`'s internal `Rep::view_mut`, is exercised by
+// `buffer.rs`'s own tests) and every method it exposes get direct coverage
+// here.
+
+#[test]
+fn owned_rep_try_unique_none_when_shared_some_when_unique() {
+    unsafe {
+        let raw = make_flat(VALUE);
+        let mut owned = OwnedRep::from_raw(raw);
+        let mut cloned = owned.clone();
+
+        // Shared (refcount 2): neither handle may claim exclusivity.
+        assert!(owned.try_unique().is_none());
+        assert!(cloned.try_unique().is_none());
+
+        drop(cloned);
+
+        // Back to refcount 1: the sole remaining handle is now unique.
+        assert!(owned.try_unique().is_some());
+    }
+}
+
+#[test]
+fn inline_data_tree_unique_none_when_shared_some_when_unique() {
+    unsafe {
+        let raw = make_flat(VALUE);
+        let extra = ref_rep(raw);
+        let mut data = InlineData::from_tree(OwnedRep::from_raw(raw));
+
+        // `extra` is a second, independent reference on the same rep.
+        assert!(data.tree_unique().is_none());
+        unref(extra);
+        assert!(data.tree_unique().is_some());
+
+        // Clean up the tree reference `data` still holds.
+        drop(data.take_tree());
+    }
+}
+
+#[test]
+fn unique_rep_flat_spare_capacity_mut_bounds() {
+    unsafe {
+        let raw = flat::new(64);
+        let capacity = flat::capacity(raw);
+        let mut owned = OwnedRep::from_raw(raw);
+
+        // len == 0: the whole capacity is spare.
+        {
+            let mut unique = owned.try_unique().expect("sole ref");
+            assert_eq!(unique.flat_spare_capacity_mut().len(), capacity);
+            unique.set_len(capacity);
+        }
+
+        // len == capacity: nothing is spare.
+        {
+            let mut unique = owned.try_unique().expect("sole ref");
+            assert_eq!(unique.flat_spare_capacity_mut().len(), 0);
+            // Restore length 0 so nothing downstream reads the
+            // never-initialized payload as data.
+            unique.set_len(0);
+        }
+    }
+}
+
+#[test]
+fn unique_rep_set_len_visible_via_as_ref_len() {
+    unsafe {
+        let raw = flat::new(32);
+        let mut owned = OwnedRep::from_raw(raw);
+        let mut unique = owned.try_unique().expect("sole ref");
+        assert_eq!(unique.as_ref().len(), 0);
+        unique.set_len(10);
+        assert_eq!(unique.as_ref().len(), 10);
+    }
+}
+
+#[test]
+fn unique_rep_substring_start_mut() {
+    unsafe {
+        let raw = make_flat(VALUE);
+        let substr = make_substring(1, 20, raw);
+        let mut owned = OwnedRep::from_raw(substr);
+
+        {
+            let mut unique = owned.try_unique().expect("sole ref");
+            assert_eq!(*unique.substring_start_mut(), 1);
+            *unique.substring_start_mut() = 5;
+        }
+
+        assert_eq!(*owned.try_unique().expect("sole ref").substring_start_mut(), 5);
+    }
+}
+
+#[test]
+fn unique_rep_flat_data_mut_and_into_flat_spare_capacity_mut() {
+    unsafe {
+        let raw = flat::new(32);
+        let capacity = flat::capacity(raw);
+        let mut owned = OwnedRep::from_raw(raw);
+
+        // Fill 5 bytes through the `&mut self`-borrowed spare capacity.
+        {
+            let mut unique = owned.try_unique().expect("sole ref");
+            unique.flat_spare_capacity_mut()[..5].write_copy_of_slice(b"hello");
+            unique.set_len(5);
+        }
+
+        // `flat_data_mut` consumes the witness and hands back a slice tied
+        // to `owned`'s borrow instead of the call's own: it outlives this
+        // block's `unique` binding, which is exactly the point.
+        {
+            let data = owned.try_unique().expect("sole ref").flat_data_mut();
+            assert_eq!(data, b"hello");
+            data[0] = b'H';
+        }
+        assert_eq!(owned.as_ref().data(), b"Hello");
+
+        // `into_flat_spare_capacity_mut` is the same by-value handoff for
+        // the uninitialized tail.
+        {
+            let unique = owned.try_unique().expect("sole ref");
+            let spare = unique.into_flat_spare_capacity_mut();
+            assert_eq!(spare.len(), capacity - 5);
+        }
     }
 }

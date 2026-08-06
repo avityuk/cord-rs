@@ -677,18 +677,21 @@ pub(crate) unsafe fn as_btree(rep: *mut CordRep) -> *mut CordRepBtree {
 
 /// Copy handle borrowing a live btree node for `'a`.
 ///
-/// Read-only shell for this phase: mutation and deep tree surgery stay on
-/// [`BtreePtr`] / raw `*mut CordRepBtree` (see the [module doc](self) on why
-/// that stays deliberately unsafe — `StackOperations` tracks share-depth
-/// dynamically, which a static witness type can't express). Fleshed out
-/// with the rest of `BtreePtr`'s read accessors in a later phase.
+/// Read-only shell by design, permanently: mutation and deep tree surgery
+/// stay on [`BtreePtr`] / raw `*mut CordRepBtree` (see the [module
+/// doc](self) on why that stays deliberately unsafe — `StackOperations`
+/// tracks share-depth dynamically, which a static witness type can't
+/// express). Grows more of `BtreePtr`'s read accessors as callers need them;
+/// mutation is intentionally never added here.
 ///
 /// # Invariant
 ///
 /// The wrapped pointer is non-null and points to a live, well-formed
-/// `CordRepBtree` (see [`BtreePtr`]'s trait-level `# Safety`) for the
-/// duration of `'a`, established once at the sole constructor
-/// [`from_raw`](Self::from_raw).
+/// `CordRepBtree` (see [`BtreePtr`]'s trait-level `# Safety`) that is not
+/// mutated — other than through its interior-mutable refcount — for the
+/// duration of `'a` (this is what lets [`edges`](Self::edges) hand out
+/// `RepRef<'a>` handles into its children). Established once, at the sole
+/// constructor [`from_raw`](Self::from_raw).
 #[derive(Clone, Copy)]
 pub(crate) struct BtreeRef<'a> {
     ptr: NonNull<CordRepBtree>,
@@ -725,8 +728,9 @@ impl<'a> BtreeRef<'a> {
         unsafe { self.ptr.as_ptr().length() }
     }
 
-    /// Escape hatch to the raw pointer, for code not yet converted to the
-    /// handle types.
+    /// Escape hatch to the raw pointer: a permanent, intentional interop
+    /// point with the raw surgery layer, not a stopgap pending conversion to
+    /// the handle types.
     #[inline]
     pub(crate) fn as_ptr(self) -> *mut CordRepBtree {
         self.ptr.as_ptr()

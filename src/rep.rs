@@ -209,8 +209,13 @@ impl CordRep {
 /// Convenience accessors on raw rep pointers.
 ///
 /// All methods are `unsafe`: `self` must point to a live rep. They read and
-/// write through the raw pointer without creating references to the header,
-/// so they are safe to interleave with other raw pointers to the same node.
+/// write through the raw pointer without creating a reference to the whole
+/// header, so they are safe to interleave with other raw pointers to the
+/// same node. The refcount operations (`ref_inc` and its siblings) are the
+/// one partial exception: they do borrow, but the borrow is scoped to just
+/// the `refcount` field — never the header as a whole — which is what keeps
+/// them safe to interleave too; see `ref_inc`'s own comment for why that
+/// field-scoped borrow is sound.
 ///
 /// # Safety
 ///
@@ -318,8 +323,11 @@ impl RepPtr for *mut CordRep {
 }
 
 /// Debug-only check that `rep` is non-null and non-empty — the adoption
-/// contract of [`OwnedRep::from_raw`] / [`Cord::from_owned_rep`]. Compiles
-/// away in release builds.
+/// contract of [`Cord::from_owned_rep`]. Compiles away in release builds.
+/// (`OwnedRep::from_raw` itself adopts any live, well-formed rep and does
+/// not require non-emptiness; only `Cord::from_owned_rep`'s narrower
+/// contract — a tree is never empty, an empty `Cord` is always inline —
+/// does.)
 ///
 /// [`Cord::from_owned_rep`]: crate::cord::Cord::from_owned_rep
 ///
@@ -791,6 +799,9 @@ impl<'a> RepRef<'a> {
     pub(crate) fn view(self) -> RepView<'a> {
         let ptr = self.ptr.as_ptr();
         match self.tag() {
+            // SAFETY: tag == BTREE guarantees this cast is sound (the
+            // module's tag invariant); `self`'s own invariant keeps `ptr`
+            // live and unmutated for exactly `'a`.
             BTREE => RepView::Btree(unsafe { btree::BtreeRef::from_raw(ptr.cast()) }),
             SUBSTRING => {
                 let sub: *mut CordRepSubstring = ptr.cast();
@@ -801,7 +812,12 @@ impl<'a> RepRef<'a> {
                 let (start, child) = unsafe { ((*sub).start, (*sub).child) };
                 RepView::Substring { start, child: unsafe { RepRef::from_raw(child) } }
             }
+            // SAFETY: tag == EXTERNAL guarantees this cast is sound (the
+            // module's tag invariant); see the BTREE arm above for liveness.
             EXTERNAL => RepView::External(unsafe { external::ExternalRef::from_raw(ptr.cast()) }),
+            // SAFETY: tag >= FLAT is exactly `FlatRef::from_raw`'s
+            // precondition (the module's tag invariant); see the BTREE arm
+            // above for liveness.
             tag if tag >= FLAT => RepView::Flat(unsafe { flat::FlatRef::from_raw(ptr) }),
             tag => unreachable!("cord-rs: unexpected rep tag {tag}"),
         }
@@ -822,8 +838,11 @@ impl<'a> RepRef<'a> {
         }
     }
 
-    /// Escape hatch to the raw pointer, for code not yet converted to the
-    /// handle types.
+    /// Escape hatch to the raw pointer: a permanent, intentional interop
+    /// point with the raw surgery layer (deep btree operations, `lib.rs`'s
+    /// inspection hooks, and other code that works directly on `*mut
+    /// CordRep`/[`RepPtr`] by design), not a stopgap pending conversion to
+    /// the handle types.
     #[inline]
     pub(crate) fn as_ptr(self) -> *mut CordRep {
         self.ptr.as_ptr()
@@ -1000,7 +1019,7 @@ impl<'a> UniqueRep<'a> {
     /// `ref_is_one()` true, and the caller must additionally guarantee,
     /// via a `&mut` borrow on the sole owner of this reference, that no
     /// other handle to it exists or is created for `'a`. See the
-    /// [type-level soundness note](Self) for why only two call sites in
+    /// [type-level soundness note](Self) for why only three call sites in
     /// the crate may use this.
     #[inline]
     pub(crate) unsafe fn from_raw(ptr: *mut CordRep) -> Self {
@@ -1020,8 +1039,10 @@ impl<'a> UniqueRep<'a> {
         unsafe { RepRef::from_raw(self.ptr.as_ptr()) }
     }
 
-    /// Escape hatch to the raw pointer, for code not yet converted to the
-    /// handle types (e.g. deep btree surgery, which stays raw by design).
+    /// Escape hatch to the raw pointer: a permanent, intentional interop
+    /// point with the raw surgery layer (e.g. deep btree surgery, which
+    /// stays raw by design), not a stopgap pending conversion to the handle
+    /// types.
     #[inline]
     pub(crate) fn as_ptr(&self) -> *mut CordRep {
         self.ptr.as_ptr()

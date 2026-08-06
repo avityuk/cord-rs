@@ -267,7 +267,9 @@ pub(crate) unsafe fn allocated_size(rep: *mut CordRep) -> usize {
 /// # Invariant
 ///
 /// The wrapped pointer is non-null and points to a live flat rep (tag in
-/// `FLAT..=MAX_FLAT_TAG`) for the duration of `'a`, established once at the
+/// `FLAT..=MAX_FLAT_TAG`) that is not mutated — other than through its
+/// interior-mutable refcount — for the duration of `'a` (this is what lets
+/// [`data`](Self::data) hand out a `&'a [u8]`). Established once, at the
 /// sole constructor [`from_raw`](Self::from_raw).
 #[derive(Clone, Copy)]
 pub(crate) struct FlatRef<'a> {
@@ -323,8 +325,9 @@ impl<'a> FlatRef<'a> {
         unsafe { core::slice::from_raw_parts(data(self.ptr.as_ptr()), len) }
     }
 
-    /// Escape hatch to the raw pointer, for code not yet converted to the
-    /// handle types.
+    /// Escape hatch to the raw pointer: a permanent, intentional interop
+    /// point with the raw surgery layer, not a stopgap pending conversion to
+    /// the handle types.
     #[inline]
     pub(crate) fn as_ptr(self) -> *mut CordRep {
         self.ptr.as_ptr()
