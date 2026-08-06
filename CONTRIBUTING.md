@@ -102,17 +102,66 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
 
 ## Conventions
 
-- **Faithful port.** The rep layer mirrors abseil's `absl/strings/internal/cord_*`
-  (layouts, constants, algorithms, reference-counting rules: functions taking a
-  rep adopt a reference, functions returning one transfer it). When changing
-  it, diff against the C++ source and keep the ported tests aligned; test
-  names mirror the C++ test names in `snake_case`.
-- **`unsafe` discipline.** All raw-pointer code lives under `src/rep/` and in the
-  `unsafe` helper blocks of `cord.rs`/`iter.rs`/`buffer.rs`. `unsafe_op_in_unsafe_fn`
-  is `deny`d, so every unsafe operation needs an explicit `unsafe {}` block.
-  Derive data pointers from the allocation pointer, never from a reference to
-  the header (Stacked Borrows), and derive pointers into owned buffers only
-  after the owner reached its final address.
+- **A port, not a fidelity claim.** The rep layer started from abseil's
+  `absl/strings/internal/cord_*` (layouts, constants, algorithms, the
+  adopt/transfer reference-counting convention: functions taking a rep adopt
+  a reference, functions returning one transfer it) and stays close to it by
+  default — but the crate is a port *with changes*, not a bit-for-bit clone.
+  Tree *shape* may diverge from abseil's when that minimizes the tree or is
+  neutral (never more nodes, sharing preserved or improved, content
+  identical, `validate()` still holds); the properties — O(1) clone, cheap
+  slicing, balance, sharing — are the contract, not the shape (see README's
+  "Relationship to abseil" section). When changing the rep layer, diff
+  against the C++ source for intent, keep the ported tests aligned, and note
+  any resulting structural divergence in the commit; test names mirror the
+  C++ test names in `snake_case`.
+- **`unsafe` discipline.** Raw-pointer code lives under `src/rep/` and in
+  `src/rep.rs`'s typed handle layer; the `unsafe` remaining in
+  `cord.rs`/`iter.rs`/`buffer.rs`/`inline_data.rs` is now almost entirely
+  calls into that layer's safe methods (see "Typed handles carry the
+  invariant" below). `unsafe_op_in_unsafe_fn` is `deny`d, so every unsafe
+  operation needs an explicit `unsafe {}` block. Derive data pointers from
+  the allocation pointer, never from a reference to the header (Stacked
+  Borrows), and derive pointers into owned buffers only after the owner
+  reached its final address.
+  - **Typed handles carry the invariant.** `src/rep.rs` defines `RepRef<'a>`
+    (Copy borrowed view), `OwnedRep` (RAII refcount owner), `RepView<'a>`
+    (checked tag dispatch), `UniqueRep<'a>` (refcount==1 mutation witness),
+    and per-kind `FlatRef`/`ExternalRef`/`BtreeRef`. Each has exactly *one*
+    `unsafe fn from_raw` constructor documenting the type's invariant
+    (liveness, well-formedness, and — for `UniqueRep` — exclusivity); every
+    other method on the type is safe because it needs nothing beyond that
+    invariant. New code that reads or transfers a rep should go through
+    these types (or add a safe method to one) rather than reach for a raw
+    `*mut CordRep` / the low-level `RepPtr` trait directly — `RepPtr` still
+    exists, but it's the handles' implementation detail and deep btree
+    surgery's escape hatch, not a general-purpose API.
+  - **`UniqueRep<'a>` is `&mut`-only.** It may only be constructed from a
+    `&mut` path that has already proven exclusivity — never from a `Copy`
+    `RepRef` (two copies of the same handle could each observe
+    `ref_is_one()` and each mint a "unique" view of the same node). Exactly
+    three call sites are permitted: `OwnedRep::try_unique(&mut self)`,
+    `InlineData::tree_unique(&mut self)`, and `CordBuffer`'s internal
+    `Rep::view_mut` (sound without a dynamic check because its flat is
+    unconditionally exclusive by construction). A fourth call site needs the
+    same `&mut`-borrow argument as the existing three, not just a passing
+    refcount check.
+  - **Handles vs. raw pointers.** Use the handle types for anything that
+    reads a rep, transfers ownership, or mutates through a proven-exclusive
+    witness. Deep btree surgery (`StackOperations`, merge/split/rebuild,
+    copy_prefix/suffix) stays on raw `NonNull`/`RepPtr` on purpose: it
+    tracks share-depth *dynamically* (the same node is exclusive below
+    `share_depth`, shared above it), which no static witness type can
+    express without lying — forcing it through a handle would be
+    relabeling, not a safety win.
+  - **Hot-path rule: no enum dispatch or `unwrap` in per-chunk/per-byte
+    loops.** Use the debug-asserted *unchecked* downcasts there, not
+    `RepRef::view()`'s checked match. This isn't hypothetical: an early
+    draft ran `view()`'s tag dispatch on the clone path and cost +211% on
+    `clone/inline` in A/B benchmarking; reverting to the direct tag-test
+    fast path restored parity. Benchmark (`cargo bench -- <filter>` against
+    a saved baseline) before landing anything on a path `benches/cord.rs`
+    covers.
   - Every `unsafe fn` gets a `/// # Safety` doc section, but *centralize*:
     when several methods share an invariant (e.g. a trait's "self must point
     to a live, well-formed node"), state it once at the trait/module level
@@ -137,6 +186,20 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
     (e.g. overlapping-buffer bounds); a routine "freshly allocated, unreffed
     once" note is not worth writing, the test demonstrates it by construction
     and runs under Miri.
+  - **Current unsafe footprint.** As of 2026-08-31 (`unsafe fn` / `unsafe {}`
+    blocks, non-test files): upper layers (`cord.rs`, `iter.rs`, `io.rs`,
+    `buffer.rs`, `inline_data.rs`, `lib.rs`) are at 5/78 combined, down from
+    a recorded baseline of 23/99 — `cord.rs` itself went from 19/49 to 3/34.
+    `unsafe fn` is the number that tracks the actual win: upper-layer call
+    sites essentially never need to *be* unsafe anymore. Blocks didn't shrink
+    the same way, and that's expected, not a miss — the raw operations moved
+    rather than vanished, now living inside the handle constructors and
+    `InlineData`'s editing helpers in `rep.rs`/`inline_data.rs`, often split
+    into more, smaller, individually-justified blocks than the one big block
+    they replaced. The rep layer (`rep.rs` plus `rep/*.rs`) holds 155/197 —
+    essentially the crate's whole remaining `unsafe fn` surface, concentrated
+    exactly where the effort intended: audited once, in one place, with deep
+    btree surgery (`btree.rs`, 92/98) as the largest single piece.
 - **Lints.** `clippy::pedantic` is on. Justify deliberate casts with
   `#[expect(clippy::..., reason = "...")]` (checked helpers such as
   `small_u8`, `height_to_isize`), not blanket `allow`s. Test files may allow the

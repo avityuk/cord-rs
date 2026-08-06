@@ -1,10 +1,14 @@
 # cord-rs — notes for Claude Code sessions
 
 Rust port of abseil's `absl::Cord` (source of truth for the rep layer:
-`~/Projects/abseil-cpp/absl/strings/{cord.h,cord.cc,internal/cord_*}`).
-Design decisions: faithful unsafe core, idiomatic `bytes`-style API, no
-Cordz/CRC, panic on out-of-range, 64+32-bit / LE+BE. See CONTRIBUTING.md for
-the layout, conventions and the full command reference.
+`~/Projects/abseil-cpp/absl/strings/{cord.h,cord.cc,internal/cord_*}`) — a
+port with changes, not a fidelity claim. Design decisions: typed-handle rep
+layer (RepRef/OwnedRep/RepView/UniqueRep over a raw-pointer btree-surgery
+core), idiomatic `bytes`-style API, no Cordz/CRC, panic on out-of-range,
+64+32-bit / LE+BE. Tree shape may diverge from abseil's when that minimizes
+the tree or is neutral — properties (O(1) clone, cheap slicing, balance,
+sharing) are the contract, not the shape. See CONTRIBUTING.md for the
+layout, conventions and the full command reference.
 
 ## Before every commit
 

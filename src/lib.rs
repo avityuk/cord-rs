@@ -1,6 +1,6 @@
 //! A rope-like byte sequence with O(log n) append, prepend and slicing, O(1)
-//! cloning, and a 16 byte footprint with 15 bytes of inline storage — a
-//! faithful port of abseil's [`absl::Cord`].
+//! cloning, and a 16 byte footprint with 15 bytes of inline storage — a port
+//! of abseil's [`absl::Cord`], with some changes along the way.
 //!
 //! # When to use a `Cord`
 //!
@@ -51,10 +51,11 @@
 //! Buffers referenced by a single cord are grown in place; buffers shared
 //! between cords are never modified.
 //!
-//! The implementation mirrors abseil's `absl::Cord` including its
-//! heuristics (copy-vs-share thresholds, amortized growth, buffer size
-//! classes), so performance characteristics carry over. The Cordz sampling
-//! layer and the CRC checksum node were not ported.
+//! The implementation started from abseil's design — the same heuristics
+//! (copy-vs-share thresholds, amortized growth, buffer size classes) — and
+//! evolves independently where that keeps the crate simpler or the trees
+//! smaller. The Cordz sampling layer and the CRC checksum node were not
+//! ported.
 //!
 //! # Features
 //!
