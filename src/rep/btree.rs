@@ -1021,9 +1021,11 @@ impl CordRepBtree {
     /// Allocates a fresh, uninitialized-edges node.
     ///
     /// Ownership obligation on the result (not a precondition of calling):
-    /// the caller should eventually fill `edges[begin..end]` with live rep
-    /// pointers before the node is treated as a well-formed tree; not doing
-    /// so only leaks memory.
+    /// the caller must fill `edges[begin..end]` with live rep pointers
+    /// before the node is dropped or treated as a well-formed tree —
+    /// `destroy` dereferences every edge in the live window, and an
+    /// unfilled window holds nulls (every caller fills the window
+    /// immediately, before anything can observe or drop the node).
     ///
     /// # Panics
     ///
@@ -1035,7 +1037,13 @@ impl CordRepBtree {
     /// `MAX_HEIGHT` by [`rebuild`](Self::rebuild) right after.
     #[inline]
     fn alloc(length: usize, height: usize, begin: usize, end: usize) -> *mut CordRepBtree {
-        assert!(height <= MAX_DEPTH, "cord-rs: height {height} exceeds MAX_DEPTH");
+        debug_assert!(height <= MAX_DEPTH, "cord-rs: height {height} exceeds MAX_DEPTH");
+        if height > MAX_DEPTH {
+            // Never unwind out of tree surgery (callers hold split
+            // ownership mid-operation); a lying height corrupts navigation,
+            // so this is unrecoverable.
+            std::process::abort();
+        }
         let mut rep = CordRep::new(length, BTREE);
         rep.storage = [small_u8(height), small_u8(begin), small_u8(end)];
         Box::into_raw(Box::new(CordRepBtree { rep, edges: [core::ptr::null_mut(); MAX_CAPACITY] }))

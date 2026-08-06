@@ -97,7 +97,7 @@ impl InlineData {
 
     /// Initializes this instance to hold the tree `rep`.
     #[inline]
-    pub(crate) fn make_tree(&mut self, rep: *mut CordRep) {
+    fn make_tree(&mut self, rep: *mut CordRep) {
         debug_assert!(!rep.is_null());
         self.tree = AsTree { tag: 1, _pad: [0; 7], rep };
     }

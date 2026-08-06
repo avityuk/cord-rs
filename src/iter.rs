@@ -140,8 +140,13 @@ impl<'a> Chunks<'a> {
             if n == self.current_chunk.len() {
                 self.current_chunk = self.btree_reader.next();
             } else {
-                let offset = self.btree_reader.length() - self.bytes_remaining;
-                self.current_chunk = self.btree_reader.seek(offset);
+                // SAFETY: this branch runs only while `bytes_remaining != 0`
+                // on a btree-backed iterator, so the reader was initialized
+                // (`is_some()`) — `length`/`seek`'s contract.
+                unsafe {
+                    let offset = self.btree_reader.length() - self.bytes_remaining;
+                    self.current_chunk = self.btree_reader.seek(offset);
+                }
             }
         } else {
             self.current_chunk = &[];
@@ -177,7 +182,9 @@ impl<'a> Chunks<'a> {
                 }
                 subcord
             } else {
-                let (chunk, tree) = self.btree_reader.read(n, chunk_size);
+                // SAFETY: this branch is guarded by `btree_reader.is_some()`
+                // above — `read`'s non-empty-reader contract.
+                let (chunk, tree) = unsafe { self.btree_reader.read(n, chunk_size) };
                 self.current_chunk = chunk;
                 debug_assert!(tree.is_some(), "read_bytes: n <= bytes_remaining rules out an exceeded read");
                 // SAFETY: `n <= self.bytes_remaining` (this fn's precondition,

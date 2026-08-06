@@ -302,11 +302,12 @@ impl Cord {
     fn append_tree(&mut self, tree: OwnedRep) {
         debug_assert!(tree.len() != 0);
         if self.is_tree() {
-            // SAFETY: `self.data.as_tree()` is `self`'s existing reference,
-            // adopted into `force_btree`/`append` below and replaced by the
-            // result.
+            let cur = self.data.take_tree().expect("is_tree() checked above");
+            // SAFETY: `append`'s raw result carries the reference that
+            // `force_btree`'s consumed input transferred in; adopted here
+            // and installed below.
             let owned = unsafe {
-                let btree = force_btree(OwnedRep::from_raw(self.data.as_tree()));
+                let btree = force_btree(cur);
                 let appended = CordRepBtree::append(btree, tree.into_raw());
                 OwnedRep::from_raw(appended.as_rep())
             };
@@ -332,9 +333,10 @@ impl Cord {
     fn prepend_tree(&mut self, tree: OwnedRep) {
         debug_assert!(tree.len() != 0);
         if self.is_tree() {
+            let cur = self.data.take_tree().expect("is_tree() checked above");
             // SAFETY: see `append_tree`.
             let owned = unsafe {
-                let btree = force_btree(OwnedRep::from_raw(self.data.as_tree()));
+                let btree = force_btree(cur);
                 let prepended = CordRepBtree::prepend(btree, tree.into_raw());
                 OwnedRep::from_raw(prepended.as_rep())
             };
@@ -360,14 +362,19 @@ impl Cord {
             return;
         }
         let had_tree = self.is_tree();
-        let rep: *mut CordRep;
+        let owned_cur: OwnedRep;
         if had_tree {
             let appended = match self.data.tree_unique() {
                 Some(mut unique) => prepare_append_region(&mut unique, src),
                 None => 0,
             };
             src = &src[appended..];
-            rep = self.data.as_tree();
+            if src.is_empty() {
+                // In-place growth above already updated the existing tree;
+                // `self.data`'s reference is untouched.
+                return;
+            }
+            owned_cur = self.data.take_tree().expect("is_tree() checked above");
         } else {
             // Try to fit in the inline buffer if possible.
             let inline_length = self.data.inline_size();
@@ -379,37 +386,29 @@ impl Cord {
             // exceeding the inline size. Subsequent growth is amortized
             // until we reach the maximum flat size.
             // SAFETY: creates a fresh flat and copies the existing inline
-            // bytes plus as much of `src` as fits into it.
-            rep = unsafe {
+            // bytes plus as much of `src` as fits into it; the fresh flat's
+            // single reference is adopted into `owned_cur` (sole owner).
+            owned_cur = unsafe {
                 let r = flat::new(inline_length + src.len());
                 let appended = src.len().min(flat::capacity(r) - inline_length);
                 core::ptr::copy_nonoverlapping(self.data.as_chars(), flat::data(r), inline_length);
                 core::ptr::copy_nonoverlapping(src.as_ptr(), flat::data(r).add(inline_length), appended);
                 r.set_length(inline_length + appended);
                 src = &src[appended..];
-                r
+                OwnedRep::from_raw(r)
             };
-        }
-
-        if src.is_empty() {
-            if !had_tree {
-                // SAFETY: `rep` is a freshly allocated flat with refcount
-                // one.
-                self.data.set_tree(unsafe { OwnedRep::from_raw(rep) });
+            if src.is_empty() {
+                self.data.set_tree(owned_cur);
+                return;
             }
-            // If `had_tree`, any in-place growth above already updated the
-            // existing tree in place; `self.data`'s tree pointer, and its
-            // reference, are unchanged.
-            return;
         }
 
         // Keep abseil's 10% growth rate.
-        // SAFETY: `rep` is a live rep: `self`'s existing tree (if
-        // `had_tree`, about to be replaced below) or a freshly allocated
-        // flat this call owns; either way this is the sole adopter of its
-        // reference into `force_btree`/`append_data`.
+        // SAFETY: `append_data`'s raw result carries the reference that
+        // `force_btree`'s consumed input transferred in; adopted here and
+        // installed below.
         let owned = unsafe {
-            let tree = force_btree(OwnedRep::from_raw(rep));
+            let tree = force_btree(owned_cur);
             let min_growth = (tree.length() / 10).max(src.len());
             let tree = CordRepBtree::append_data(tree, src, min_growth - src.len());
             OwnedRep::from_raw(tree.as_rep())
@@ -866,12 +865,15 @@ impl Cord {
         min_capacity: usize,
     ) -> CordBuffer {
         if self.is_tree() {
-            // SAFETY: `self.data.as_tree()` is our live tree, adopted by
-            // `extract_append_buffer` below.
-            let owned = unsafe { OwnedRep::from_raw(self.data.as_tree()) };
+            let owned = self.data.take_tree().expect("is_tree() checked above");
             let result = extract_append_buffer(owned, min_capacity);
+            // On failure `result.tree` carries the taken reference back
+            // unchanged; on success it is whatever remains. Reinstall it
+            // either way before returning.
+            // SAFETY: `result.tree`, when `Some`, carries exactly one
+            // reference (`extract_append_buffer`'s contract), adopted here.
+            self.set_tree_or_empty(result.tree.map(|t| unsafe { OwnedRep::from_raw(t.as_ptr()) }));
             if let Some(extracted) = result.extracted {
-                self.set_tree_or_empty(result.tree.map(|t| unsafe { OwnedRep::from_raw(t.as_ptr()) }));
                 // SAFETY: `extracted` is a uniquely owned flat with
                 // refcount one, no longer referenced by the tree.
                 return unsafe { CordBuffer::from_flat(extracted.as_ptr()) };
