@@ -172,8 +172,9 @@ fn prepare_append_region(root: &mut rep::UniqueRep<'_>, src: &[u8]) -> usize {
 
 /// Returns the flat data of `rep` if it is a single contiguous buffer.
 fn get_flat_aux(rep: RepRef<'_>) -> Option<&[u8]> {
-    if let RepView::Btree(tree) = rep.view() {
-        tree.as_flat()
+    if rep.is_btree() {
+        // SAFETY: tag checked on the line above.
+        unsafe { rep.btree_unchecked() }.as_flat()
     } else {
         // SUBSTRING, EXTERNAL or FLAT: all are data edges.
         debug_assert!(rep.is_data_edge());
@@ -633,17 +634,18 @@ impl Cord {
         let Some(node) = self.tree_ref() else {
             return self.data.inline_slice();
         };
-        let RepView::Btree(mut tree) = node.view() else {
+        if !node.is_btree() {
             // FLAT, EXTERNAL or a SUBSTRING thereof: all are data edges.
             return node.data();
-        };
+        }
+        // SAFETY: tag checked on the line above.
+        let mut tree = unsafe { node.btree_unchecked() };
         let mut height = tree.height();
         while height > 0 {
             height -= 1;
-            let RepView::Btree(child) = tree.edge_at::<{ rep::btree::FRONT }>().view() else {
-                unreachable!("cord-rs: non-leaf btree edge must be a btree node");
-            };
-            tree = child;
+            // SAFETY: every non-leaf edge of a well-formed btree is a btree
+            // node of one lesser height (`height > 0` here).
+            tree = unsafe { tree.edge_at::<{ rep::btree::FRONT }>().btree_unchecked() };
         }
         tree.data(tree.begin())
     }
@@ -741,10 +743,7 @@ impl Cord {
     #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
-        match self.data.view() {
-            Repr::Tree(tree) => tree.len(),
-            Repr::Inline(bytes) => bytes.len(),
-        }
+        self.data.len()
     }
 
     /// Returns `true` if the cord holds no bytes.
@@ -1052,7 +1051,7 @@ impl Cord {
         if new_size <= MAX_INLINE {
             let mut it = self.chunks();
             it.advance_bytes(pos);
-            return Cord { data: InlineData::fill_inline_from(it, new_size) };
+            return Cord { data: it.read_inline(new_size) };
         }
         // SAFETY: `tree` is live; `sub_tree` / `substring` return a new
         // reference.
@@ -1164,6 +1163,12 @@ impl Cord {
     /// (With the `bytes` feature, `bytes::Buf::copy_to_slice` is the
     /// *consuming* variant.)
     pub fn copy_prefix_to(&self, dst: &mut [u8]) -> usize {
+        if let Some(flat) = self.as_flat() {
+            // Contiguous (inline or single flat): one memcpy.
+            let n = flat.len().min(dst.len());
+            dst[..n].copy_from_slice(&flat[..n]);
+            return n;
+        }
         let mut dst = dst;
         let result = self.len().min(dst.len());
         for chunk in self.chunks() {
@@ -1251,10 +1256,9 @@ impl Cord {
                         }
                         height -= 1;
                         offset = front.n;
-                        let RepView::Btree(child) = node.edge(front.index).view() else {
-                            unreachable!("cord-rs: non-leaf btree edge must be a btree node");
-                        };
-                        node = child;
+                        // SAFETY: every non-leaf edge of a well-formed
+                        // btree is a btree node (`height > 0` here).
+                        node = unsafe { node.edge(front.index).btree_unchecked() };
                     }
                 }
                 RepView::Substring { start, child } => {

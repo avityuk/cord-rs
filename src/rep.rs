@@ -793,6 +793,23 @@ impl<'a> RepRef<'a> {
         unsafe { edge_data(self.ptr.as_ptr()) }
     }
 
+    /// This handle as a [`btree::BtreeRef`], without a checked dispatch.
+    /// The debug-asserted unchecked counterpart of matching
+    /// [`view`](Self::view) for `RepView::Btree` — for hot descents where
+    /// btree well-formedness (every non-leaf edge is a btree node) already
+    /// guarantees the kind and a checked match would add a dead branch.
+    ///
+    /// # Safety
+    ///
+    /// `self.is_btree()` must hold.
+    #[inline]
+    pub(crate) unsafe fn btree_unchecked(self) -> btree::BtreeRef<'a> {
+        debug_assert!(self.is_btree());
+        // SAFETY: tag == BTREE per this fn's precondition, so the cast is
+        // sound; liveness for `'a` carries over from `self`'s invariant.
+        unsafe { btree::BtreeRef::from_raw(self.ptr.as_ptr().cast()) }
+    }
+
     /// The checked, typed view of this handle: one tag read, then a
     /// dispatch to the concrete node kind (mirrors [`destroy`]'s dispatch).
     #[inline]

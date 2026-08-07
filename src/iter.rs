@@ -153,6 +153,31 @@ impl<'a> Chunks<'a> {
         }
     }
 
+    /// Reads the next `n <= MAX_INLINE` bytes into an [`InlineData`],
+    /// advancing past exactly `n` bytes. Unlike gathering through the
+    /// `Iterator` impl, this only steps the underlying reader past chunks
+    /// it fully consumes — a partial take from the current chunk leaves the
+    /// iterator inside it (a 10-byte read from a 1000-byte chunk must not
+    /// pay a navigator advance to the next edge).
+    pub(crate) fn read_inline(&mut self, n: usize) -> InlineData {
+        debug_assert!(n <= crate::rep::MAX_INLINE);
+        debug_assert!(n <= self.bytes_remaining);
+        let mut buf = [0u8; crate::rep::MAX_INLINE];
+        let mut filled = 0;
+        while filled < n {
+            let chunk = self.current_chunk;
+            let take = (n - filled).min(chunk.len());
+            buf[filled..filled + take].copy_from_slice(&chunk[..take]);
+            filled += take;
+            if take < chunk.len() {
+                self.remove_chunk_prefix(take);
+            } else {
+                self.step();
+            }
+        }
+        InlineData::inline_from(&buf[..n])
+    }
+
     /// Reads the next `n` bytes into a new cord, sharing memory with the
     /// iterated cord where possible, and advances past them. Requires
     /// `n <= bytes_remaining`.
@@ -160,15 +185,8 @@ impl<'a> Chunks<'a> {
         debug_assert!(self.bytes_remaining >= n);
 
         if n <= MAX_INLINE {
-            // The range fits inline: flatten it. Gather from a cheap clone
-            // (cloning never bumps refcounts or mutates `self`; see
-            // `Chunks`' doc) so `fill_inline_from` can consume whole chunks
-            // via the ordinary `Iterator` impl, then reposition the real
-            // `self` in one step via `advance_bytes`, which already knows
-            // how to land inside a chunk without walking it byte by byte.
-            let data = InlineData::fill_inline_from(self.clone(), n);
-            self.advance_bytes(n);
-            return Cord { data };
+            // The range fits inline: flatten it in one pass.
+            return Cord { data: self.read_inline(n) };
         }
 
         if self.btree_reader.is_some() {
@@ -273,15 +291,30 @@ impl core::fmt::Debug for Chunks<'_> {
 }
 
 /// Iterator over the bytes of a [`Cord`], created by [`Cord::bytes`].
+///
+/// Per-byte iteration walks `current` — a plain slice iterator over the
+/// unyielded tail of the most recently pulled chunk — and touches `chunks`
+/// only at chunk boundaries. `Chunks`' per-byte bookkeeping
+/// (`bytes_remaining`, `leaf_offset`) exists for `Cursor`, and paying it
+/// once per byte measurably slowed whole-cord byte sums.
 #[derive(Clone, Debug)]
 pub struct Bytes<'a> {
     chunks: Chunks<'a>,
+    current: core::slice::Iter<'a, u8>,
 }
 
 impl<'a> Bytes<'a> {
     #[inline]
     pub(crate) fn new(cord: &'a Cord) -> Self {
-        Self { chunks: Chunks::new(cord) }
+        let mut chunks = Chunks::new(cord);
+        let current = chunks.next().unwrap_or(&[]).iter();
+        Self { chunks, current }
+    }
+
+    /// Bytes not yet yielded.
+    #[inline]
+    fn remaining(&self) -> usize {
+        self.current.as_slice().len() + self.chunks.bytes_remaining
     }
 }
 
@@ -290,36 +323,43 @@ impl Iterator for Bytes<'_> {
 
     #[inline]
     fn next(&mut self) -> Option<u8> {
-        if self.chunks.bytes_remaining == 0 {
-            return None;
+        if let Some(&byte) = self.current.next() {
+            return Some(byte);
         }
-        let byte = self.chunks.current_chunk[0];
-        if self.chunks.current_chunk.len() > 1 {
-            self.chunks.remove_chunk_prefix(1);
-        } else {
-            self.chunks.step();
-        }
-        Some(byte)
+        let chunk = self.chunks.next()?;
+        self.current = chunk.iter();
+        // Chunks yields non-empty chunks, so this is always `Some`.
+        self.current.next().copied()
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.chunks.bytes_remaining, Some(self.chunks.bytes_remaining))
+        let remaining = self.remaining();
+        (remaining, Some(remaining))
     }
 
     #[inline]
     fn nth(&mut self, n: usize) -> Option<u8> {
-        if n >= self.chunks.bytes_remaining {
+        let cur = self.current.as_slice();
+        if n < cur.len() {
+            self.current = cur[n..].iter();
+            return self.current.next().copied();
+        }
+        let skip = n - cur.len();
+        self.current = [].iter();
+        if skip >= self.chunks.bytes_remaining {
             self.chunks.advance_bytes(self.chunks.bytes_remaining);
             return None;
         }
-        self.chunks.advance_bytes(n);
-        self.next()
+        self.chunks.advance_bytes(skip);
+        let chunk = self.chunks.next()?;
+        self.current = chunk.iter();
+        self.current.next().copied()
     }
 
     #[inline]
     fn count(self) -> usize {
-        self.chunks.bytes_remaining
+        self.remaining()
     }
 }
 

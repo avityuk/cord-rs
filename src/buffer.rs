@@ -495,19 +495,35 @@ impl CordBuffer {
     /// Panics if `src.len() > available()`.
     #[track_caller]
     pub fn put_slice(&mut self, src: &[u8]) {
-        let len = self.len();
-        assert!(
-            src.len() <= self.available(),
-            "CordBuffer::put_slice: {} bytes exceed the available capacity of {}",
-            src.len(),
-            self.available()
-        );
-        let spare = self.spare_capacity_mut();
-        spare[..src.len()].write_copy_of_slice(src);
-        // SAFETY: the copy above just initialized `src.len()` bytes at the
-        // front of the spare capacity, extending the initialized prefix to
-        // `len + src.len()`.
-        unsafe { self.set_len(len + src.len()) };
+        // One union dispatch for the whole operation (length read, capacity
+        // check, copy, length update) — the accessor-per-step form paid
+        // this dispatch five times.
+        match self.rep.view_mut() {
+            BufReprMut::Short(short) => {
+                let len = short.len();
+                let available = INLINE_CAPACITY - len;
+                assert!(
+                    src.len() <= available,
+                    "CordBuffer::put_slice: {} bytes exceed the available capacity of {}",
+                    src.len(),
+                    available
+                );
+                short.data[len..len + src.len()].copy_from_slice(src);
+                short.set_len(len + src.len());
+            }
+            BufReprMut::Flat(mut unique) => {
+                let len = unique.as_ref().len();
+                let spare = unique.flat_spare_capacity_mut();
+                assert!(
+                    src.len() <= spare.len(),
+                    "CordBuffer::put_slice: {} bytes exceed the available capacity of {}",
+                    src.len(),
+                    spare.len()
+                );
+                spare[..src.len()].write_copy_of_slice(src);
+                unique.set_len(len + src.len());
+            }
+        }
     }
 
     /// Appends as many bytes of `src` as fit and returns how many were

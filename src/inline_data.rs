@@ -177,6 +177,18 @@ impl InlineData {
         *self
     }
 
+    /// Number of bytes held (tree length or inline size): one tag test,
+    /// no slice materialization — the `len()` fast path.
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        if self.is_tree() {
+            // SAFETY: the tree is live per `self`'s invariant.
+            unsafe { crate::rep::RepPtr::length(self.as_tree()) }
+        } else {
+            self.inline_size()
+        }
+    }
+
     /// The checked, safe view of this value: the single consumer-facing
     /// read of the inline/tree union.
     #[inline]
@@ -325,25 +337,6 @@ impl InlineData {
         self.set_inline_size(new_len);
     }
 
-    /// Gathers up to `n` bytes from the front of `chunks` into a fresh
-    /// inline value, stopping once `n` bytes have been copied (the last
-    /// chunk consumed may be only partially used). Requires `n <=
-    /// MAX_INLINE` and `chunks` to yield at least `n` bytes in total.
-    pub(crate) fn fill_inline_from<'s>(mut chunks: impl Iterator<Item = &'s [u8]>, n: usize) -> Self {
-        debug_assert!(n <= MAX_INLINE);
-        let mut out = Self::new();
-        let dst = out.tail_mut();
-        let mut filled = 0;
-        while filled < n {
-            let chunk = chunks.next().expect("fill_inline_from: chunks exhausted before n bytes");
-            let take = chunk.len().min(n - filled);
-            dst[filled..filled + take].copy_from_slice(&chunk[..take]);
-            filled += take;
-        }
-        out.set_inline_size(n);
-        out
-    }
-
     /// Copies this inline value's full 15-byte storage (including any zero
     /// tail) to the front of `dst`. Requires `!is_tree()` and `dst.len() >=
     /// MAX_INLINE`.
@@ -473,10 +466,6 @@ mod tests {
 
         let cat = InlineData::concat_inline(b"foo", b"bar");
         assert_eq!(cat.inline_slice(), b"foobar");
-
-        let chunks: [&[u8]; 3] = [b"ab", b"cd", b"ef"];
-        let filled = InlineData::fill_inline_from(chunks.into_iter(), 5);
-        assert_eq!(filled.inline_slice(), b"abcde");
 
         let mut buf = [MaybeUninit::new(0xAAu8); MAX_INLINE];
         let e = InlineData::inline_from(b"hello world!!!!");

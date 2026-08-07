@@ -322,8 +322,51 @@ fn bench_diabolical(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_access(c: &mut Criterion) {
+    let mut g = c.benchmark_group("access");
+    let flat = Cord::from(&data(4000)[..]);
+    let tree = fragmented(1 << 20, 1000);
+    g.bench_function("len_tree", |b| b.iter(|| black_box(&tree).len()));
+    g.bench_function("len_inline", |b| {
+        let c = Cord::from("hello inline!");
+        b.iter(|| black_box(&c).len());
+    });
+    g.bench_function("index_every_64", |b| {
+        b.iter(|| {
+            let mut sum = 0usize;
+            let mut i = 0;
+            while i < tree.len() {
+                sum += black_box(&tree)[i] as usize;
+                i += 64;
+            }
+            sum
+        });
+    });
+    g.bench_function("copy_prefix_to_flat", |b| {
+        let mut dst = vec![0u8; 4000];
+        b.iter(|| black_box(&flat).copy_prefix_to(&mut dst));
+    });
+    g.bench_function("copy_prefix_to_tree_64KiB", |b| {
+        let mut dst = vec![0u8; 64 << 10];
+        b.iter(|| black_box(&tree).copy_prefix_to(&mut dst));
+    });
+    g.bench_function("cursor_read_8B_pieces", |b| {
+        let small = tree.slice(0..(16 << 10));
+        b.iter(|| {
+            let mut cursor = black_box(&small).cursor();
+            let mut n = 0usize;
+            while cursor.remaining() != 0 {
+                n += cursor.read(8.min(cursor.remaining())).len();
+            }
+            n
+        });
+    });
+    g.finish();
+}
+
 criterion_group!(
     benches,
+    bench_access,
     bench_construct,
     bench_clone,
     bench_append,
