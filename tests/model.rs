@@ -149,14 +149,25 @@ fn deep_check(cord: &Cord, expected: &[u8], step: usize, a: f64, b: f64) {
 }
 
 proptest! {
-    // Miri interprets every case; 200 of them is an hour, not a check.
+    // Miri interprets every case; 200 of them is an hour, not a check. And
+    // proptest's default file-backed failure persistence calls getcwd at
+    // startup, which Miri's isolation forbids — turn it off under Miri
+    // rather than loosening isolation for the whole test.
     #![proptest_config(ProptestConfig {
-        cases: if cfg!(miri) { 16 } else { 200 },
+        cases: if cfg!(miri) { 8 } else { 200 },
+        failure_persistence: if cfg!(miri) {
+            Some(Box::new(proptest::test_runner::FileFailurePersistence::Off))
+        } else {
+            ProptestConfig::default().failure_persistence
+        },
         ..ProptestConfig::default()
     })]
 
     #[test]
-    fn cord_matches_vec_oracle(ops in prop::collection::vec(op(), 1..120), checks in prop::collection::vec((frac(), frac()), 1..120)) {
+    fn cord_matches_vec_oracle(
+        ops in prop::collection::vec(op(), 1..if cfg!(miri) { 24 } else { 120 }),
+        checks in prop::collection::vec((frac(), frac()), 1..if cfg!(miri) { 24 } else { 120 }),
+    ) {
         let mut cords: Vec<Cord> = (0..SLOTS).map(|_| Cord::new()).collect();
         let mut oracles: Vec<Vec<u8>> = vec![Vec::new(); SLOTS];
         for (step, op) in ops.iter().enumerate() {

@@ -9,5 +9,8 @@ export MIRIFLAGS="${MIRIFLAGS:--Zmiri-strict-provenance}"
 export PROPTEST_CASES="${PROPTEST_CASES:-4}"
 cargo +nightly miri test --all-features --lib "$@"
 cargo +nightly miri test --all-features --test basic "$@"
-cargo +nightly miri test --all-features --test model "$@"
+# proptest calls getcwd during startup, which Miri's isolation forbids
+# (persistence is already off under Miri; the call happens regardless), so
+# this one leg runs with isolation disabled, strict provenance kept.
+MIRIFLAGS="$MIRIFLAGS -Zmiri-disable-isolation" cargo +nightly miri test --all-features --test model "$@"
 cargo +nightly miri test --all-features --test features "$@"
