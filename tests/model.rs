@@ -149,7 +149,11 @@ fn deep_check(cord: &Cord, expected: &[u8], step: usize, a: f64, b: f64) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 200, ..ProptestConfig::default() })]
+    // Miri interprets every case; 200 of them is an hour, not a check.
+    #![proptest_config(ProptestConfig {
+        cases: if cfg!(miri) { 16 } else { 200 },
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn cord_matches_vec_oracle(ops in prop::collection::vec(op(), 1..120), checks in prop::collection::vec((frac(), frac()), 1..120)) {
