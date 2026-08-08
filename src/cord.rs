@@ -363,19 +363,17 @@ impl Cord {
         if src.is_empty() {
             return;
         }
-        let had_tree = self.is_tree();
         let owned_cur: OwnedRep;
-        if had_tree {
-            let appended = match self.data.tree_unique() {
-                Some(mut unique) => prepare_append_region(&mut unique, src),
-                None => 0,
-            };
+        if let Some(mut unique) = self.data.tree_unique() {
+            let appended = prepare_append_region(&mut unique, src);
             src = &src[appended..];
             if src.is_empty() {
                 // In-place growth above already updated the existing tree;
                 // `self.data`'s reference is untouched.
                 return;
             }
+            owned_cur = self.data.take_tree().expect("tree_unique() proved this is a tree");
+        } else if self.is_tree() {
             owned_cur = self.data.take_tree().expect("is_tree() checked above");
         } else {
             // Try to fit in the inline buffer if possible.

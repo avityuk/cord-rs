@@ -276,9 +276,12 @@ impl InlineData {
 
     /// The 15 data bytes, mutable. The tag byte (`bytes[0]`) is not
     /// reachable through this accessor, so inline-editing code built on it
-    /// can never scribble the tag/tree discriminant.
+    /// can never scribble the tag/tree discriminant. Callers outside this
+    /// module inherit the invariants the editing API otherwise maintains:
+    /// bytes beyond the inline size must stay zero, and the size must be
+    /// set via [`set_inline_size`](Self::set_inline_size).
     #[inline]
-    fn tail_mut(&mut self) -> &mut [u8; MAX_INLINE] {
+    pub(crate) fn tail_mut(&mut self) -> &mut [u8; MAX_INLINE] {
         // SAFETY: see `tail`.
         let bytes: &mut [u8; MAX_INLINE + 1] = unsafe { &mut self.bytes };
         (&mut bytes[1..]).try_into().unwrap()

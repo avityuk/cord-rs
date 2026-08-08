@@ -162,20 +162,32 @@ impl<'a> Chunks<'a> {
     pub(crate) fn read_inline(&mut self, n: usize) -> InlineData {
         debug_assert!(n <= crate::rep::MAX_INLINE);
         debug_assert!(n <= self.bytes_remaining);
-        let mut buf = [0u8; crate::rep::MAX_INLINE];
-        let mut filled = 0;
-        while filled < n {
+        let mut out = InlineData::new();
+        let mut remaining = n;
+        let mut dst = out.tail_mut().as_mut_ptr();
+        while remaining > self.current_chunk.len() {
             let chunk = self.current_chunk;
-            let take = (n - filled).min(chunk.len());
-            buf[filled..filled + take].copy_from_slice(&chunk[..take]);
-            filled += take;
-            if take < chunk.len() {
-                self.remove_chunk_prefix(take);
+            // SAFETY: `remaining <= MAX_INLINE`; `dst` advances by exactly
+            // the bytes already copied, and `chunk` is live input data.
+            unsafe { core::ptr::copy_nonoverlapping(chunk.as_ptr(), dst, chunk.len()) };
+            remaining -= chunk.len();
+            // SAFETY: the copied prefix and the remaining suffix together
+            // span at most MAX_INLINE bytes of `out`'s tail.
+            dst = unsafe { dst.add(chunk.len()) };
+            self.step();
+        }
+        if remaining != 0 {
+            // SAFETY: `remaining <= self.current_chunk.len()` and the output
+            // tail has exactly `remaining` bytes left in the requested range.
+            unsafe { core::ptr::copy_nonoverlapping(self.current_chunk.as_ptr(), dst, remaining) };
+            if remaining < self.current_chunk.len() {
+                self.remove_chunk_prefix(remaining);
             } else {
                 self.step();
             }
         }
-        InlineData::inline_from(&buf[..n])
+        out.set_inline_size(n);
+        out
     }
 
     /// Reads the next `n` bytes into a new cord, sharing memory with the
