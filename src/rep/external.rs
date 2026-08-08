@@ -222,6 +222,14 @@ impl<'a> ExternalRef<'a> {
 
     /// The referenced bytes.
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "API completeness for ExternalRef (RepRef::data is the production path for \
+                      external data edges), exercised only by this module's tests"
+        )
+    )]
     pub(crate) fn data(self) -> &'a [u8] {
         let len = self.len();
         // SAFETY: `self`'s invariant makes `self.ptr` a live external rep
@@ -243,6 +251,13 @@ impl<'a> ExternalRef<'a> {
     /// point with the raw surgery layer, not a stopgap pending conversion to
     /// the handle types.
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "API completeness for ExternalRef, exercised only by this module's tests"
+        )
+    )]
     pub(crate) fn as_ptr(self) -> *mut CordRepExternal {
         self.ptr.as_ptr()
     }

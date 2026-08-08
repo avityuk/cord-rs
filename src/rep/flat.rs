@@ -29,7 +29,7 @@ pub(crate) const MIN_FLAT_LENGTH: usize = MIN_FLAT_SIZE - FLAT_OVERHEAD;
 /// Largest flat allocation size for explicitly "large" flats.
 pub(crate) const MAX_LARGE_FLAT_SIZE: usize = 256 * 1024;
 /// Largest payload of a large flat.
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "bound checked only by this module's own tests"))]
 pub(crate) const MAX_LARGE_FLAT_LENGTH: usize = MAX_LARGE_FLAT_SIZE - FLAT_OVERHEAD;
 
 /// Makes the size <-> tag mapping resilient against changes to `FLAT`.

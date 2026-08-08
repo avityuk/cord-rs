@@ -491,28 +491,6 @@ pub(crate) trait BtreePtr: Copy {
         }
     }
 
-    /// Returns the index of the last edge starting *before* `offset` and the
-    /// relative offset inside that edge.
-    ///
-    /// # Safety
-    ///
-    /// In addition to the trait-level `# Safety`, requires `0 < offset <=
-    /// length()`: an out-of-range `offset` walks `index` past `end()`,
-    /// violating `edge`'s bounds requirement.
-    #[inline]
-    unsafe fn index_before(self, mut offset: usize) -> Position {
-        unsafe {
-            debug_assert!(offset > 0);
-            debug_assert!(offset <= self.length());
-            let mut index = self.begin();
-            while offset > self.edge(index).length() {
-                offset -= self.edge(index).length();
-                index += 1;
-            }
-            Position { index, n: offset }
-        }
-    }
-
     /// `index_before(front.n + offset)` optimized to start at `front.index`.
     ///
     /// # Safety
@@ -592,41 +570,25 @@ impl BtreePtr for *mut CordRepBtree {
     }
     #[inline]
     unsafe fn height(self) -> usize {
-        unsafe {
-            // SAFETY: per the trait's `# Safety`, `self` is a live, well-formed
-            // node, so dereferencing it and reading its `storage` header is sound.
-            (*self).rep.storage[0] as usize
-        }
+        unsafe { (*self).rep.storage[0] as usize }
     }
     #[inline]
     unsafe fn begin(self) -> usize {
-        unsafe {
-            // SAFETY: see `height` above.
-            (*self).rep.storage[1] as usize
-        }
+        unsafe { (*self).rep.storage[1] as usize }
     }
     #[inline]
     unsafe fn end(self) -> usize {
-        unsafe {
-            // SAFETY: see `height` above.
-            (*self).rep.storage[2] as usize
-        }
+        unsafe { (*self).rep.storage[2] as usize }
     }
     #[inline]
     unsafe fn set_begin(self, begin: usize) {
         unsafe {
-            // SAFETY: `set_begin`'s contract requires `self` to be exclusively
-            // owned and `begin <= end()`, so overwriting the `begin` cursor keeps
-            // the node well-formed for subsequent accessors.
             (*self).rep.storage[1] = small_u8(begin);
         }
     }
     #[inline]
     unsafe fn set_end(self, end: usize) {
         unsafe {
-            // SAFETY: `set_end`'s contract requires `self` to be exclusively
-            // owned and `begin() <= end <= capacity()`, so overwriting the `end`
-            // cursor keeps the node well-formed for subsequent accessors.
             (*self).rep.storage[2] = small_u8(end);
         }
     }
@@ -635,11 +597,6 @@ impl BtreePtr for *mut CordRepBtree {
         unsafe {
             debug_assert!(index >= self.begin());
             debug_assert!(index < self.end());
-            // SAFETY: `self` is live and well-formed (trait contract), and
-            // `edge`'s own contract requires `index` in `[begin(), end())`
-            // (checked above in debug builds), which is within the fixed-size
-            // `edges` array's bounds (`end() <= capacity() == MAX_CAPACITY ==
-            // edges.len()`).
             (*self).edges[index]
         }
     }
@@ -652,10 +609,6 @@ impl BtreePtr for *mut CordRepBtree {
             // whose cursors are still `0..0`), which is well-formed usage that
             // a tighter `[begin(), end())` assert would wrongly reject.
             debug_assert!(index < self.capacity());
-            // SAFETY: `set_edge_ptr`'s contract requires exclusive access and
-            // `index < capacity() == edges.len()` (checked above in debug
-            // builds); this overwrites the slot without touching either
-            // pointer's reference count, as documented.
             (*self).edges[index] = edge;
         }
     }
@@ -738,6 +691,10 @@ impl<'a> BtreeRef<'a> {
 
     /// This handle reinterpreted as a plain [`super::RepRef`].
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "API completeness for BtreeRef, exercised only by this module's tests")
+    )]
     pub(crate) fn as_rep_ref(self) -> super::RepRef<'a> {
         // SAFETY: `self`'s invariant guarantees `self.ptr.as_rep()` (a plain
         // reinterpreting cast, see `BtreePtr::as_rep`) is a live rep for
@@ -767,41 +724,56 @@ impl<'a> BtreeRef<'a> {
         unsafe { self.ptr.as_ptr().begin() }
     }
 
-    /// The edge at `index`, borrowed for `'a`. Requires `begin() <= index <
-    /// end()` (debug-asserted by the underlying accessor).
+    /// The edge at `index`, borrowed for `'a`.
+    ///
+    /// # Safety
+    ///
+    /// `begin() <= index < end()` must hold.
     #[inline]
-    pub(crate) fn edge(self, index: usize) -> super::RepRef<'a> {
+    pub(crate) unsafe fn edge(self, index: usize) -> super::RepRef<'a> {
         // SAFETY: `self`'s invariant makes `self.ptr` a live, well-formed
-        // node for `'a`; the returned edge is kept live for at least as
-        // long as its parent (this node holds a reference on it), i.e. for
-        // `'a`.
+        // node for `'a`; `index` is in bounds per this fn's precondition,
+        // and the returned edge is kept live for at least as long as its
+        // parent (this node holds a reference on it), i.e. for `'a`.
         unsafe { super::RepRef::from_raw(self.ptr.as_ptr().edge(index)) }
     }
 
-    /// The front or back edge, borrowed for `'a`. Requires the node to be
-    /// non-empty.
+    /// The front or back edge, borrowed for `'a`.
+    ///
+    /// # Safety
+    ///
+    /// The node must be non-empty (`begin() < end()`).
     #[inline]
-    pub(crate) fn edge_at<const IS_BACK: bool>(self) -> super::RepRef<'a> {
-        // SAFETY: see `edge`.
+    pub(crate) unsafe fn edge_at<const IS_BACK: bool>(self) -> super::RepRef<'a> {
+        // SAFETY: see `edge`; non-emptiness is this fn's own precondition.
         unsafe { super::RepRef::from_raw(self.ptr.as_ptr().edge_at::<IS_BACK>()) }
     }
 
-    /// The data of the leaf edge at `index`, borrowed for `'a`. Requires a
-    /// leaf node (`height() == 0`) and `begin() <= index < end()`.
+    /// The data of the leaf edge at `index`, borrowed for `'a`.
+    ///
+    /// # Safety
+    ///
+    /// This node must be a leaf (`height() == 0`) and `begin() <= index <
+    /// end()` must hold.
     #[inline]
-    pub(crate) fn data(self, index: usize) -> &'a [u8] {
+    pub(crate) unsafe fn data(self, index: usize) -> &'a [u8] {
         // SAFETY: see `edge`; `BtreePtr::data` re-checks the leaf
-        // requirement itself (debug-only), and the returned slice borrows
-        // an edge kept live for at least `'a` for the same reason.
+        // requirement itself (debug-only), which is this fn's own
+        // precondition, and the returned slice borrows an edge kept live
+        // for at least `'a` for the same reason.
         unsafe { self.ptr.as_ptr().data(index) }
     }
 
     /// Returns the index of the last edge starting on or before `offset`
-    /// and the relative offset inside that edge. Requires `offset <
-    /// len()`.
+    /// and the relative offset inside that edge.
+    ///
+    /// # Safety
+    ///
+    /// `offset < len()` must hold.
     #[inline]
-    pub(crate) fn index_of(self, offset: usize) -> Position {
-        // SAFETY: see `height`.
+    pub(crate) unsafe fn index_of(self, offset: usize) -> Position {
+        // SAFETY: `self`'s invariant makes `self.ptr` a live, well-formed
+        // node for `'a`; `offset < len()` is this fn's own precondition.
         unsafe { self.ptr.as_ptr().index_of(offset) }
     }
 
@@ -1692,11 +1664,11 @@ impl CordRepBtree {
     /// `this` must be a non-null pointer to a live, well-formed, uniquely
     /// owned leaf (height 0) btree node with `this.size() < this.capacity()`
     /// and `!data.is_empty()`.
-    unsafe fn add_data_to_leaf<'a, const IS_BACK: bool>(
+    unsafe fn add_data_to_leaf<const IS_BACK: bool>(
         this: *mut CordRepBtree,
-        mut data: &'a [u8],
+        mut data: &[u8],
         extra: usize,
-    ) -> &'a [u8] {
+    ) -> &[u8] {
         unsafe {
             debug_assert!(!data.is_empty());
             debug_assert!(this.size() < this.capacity());
@@ -1913,6 +1885,10 @@ impl CordRepBtree {
     ///
     /// Same contract as [`append_data`](Self::append_data).
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "abseil parity (PrependData), exercised only by ported tests")
+    )]
     pub(crate) unsafe fn prepend_data(
         tree: *mut CordRepBtree,
         data: &[u8],
@@ -2253,6 +2229,7 @@ impl CordRepBtree {
     /// with `n <= this.length()` and `offset <= this.length() - n`,
     /// borrowed for the returned slice's lifetime `'a` exactly as
     /// [`as_flat`](Self::as_flat).
+    #[cfg_attr(not(test), expect(dead_code, reason = "abseil parity, exercised only by ported tests"))]
     pub(crate) unsafe fn as_flat_range<'a>(
         this: *mut CordRepBtree,
         mut offset: usize,
@@ -2288,6 +2265,10 @@ impl CordRepBtree {
     ///
     /// `this` must be a non-null pointer to a live, well-formed btree node
     /// with `offset < this.length()`; it is borrowed.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "abseil parity (GetCharacter), exercised only by ported tests")
+    )]
     pub(crate) unsafe fn get_byte(this: *mut CordRepBtree, mut offset: usize) -> u8 {
         unsafe {
             debug_assert!(offset < this.length());
@@ -2618,6 +2599,13 @@ impl CordRepBtree {
     /// # Safety
     ///
     /// Same contract as [`check_valid`](Self::check_valid).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "bool-returning convenience wrapper around check_valid, exercised only by tests"
+        )
+    )]
     pub(crate) unsafe fn is_valid(tree: *const CordRepBtree, shallow: bool) -> bool {
         unsafe { Self::check_valid(tree, shallow).is_ok() }
     }

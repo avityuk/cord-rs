@@ -30,9 +30,6 @@
 //!
 //! [`Cord`]: crate::Cord
 
-// Parts of the rep API are only exercised by the test suites and benchmarks.
-#![allow(dead_code)]
-
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
@@ -104,7 +101,14 @@ impl Refcount {
 
     /// An immortal refcount: `decrement` never reports zero.
     #[inline]
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "abseil parity: the immortal-flag mechanism has no production caller yet, \
+                      exercised only by this module's own tests"
+        )
+    )]
     pub(crate) const fn immortal() -> Self {
         Self(AtomicI32::new(IMMORTAL_FLAG))
     }
@@ -255,10 +259,6 @@ pub(crate) trait RepPtr: Copy {
     unsafe fn ref_get(self) -> usize;
 
     #[inline]
-    unsafe fn is_substring(self) -> bool {
-        unsafe { self.tag() == SUBSTRING }
-    }
-    #[inline]
     unsafe fn is_btree(self) -> bool {
         unsafe { self.tag() == BTREE }
     }
@@ -279,8 +279,6 @@ impl RepPtr for *mut CordRep {
     }
     #[inline]
     unsafe fn set_length(self, length: usize) {
-        // SAFETY: exclusive access (this fn's contract) means no other
-        // reader/writer can observe the write mid-flight.
         unsafe { (*self).length = length }
     }
     #[inline]
@@ -784,16 +782,23 @@ impl<'a> RepRef<'a> {
         unsafe { self.ptr.as_ptr().ref_get() }
     }
 
-    /// The bytes referenced by this data edge. Requires
-    /// [`is_data_edge`](Self::is_data_edge).
+    /// The bytes referenced by this data edge.
     ///
     /// The bounded-lifetime replacement for the free function [`edge_data`],
     /// whose returned `&'a [u8]` has an inferred, unconstrained lifetime at
     /// its call sites.
+    ///
+    /// # Safety
+    ///
+    /// [`self.is_data_edge()`](Self::is_data_edge) must hold: on a BTREE
+    /// handle, the underlying [`edge_data`] would reinterpret `edges[0]` as
+    /// an external node's `base` pointer, which is real UB, not just a wrong
+    /// answer.
     #[inline]
-    pub(crate) fn data(self) -> &'a [u8] {
+    pub(crate) unsafe fn data(self) -> &'a [u8] {
+        debug_assert!(self.is_data_edge());
         // SAFETY: `self`'s invariant makes `self.ptr` a live rep for `'a`;
-        // `edge_data` re-checks `is_data_edge` itself (debug-only), and the
+        // `self.is_data_edge()` holds per this fn's precondition, and the
         // same invariant keeps the referenced bytes valid and unmutated for
         // `'a`.
         unsafe { edge_data(self.ptr.as_ptr()) }
@@ -1081,17 +1086,24 @@ impl<'a> UniqueRep<'a> {
 
     /// The writable region of a flat's payload, from the current `length`
     /// up to `capacity`, as `MaybeUninit` (bytes past `length` were never
-    /// written as `u8`). Requires this handle's rep to be a flat node (tag
-    /// in `FLAT..=MAX_FLAT_TAG`).
+    /// written as `u8`).
+    ///
+    /// # Safety
+    ///
+    /// This handle's rep must be a flat node (tag in `FLAT..=MAX_FLAT_TAG`):
+    /// on a SUBSTRING, `flat::capacity` would decode the substring's `start`
+    /// field as a capacity byte, which can underflow `capacity - len` into a
+    /// huge slice length.
     #[inline]
-    pub(crate) fn flat_spare_capacity_mut(&mut self) -> &mut [MaybeUninit<u8>] {
+    pub(crate) unsafe fn flat_spare_capacity_mut(&mut self) -> &mut [MaybeUninit<u8>] {
         debug_assert!(self.as_ref().is_flat());
         let ptr = self.ptr.as_ptr();
         // SAFETY: exclusive access per `self`'s invariant makes it sound to
         // hand out a mutable view of the region beyond `length` (never read
-        // back as initialized `u8`) up to `capacity`; the pointer is
-        // derived from the flat's own allocation via `flat::data`, valid
-        // for reads/writes over the whole capacity per its own contract.
+        // back as initialized `u8`) up to `capacity`; `self` is a flat per
+        // this fn's precondition, so the pointer derived from its own
+        // allocation via `flat::data` is valid for reads/writes over the
+        // whole capacity per its own contract.
         unsafe {
             let len = ptr.length();
             let capacity = flat::capacity(ptr);
@@ -1106,18 +1118,24 @@ impl<'a> UniqueRep<'a> {
     /// *consumes* `self` (it is not `Copy`) precisely so the returned slice
     /// can outlive the call: giving up the witness in exchange for the
     /// slice means there is no way to mint a second live view through it
-    /// afterward. Requires this handle's rep to be a flat node (tag in
-    /// `FLAT..=MAX_FLAT_TAG`).
+    /// afterward.
+    ///
+    /// # Safety
+    ///
+    /// This handle's rep must be a flat node (tag in `FLAT..=MAX_FLAT_TAG`);
+    /// see [`flat_spare_capacity_mut`](Self::flat_spare_capacity_mut) for
+    /// why a non-flat tag is real UB, not just a wrong answer.
     #[inline]
-    pub(crate) fn flat_data_mut(self) -> &'a mut [u8] {
+    pub(crate) unsafe fn flat_data_mut(self) -> &'a mut [u8] {
         debug_assert!(self.as_ref().is_flat());
         let ptr = self.ptr.as_ptr();
         // SAFETY: exclusive access per `self`'s invariant, consumed by this
         // call, makes it sound to hand out a mutable view of the
-        // initialized payload for the full `'a`; the pointer is derived
-        // from the flat's own allocation via `flat::data`, and a flat's
-        // `length` never exceeds its capacity, so it stays within the
-        // bounds `flat::data`'s own contract allows writes over.
+        // initialized payload for the full `'a`; `self` is a flat per this
+        // fn's precondition, so the pointer derived from its own allocation
+        // via `flat::data` stays within the bounds `flat::data`'s own
+        // contract allows writes over (a flat's `length` never exceeds its
+        // capacity).
         unsafe {
             let len = ptr.length();
             core::slice::from_raw_parts_mut(flat::data(ptr), len)
@@ -1128,8 +1146,13 @@ impl<'a> UniqueRep<'a> {
     /// region, tied to `'a` rather than to this call's own borrow —
     /// consumes `self`, for the same reason and with the same soundness
     /// argument as [`flat_data_mut`](Self::flat_data_mut).
+    ///
+    /// # Safety
+    ///
+    /// Same as [`flat_spare_capacity_mut`](Self::flat_spare_capacity_mut):
+    /// this handle's rep must be a flat node.
     #[inline]
-    pub(crate) fn into_flat_spare_capacity_mut(self) -> &'a mut [MaybeUninit<u8>] {
+    pub(crate) unsafe fn into_flat_spare_capacity_mut(self) -> &'a mut [MaybeUninit<u8>] {
         debug_assert!(self.as_ref().is_flat());
         let ptr = self.ptr.as_ptr();
         // SAFETY: see `flat_spare_capacity_mut`, with exclusivity carried
@@ -1143,15 +1166,20 @@ impl<'a> UniqueRep<'a> {
         }
     }
 
-    /// Mutable access to a [`CordRepSubstring`]'s `start` field. Requires
-    /// this handle's rep to be a substring (tag == SUBSTRING).
+    /// Mutable access to a [`CordRepSubstring`]'s `start` field.
+    ///
+    /// # Safety
+    ///
+    /// This handle's rep must be a substring (tag == SUBSTRING): the cast
+    /// below reinterprets it as a `CordRepSubstring`, which is real UB for
+    /// any other tag.
     #[inline]
-    pub(crate) fn substring_start_mut(&mut self) -> &mut usize {
+    pub(crate) unsafe fn substring_start_mut(&mut self) -> &mut usize {
         debug_assert!(self.as_ref().is_substring());
         let sub: *mut CordRepSubstring = self.ptr.as_ptr().cast();
-        // SAFETY: tag == SUBSTRING (checked above) guarantees the cast is
-        // sound (the module's tag invariant); exclusive access per `self`'s
-        // invariant makes the `&mut` sound.
+        // SAFETY: tag == SUBSTRING per this fn's precondition guarantees the
+        // cast is sound (the module's tag invariant); exclusive access per
+        // `self`'s invariant makes the `&mut` sound.
         unsafe { &mut (*sub).start }
     }
 }

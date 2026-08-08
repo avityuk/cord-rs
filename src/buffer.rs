@@ -444,7 +444,10 @@ impl CordBuffer {
                 let len = s.len();
                 &mut s.data[..len]
             }
-            BufReprMut::Flat(f) => f.flat_data_mut(),
+            // SAFETY: `BufReprMut::Flat` is only ever constructed by
+            // `Rep::view_mut` wrapping the buffer's flat rep (see its doc),
+            // never any other tag.
+            BufReprMut::Flat(f) => unsafe { f.flat_data_mut() },
         }
     }
 
@@ -476,7 +479,9 @@ impl CordBuffer {
                 // bytes through it only weakens what's known about them.
                 unsafe { core::slice::from_raw_parts_mut(ptr.add(len), INLINE_CAPACITY - len) }
             }
-            BufReprMut::Flat(f) => f.into_flat_spare_capacity_mut(),
+            // SAFETY: see `as_mut_slice`: `BufReprMut::Flat` always wraps a
+            // genuine flat rep.
+            BufReprMut::Flat(f) => unsafe { f.into_flat_spare_capacity_mut() },
         }
     }
 
@@ -532,7 +537,9 @@ impl CordBuffer {
             }
             BufReprMut::Flat(mut unique) => {
                 let len = unique.as_ref().len();
-                let spare = unique.flat_spare_capacity_mut();
+                // SAFETY: see `as_mut_slice`: `BufReprMut::Flat` always
+                // wraps a genuine flat rep.
+                let spare = unsafe { unique.flat_spare_capacity_mut() };
                 assert!(
                     src.len() <= spare.len(),
                     "CordBuffer::put_slice: {} bytes exceed the available capacity of {}",

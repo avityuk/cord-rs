@@ -81,15 +81,10 @@ impl<'a> Chunks<'a> {
             // SUBSTRING, EXTERNAL or FLAT: all are data edges.
             debug_assert!(tree.is_data_edge());
             self.current_leaf = Some(tree);
-            self.current_chunk = tree.data();
+            // SAFETY: not `Btree` (matched above) means SUBSTRING, EXTERNAL
+            // or FLAT, all data edges (see the comment above).
+            self.current_chunk = unsafe { tree.data() };
         }
-    }
-
-    /// Bytes remaining, counting from the start of the current chunk.
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn bytes_remaining(&self) -> usize {
-        self.bytes_remaining
     }
 
     /// Moves to the next chunk. Requires `bytes_remaining > 0`.

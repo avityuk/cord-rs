@@ -63,6 +63,10 @@ impl<'a> CordRepBtreeReader<'a> {
     /// Bytes remaining after the last returned chunk. Zero after the last
     /// edge was returned (further `next` / `skip` calls return empty).
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "API completeness for CordRepBtreeReader, exercised only by tests")
+    )]
     pub(crate) fn remaining(&self) -> usize {
         self.remaining
     }
@@ -111,6 +115,10 @@ impl<'a> CordRepBtreeReader<'a> {
     /// The reader must be non-empty (`is_some()`): on a default reader the
     /// navigator's path is dangling.
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "API completeness for CordRepBtreeReader, exercised only by tests")
+    )]
     pub(crate) unsafe fn skip(&mut self, skip: usize) -> &'a [u8] {
         // SAFETY: per this reader's invariant the tree is live for `'a`, so
         // `self.navigator.current()`/`.skip()` and `edge_data` on a

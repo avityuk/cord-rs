@@ -66,7 +66,6 @@
 //! [`absl::Cord`]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs, rust_2018_idioms, unreachable_pub)]
-#![allow(clippy::needless_lifetimes)]
 
 mod buffer;
 mod cord;

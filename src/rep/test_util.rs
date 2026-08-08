@@ -176,15 +176,6 @@ pub(crate) unsafe fn cord_collect_reps_if<P: FnMut(*mut CordRep) -> bool>(
     }
 }
 
-/// `CordCollectReps(rep)`: all reps visited by [`cord_visit_reps`].
-///
-/// # Safety
-///
-/// Same contract as [`cord_visit_reps`].
-pub(crate) unsafe fn cord_collect_reps(rep: *mut CordRep) -> Vec<*mut CordRep> {
-    unsafe { cord_collect_reps_if(|_| true, rep) }
-}
-
 /// Appends the bytes of `rep` to `s`.
 ///
 /// # Safety

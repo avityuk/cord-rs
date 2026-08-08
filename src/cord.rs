@@ -159,7 +159,8 @@ fn prepare_append_region(root: &mut rep::UniqueRep<'_>, src: &[u8]) -> usize {
         return 0;
     }
     let in_use = root.as_ref().len();
-    let spare = root.flat_spare_capacity_mut();
+    // SAFETY: `root.as_ref().is_flat()` was just confirmed above.
+    let spare = unsafe { root.flat_spare_capacity_mut() };
     let n = spare.len().min(src.len());
     if n == 0 {
         return 0;
@@ -178,7 +179,9 @@ fn get_flat_aux(rep: RepRef<'_>) -> Option<&[u8]> {
     } else {
         // SUBSTRING, EXTERNAL or FLAT: all are data edges.
         debug_assert!(rep.is_data_edge());
-        Some(rep.data())
+        // SAFETY: not BTREE (checked above) means SUBSTRING, EXTERNAL or
+        // FLAT, all of which are data edges (see the comment above).
+        Some(unsafe { rep.data() })
     }
 }
 
@@ -493,7 +496,10 @@ impl Cord {
         if src_size <= MAX_BYTES_TO_COPY {
             match src.tree_ref() {
                 None => self.append_slice(src.inline_slice()),
-                Some(tree) if tree.is_flat() => self.append_slice(tree.data()),
+                Some(tree) if tree.is_flat() => self.append_slice(
+                    // SAFETY: `tree.is_flat()` (match guard) implies `is_data_edge()`.
+                    unsafe { tree.data() },
+                ),
                 Some(_) => {
                     for chunk in src.chunks() {
                         self.append_slice(chunk);
@@ -527,7 +533,10 @@ impl Cord {
         if src_size <= MAX_BYTES_TO_COPY {
             match src.tree_ref() {
                 None => self.append_slice(src.inline_slice()),
-                Some(tree) if tree.is_flat() => self.append_slice(tree.data()),
+                Some(tree) if tree.is_flat() => self.append_slice(
+                    // SAFETY: `tree.is_flat()` (match guard) implies `is_data_edge()`.
+                    unsafe { tree.data() },
+                ),
                 Some(_) => {
                     for chunk in src.chunks() {
                         self.append_slice(chunk);
@@ -634,18 +643,25 @@ impl Cord {
         };
         if !node.is_btree() {
             // FLAT, EXTERNAL or a SUBSTRING thereof: all are data edges.
-            return node.data();
+            // SAFETY: see the comment above.
+            return unsafe { node.data() };
         }
         // SAFETY: tag checked on the line above.
         let mut tree = unsafe { node.btree_unchecked() };
         let mut height = tree.height();
         while height > 0 {
             height -= 1;
-            // SAFETY: every non-leaf edge of a well-formed btree is a btree
-            // node of one lesser height (`height > 0` here).
+            // SAFETY: this loop only reaches non-leaf nodes (`height > 0`
+            // here); a well-formed btree node is never empty, so
+            // `edge_at`'s non-empty requirement holds, and the returned
+            // edge is itself a btree node of one lesser height, satisfying
+            // `btree_unchecked`'s requirement.
             tree = unsafe { tree.edge_at::<{ rep::btree::FRONT }>().btree_unchecked() };
         }
-        tree.data(tree.begin())
+        // SAFETY: the loop above runs until `height == 0`, so `tree` is a
+        // leaf; a well-formed btree node is never empty, so `tree.begin()`
+        // is a valid index in `[begin(), end())`.
+        unsafe { tree.data(tree.begin()) }
     }
 
     /// Slow path of [`flatten`](Self::flatten).
@@ -656,7 +672,9 @@ impl Cord {
             // one.
             let mut owned = unsafe { OwnedRep::from_raw(flat::new(total_size)) };
             let mut unique = owned.try_unique().expect("freshly allocated flat has refcount one");
-            let spare = unique.flat_spare_capacity_mut();
+            // SAFETY: `unique` wraps the flat just allocated by `flat::new`
+            // above.
+            let spare = unsafe { unique.flat_spare_capacity_mut() };
             self.copy_to_uninit(&mut spare[..total_size]);
             unique.set_len(total_size);
             owned
@@ -943,7 +961,10 @@ impl Cord {
         let raw = tree.as_ptr();
         if is_substring && let Some(mut unique) = self.data.tree_unique() {
             // In-place mutation: shift the substring's start forward.
-            *unique.substring_start_mut() += n;
+            // SAFETY: `unique` wraps `self.data`'s tree, the same rep `tree`
+            // borrows, and `is_substring` (`tree.is_substring()` above)
+            // confirms its tag is SUBSTRING.
+            *unsafe { unique.substring_start_mut() } += n;
             unique.set_len(tree_len - n);
             return;
         }
@@ -1250,14 +1271,26 @@ impl Cord {
                 RepView::Btree(mut node) => {
                     let mut height = node.height();
                     loop {
-                        let front = node.index_of(offset);
+                        // SAFETY: on the first iteration, `offset <
+                        // rep.len() == node.len()` (the outer loop's
+                        // `debug_assert` above, `node` being `rep` viewed as
+                        // a btree); on later iterations, `offset` was just
+                        // set to `front.n`, which `index_of`'s own
+                        // postcondition keeps `< node.len()` for the
+                        // reassigned `node` below.
+                        let front = unsafe { node.index_of(offset) };
                         if height == 0 {
-                            return &node.data(front.index)[front.n];
+                            // SAFETY: `height == 0` means `node` is a leaf;
+                            // `index_of`'s postcondition keeps `front.index`
+                            // in `[begin(), end())` for the in-range
+                            // `offset` established above.
+                            return &unsafe { node.data(front.index) }[front.n];
                         }
                         height -= 1;
                         offset = front.n;
-                        // SAFETY: every non-leaf edge of a well-formed
-                        // btree is a btree node (`height > 0` here).
+                        // SAFETY: `front.index` is in bounds (see above),
+                        // and every non-leaf edge of a well-formed btree is
+                        // a btree node (`height > 0` here).
                         node = unsafe { node.edge(front.index).btree_unchecked() };
                     }
                 }
@@ -1265,7 +1298,9 @@ impl Cord {
                     offset += start;
                     rep = child;
                 }
-                _ => return &rep.data()[offset],
+                // SAFETY: `Btree` and `Substring` are matched above, so this
+                // arm only sees `Flat`/`External`, both data edges.
+                _ => return &unsafe { rep.data() }[offset],
             }
         }
     }

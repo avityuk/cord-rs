@@ -147,7 +147,13 @@ impl CordRepBtreeNavigator {
 
     /// Resets to the empty state.
     #[inline]
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "backward navigation kept for API completeness, no production caller yet"
+        )
+    )]
     pub(crate) fn reset(&mut self) {
         self.height = None;
     }
@@ -173,6 +179,13 @@ impl CordRepBtreeNavigator {
     ///
     /// Same contract as [`init_first`](Self::init_first).
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "backward navigation kept for API completeness, no production caller yet"
+        )
+    )]
     pub(crate) unsafe fn init_last(&mut self, tree: *mut CordRepBtree) -> *mut CordRep {
         unsafe { self.init::<BACK>(tree) }
     }
@@ -221,6 +234,13 @@ impl CordRepBtreeNavigator {
     /// `height() <= MAX_HEIGHT`. Does not adopt a reference on `tree`; see
     /// [`init_first`](Self::init_first).
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "backward navigation kept for API completeness, no production caller yet"
+        )
+    )]
     pub(crate) unsafe fn init_offset(&mut self, tree: *mut CordRepBtree, offset: usize) -> NavPosition {
         unsafe {
             // SAFETY: the caller's contract guarantees `tree` is a live btree
@@ -310,6 +330,13 @@ impl CordRepBtreeNavigator {
     ///
     /// Same navigator-validity contract as [`current`](Self::current).
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "backward navigation kept for API completeness, no production caller yet"
+        )
+    )]
     pub(crate) unsafe fn previous(&mut self) -> *mut CordRep {
         unsafe {
             // SAFETY: per the contract above, `self.node[0]` is a live leaf and
@@ -373,6 +400,13 @@ impl CordRepBtreeNavigator {
     /// Same navigator-validity contract as [`current`](Self::current).
     /// Callers must additionally ensure `self.index[0] ==
     /// self.node[0].begin()` (i.e. the leaf is exhausted backward).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "backward navigation kept for API completeness, no production caller yet"
+        )
+    )]
     unsafe fn previous_up(&mut self) -> *mut CordRep {
         unsafe {
             // SAFETY: the contract above guarantees every node on the current
@@ -419,6 +453,14 @@ impl CordRepBtreeNavigator {
     /// # Safety
     ///
     /// Same navigator-validity contract as [`current`](Self::current).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "kept for API completeness alongside CordRepBtreeReader::skip, its only \
+                      caller, which is itself dead outside tests"
+        )
+    )]
     pub(crate) unsafe fn skip(&mut self, mut n: usize) -> NavPosition {
         unsafe {
             // SAFETY: the contract above guarantees every node reachable from
