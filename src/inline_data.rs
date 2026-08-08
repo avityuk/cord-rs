@@ -279,7 +279,8 @@ impl InlineData {
     /// can never scribble the tag/tree discriminant. Callers outside this
     /// module inherit the invariants the editing API otherwise maintains:
     /// bytes beyond the inline size must stay zero, and the size must be
-    /// set via [`set_inline_size`](Self::set_inline_size).
+    /// committed via [`set_inline_size`](Self::set_inline_size) before the
+    /// value is observed.
     #[inline]
     pub(crate) fn tail_mut(&mut self) -> &mut [u8; MAX_INLINE] {
         // SAFETY: see `tail`.
