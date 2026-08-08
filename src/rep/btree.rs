@@ -926,7 +926,19 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
                     if tree.height() > MAX_HEIGHT {
                         core::hint::cold_path();
                         let tree = CordRepBtree::rebuild(tree);
-                        assert!(tree.height() <= MAX_HEIGHT, "cord-rs: max btree height exceeded");
+                        debug_assert!(tree.height() <= MAX_HEIGHT, "cord-rs: max btree height exceeded");
+                        if tree.height() > MAX_HEIGHT {
+                            // Never unwind out of tree surgery: by this point
+                            // `tree` and `result.tree`'s references were
+                            // already spliced into the pair node above and
+                            // ancestor nodes further up the caller's
+                            // `unwind`/`propagate` walk may already be
+                            // mutated in place to depend on this result, so
+                            // an escaping panic (if caught) would expose a
+                            // torn tree; a `rebuild` that fails to fold back
+                            // to `MAX_HEIGHT` is unrecoverable.
+                            std::process::abort();
+                        }
                         return tree;
                     }
                     tree
@@ -1088,9 +1100,14 @@ impl CordRepBtree {
     /// # Safety
     ///
     /// `front` and `back` must be non-null pointers to live btree nodes of
-    /// equal height (`<= MAX_HEIGHT - 1`, so the new parent's height stays
-    /// `<= MAX_HEIGHT`); the caller donates both references, which become
-    /// the new node's two edges.
+    /// equal height `<= MAX_HEIGHT`; the caller donates both references,
+    /// which become the new node's two edges. The result's height is
+    /// `front.height() + 1`, which is therefore normally `<= MAX_HEIGHT` but
+    /// may transiently reach `MAX_DEPTH` when both children are already at
+    /// `MAX_HEIGHT` — this is the legitimate, momentary case `alloc`'s doc
+    /// blesses (`finalize` relies on it), and such a caller must fold the
+    /// result back down to `<= MAX_HEIGHT` (via [`rebuild`](Self::rebuild))
+    /// before treating it as a well-formed tree.
     #[inline]
     pub(crate) unsafe fn new_pair(front: *mut CordRepBtree, back: *mut CordRepBtree) -> *mut CordRepBtree {
         unsafe {
@@ -1117,6 +1134,10 @@ impl CordRepBtree {
             if is_data_edge(rep) {
                 return Self::new_with(rep);
             }
+            // Entry boundary: no surgery has started and `rep` has not been
+            // spliced into anything yet, so unwinding here only leaks the
+            // donated reference — safe to leave unwinding, unlike the
+            // mid-surgery asserts elsewhere in this file.
             assert!(rep.is_btree(), "cord-rs: unexpected node type {} in CordRepBtree::create", rep.tag());
             rep.cast()
         }
@@ -1842,6 +1863,10 @@ impl CordRepBtree {
             if is_data_edge(rep) {
                 return Self::add_cord_rep::<BACK>(tree, rep);
             }
+            // Entry boundary: neither `tree` nor `rep` has been touched or
+            // spliced into anything yet (that only starts inside
+            // `merge_trees`), so unwinding here only leaks both donated
+            // references — safe to leave unwinding.
             assert!(rep.is_btree(), "cord-rs: unexpected node type {} in CordRepBtree::append", rep.tag());
             Self::merge_trees(tree, rep.cast())
         }
@@ -1858,6 +1883,8 @@ impl CordRepBtree {
             if is_data_edge(rep) {
                 return Self::add_cord_rep::<FRONT>(tree, rep);
             }
+            // Entry boundary: same as `append` above — safe to leave
+            // unwinding.
             assert!(rep.is_btree(), "cord-rs: unexpected node type {} in CordRepBtree::prepend", rep.tag());
             Self::merge_trees(rep.cast(), tree)
         }
@@ -2455,7 +2482,20 @@ impl CordRepBtree {
                         // a freshly created, non-null node.
                         stack[height] = Some(NonNull::new_unchecked(result.tree));
                         height += 1;
-                        assert!(height < MAX_DEPTH, "cord-rs: CordRepBtree::rebuild exceeded max depth");
+                        debug_assert!(
+                            height < MAX_DEPTH,
+                            "cord-rs: CordRepBtree::rebuild exceeded max depth"
+                        );
+                        if height >= MAX_DEPTH {
+                            // Never unwind out of tree surgery: `result.tree`
+                            // was just spliced into `stack[height - 1]` and
+                            // `tree`'s own edges are only partially drained
+                            // into `stack` at this point, so an escaping
+                            // panic (if caught) would expose a torn rebuild;
+                            // needing more than `MAX_DEPTH` levels here is
+                            // unrecoverable.
+                            std::process::abort();
+                        }
                         match stack[height] {
                             None => {
                                 result.action = Action::InPlace;

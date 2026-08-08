@@ -6,14 +6,14 @@ use core::marker::PhantomData;
 
 use super::btree::{BtreePtr, BtreeRef, CordRepBtree};
 use super::navigator::CordRepBtreeNavigator;
-use super::{OwnedRep, RepPtr, RepRef, edge_data};
+use super::{OwnedRep, RepPtr, edge_data};
 
 /// See the [module documentation](self). Borrows the `CordRepBtree` it is
 /// [`init`](Self::init)ialized with for `'a`: that borrow is this type's
 /// liveness invariant, established at `init`. Methods that navigate from
 /// the current position additionally require a non-empty reader (their
-/// `# Safety` sections) — a default/reset reader's internal path is
-/// dangling, which is why they are `unsafe`.
+/// `# Safety` sections) — a default reader's internal path is dangling,
+/// which is why they are `unsafe`.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CordRepBtreeReader<'a> {
     /// Bytes remaining after the end of the last returned chunk.
@@ -45,34 +45,18 @@ impl<'a> CordRepBtreeReader<'a> {
         self.navigator.is_some()
     }
 
-    /// The current data edge.
-    ///
-    /// # Safety
-    ///
-    /// The reader must be non-empty (`is_some()`): initialized via
-    /// [`init`](Self::init) with a tree still live for `'a`. On a
-    /// default/reset reader the navigator's path is dangling and this
-    /// dereferences it.
-    #[inline]
-    pub(crate) unsafe fn node(&self) -> RepRef<'a> {
-        debug_assert!(self.is_some());
-        // SAFETY: non-empty per this fn's precondition, so the navigator's
-        // current position refers to a live data edge reachable from the
-        // tree this reader was initialized with, kept live and unmutated
-        // for `'a` per `init`'s contract.
-        unsafe { RepRef::from_raw(self.navigator.current()) }
-    }
-
     /// Length of the referenced tree.
     ///
     /// # Safety
     ///
-    /// Same contract as [`node`](Self::node): the reader must be non-empty
-    /// (on an empty reader `navigator.btree()` is null).
+    /// The reader must be non-empty (`is_some()`): on a default reader
+    /// `navigator.btree()` is null.
     #[inline]
     pub(crate) unsafe fn length(&self) -> usize {
         debug_assert!(self.is_some());
-        // SAFETY: see `node`.
+        // SAFETY: non-empty per this fn's precondition, so the navigator's
+        // stored tree pointer refers to a live, well-formed `CordRepBtree`
+        // for `'a` per `init`'s contract.
         unsafe { BtreeRef::from_raw(self.navigator.btree()).len() }
     }
 
@@ -81,12 +65,6 @@ impl<'a> CordRepBtreeReader<'a> {
     #[inline]
     pub(crate) fn remaining(&self) -> usize {
         self.remaining
-    }
-
-    /// Resets to an empty value.
-    #[inline]
-    pub(crate) fn reset(&mut self) {
-        self.navigator.reset();
     }
 
     /// Initializes with `tree`, returning its first data edge. This is the
@@ -130,7 +108,8 @@ impl<'a> CordRepBtreeReader<'a> {
     ///
     /// # Safety
     ///
-    /// Same contract as [`node`](Self::node): the reader must be non-empty.
+    /// The reader must be non-empty (`is_some()`): on a default reader the
+    /// navigator's path is dangling.
     #[inline]
     pub(crate) unsafe fn skip(&mut self, skip: usize) -> &'a [u8] {
         // SAFETY: per this reader's invariant the tree is live for `'a`, so
@@ -158,7 +137,8 @@ impl<'a> CordRepBtreeReader<'a> {
     ///
     /// # Safety
     ///
-    /// Same contract as [`node`](Self::node): the reader must be non-empty.
+    /// The reader must be non-empty (`is_some()`): on a default reader the
+    /// navigator's path is dangling.
     #[inline]
     pub(crate) unsafe fn seek(&mut self, offset: usize) -> &'a [u8] {
         // SAFETY: per this reader's invariant the tree is live for `'a`, so
@@ -183,11 +163,13 @@ impl<'a> CordRepBtreeReader<'a> {
     /// read ended in (empty if all data was read) and the tree (`None` if
     /// `n` exceeded the remaining data).
     ///
-    /// Requires `chunk_size <= self.node().len()` (checked below).
+    /// Requires `chunk_size <= self.navigator.current().length()` (checked
+    /// below).
     ///
     /// # Safety
     ///
-    /// Same contract as [`node`](Self::node): the reader must be non-empty.
+    /// The reader must be non-empty (`is_some()`): on a default reader the
+    /// navigator's path is dangling.
     pub(crate) unsafe fn read(&mut self, n: usize, chunk_size: usize) -> (&'a [u8], Option<OwnedRep>) {
         // SAFETY: per this reader's invariant the tree is live for `'a`, so
         // `self.navigator.current()`/`.next()`/`.read()` and `edge_data` on

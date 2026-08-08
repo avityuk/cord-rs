@@ -147,6 +147,7 @@ impl CordRepBtreeNavigator {
 
     /// Resets to the empty state.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn reset(&mut self) {
         self.height = None;
     }

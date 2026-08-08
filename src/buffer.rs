@@ -5,7 +5,7 @@ use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 
-use crate::rep::flat::{self, FLAT_OVERHEAD, FlatRef, MAX_FLAT_LENGTH, MAX_LARGE_FLAT_SIZE};
+use crate::rep::flat::{self, FLAT_OVERHEAD, FlatRef, MAX_FLAT_LENGTH, MAX_LARGE_FLAT_SIZE, MIN_FLAT_LENGTH};
 use crate::rep::{CordRep, UniqueRep, small_u8};
 
 /// Inline (small buffer) capacity of a `CordBuffer`.
@@ -285,11 +285,25 @@ impl CordBuffer {
 
     /// The maximum payload of a buffer created with
     /// [`with_custom_limit`](Self::with_custom_limit) for `block_size`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `block_size` is not a power of two, or is not greater than
+    /// the flat header overhead (13 bytes on 64-bit platforms, 9 on
+    /// 32-bit) — the smallest legal `block_size` is 16.
     #[inline]
     #[must_use]
     pub const fn maximum_payload_for(block_size: usize) -> usize {
+        assert!(
+            block_size.is_power_of_two() && block_size > FLAT_OVERHEAD,
+            "block_size must be a power of two greater than FLAT_OVERHEAD"
+        );
         let limit = if block_size < Self::CUSTOM_LIMIT { block_size } else { Self::CUSTOM_LIMIT };
-        limit - FLAT_OVERHEAD
+        let payload = limit - FLAT_OVERHEAD;
+        // `with_custom_limit` allocates via `flat::new_large`, which floors
+        // the payload at `MIN_FLAT_LENGTH`; mirror that here so this agrees
+        // with what `with_custom_limit` actually produces for small blocks.
+        if payload < MIN_FLAT_LENGTH { MIN_FLAT_LENGTH } else { payload }
     }
 
     /// Creates a buffer of the desired `capacity`, capped at
@@ -324,10 +338,15 @@ impl CordBuffer {
     ///
     /// # Panics
     ///
-    /// Panics if `block_size` is not a power of two.
+    /// Panics if `block_size` is not a power of two, or is not greater than
+    /// the flat header overhead (13 bytes on 64-bit platforms, 9 on
+    /// 32-bit) — the smallest legal `block_size` is 16.
     #[must_use]
     pub fn with_custom_limit(block_size: usize, capacity: usize) -> Self {
-        assert!(block_size.is_power_of_two(), "block_size must be a power of two, got {block_size}");
+        assert!(
+            block_size.is_power_of_two() && block_size > FLAT_OVERHEAD,
+            "block_size must be a power of two greater than FLAT_OVERHEAD ({FLAT_OVERHEAD}), got {block_size}"
+        );
         let mut capacity = capacity.min(Self::CUSTOM_LIMIT);
         let block_size = block_size.min(Self::CUSTOM_LIMIT);
         if capacity + FLAT_OVERHEAD >= block_size {
@@ -662,6 +681,49 @@ mod tests {
     #[should_panic(expected = "power of two")]
     fn custom_limit_rejects_non_pow2() {
         let _ = CordBuffer::with_custom_limit(1000, 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "power of two")]
+    fn custom_limit_rejects_block_size_below_overhead() {
+        // The largest power of two `<= FLAT_OVERHEAD` is always illegal
+        // (this used to underflow `capacity - FLAT_OVERHEAD` instead of
+        // panicking cleanly).
+        let below = (FLAT_OVERHEAD + 1).next_power_of_two() / 2;
+        let _ = CordBuffer::with_custom_limit(below, 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "power of two")]
+    fn maximum_payload_for_rejects_block_size_below_overhead() {
+        let below = (FLAT_OVERHEAD + 1).next_power_of_two() / 2;
+        let _ = CordBuffer::maximum_payload_for(below);
+    }
+
+    #[test]
+    fn custom_limit_smallest_block_size_is_sane() {
+        // 16 is the smallest power of two greater than FLAT_OVERHEAD on
+        // both 64-bit (13) and 32-bit (9) platforms, so it is the smallest
+        // legal `block_size`.
+        let smallest = (FLAT_OVERHEAD + 1).next_power_of_two();
+        assert_eq!(smallest, 16);
+        let b = CordBuffer::with_custom_limit(smallest, smallest);
+        // `flat::new_large` floors the payload at `MIN_FLAT_LENGTH`, so the
+        // resulting capacity is sane (no underflow, no giant allocation).
+        assert!(b.capacity() >= MIN_FLAT_LENGTH);
+        assert!(b.capacity() < smallest + MIN_FLAT_LENGTH);
+    }
+
+    #[test]
+    fn maximum_payload_for_matches_actual_capacity() {
+        for block_size in [16, 32, 64, 8 << 10, 64 << 10, 1 << 20] {
+            let b = CordBuffer::with_custom_limit(block_size, block_size);
+            assert_eq!(
+                CordBuffer::maximum_payload_for(block_size),
+                b.capacity(),
+                "maximum_payload_for({block_size}) disagrees with an actual allocation"
+            );
+        }
     }
 
     #[test]

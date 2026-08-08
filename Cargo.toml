@@ -3,13 +3,27 @@ name = "cord-rs"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
+authors = ["Andrey Vityuk"]
 description = "A Rust port of abseil's absl::Cord: a rope-like byte sequence with O(log n) append/prepend/slicing and shared substructure."
 license = "Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/avityuk/cord-rs"
 documentation = "https://docs.rs/cord-rs"
 keywords = ["cord", "rope", "bytes", "abseil", "buffer"]
 categories = ["data-structures", "memory-management"]
-exclude = [".github/", "scripts/"]
+# Explicit allowlist (cleaner than exclude here): ships the crate itself,
+# its tests/benches, and the scripts CONTRIBUTING.md documents in detail;
+# excludes dev-only files (CLAUDE.md, rustfmt.toml) and CI config (.github).
+include = [
+    "src/**",
+    "tests/**",
+    "benches/**",
+    "scripts/**",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "NOTICE",
+]
 
 [features]
 default = []

@@ -103,7 +103,13 @@ impl<'a> Chunks<'a> {
                 self.current_chunk = self.btree_reader.next();
                 return;
             }
-            debug_assert!(!self.current_chunk.is_empty(), "step() on an invalid iterator");
+            // A non-btree iterator's single chunk always covers the whole
+            // remaining length, so `bytes_remaining` must have reached zero
+            // above; reaching this point means the iterator is corrupted.
+            // Panic outright (not just in debug) rather than falling through
+            // to `current_chunk = &[]`, which would leave `bytes_remaining >
+            // 0` forever and make callers loop yielding empty chunks.
+            unreachable!("step() on an invalid iterator");
         }
         self.current_chunk = &[];
     }
