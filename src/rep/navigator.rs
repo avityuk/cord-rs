@@ -64,6 +64,7 @@ unsafe fn substring(rep: *mut CordRep, offset: usize, n: usize) -> *mut CordRep 
     }
 }
 
+/// Like [`substring`], but from `offset` to the end of `rep`.
 ///
 /// # Safety
 ///

@@ -11,8 +11,8 @@ use crate::rep::{CordRepSubstring, MAX_BYTES_TO_COPY, MAX_INLINE, OwnedRep, RepR
 /// [`Cord::chunks`].
 ///
 /// Every yielded chunk is non-empty. The iterator holds a navigation stack
-/// proportional to the tree height (~150 bytes); prefer passing it by
-/// reference.
+/// proportional to the tree height (176 bytes on 64-bit platforms, less on
+/// 32-bit); prefer passing it by reference.
 #[derive(Clone)]
 pub struct Chunks<'a> {
     /// A view of the bytes of the current chunk (possibly a suffix of the
@@ -35,6 +35,12 @@ pub struct Chunks<'a> {
     btree_reader: CordRepBtreeReader<'a>,
     _marker: PhantomData<&'a Cord>,
 }
+
+// Keeps the size claim in the doc comment above honest. Pointer-width
+// scaled (the navigation stack is `MAX_DEPTH` pointers), so only checked on
+// 64-bit; smaller on 32-bit targets.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<Chunks<'static>>() == 176);
 
 impl<'a> Chunks<'a> {
     /// Creates an iterator positioned at the first chunk of `cord`.
@@ -395,6 +401,12 @@ impl core::iter::FusedIterator for Bytes<'_> {}
 /// A cursor is cheap to clone. It also implements [`std::io::Read`] and
 /// [`std::io::BufRead`] (and `bytes::Buf` with the `bytes` feature).
 ///
+/// `Cursor` does not implement [`Iterator`]: `take`/`by_ref` would be
+/// ambiguous with the `bytes::Buf` and `std::io::Read` methods of the same
+/// name, and per-byte iteration belongs to [`Cord::bytes`] instead. Use
+/// [`next_byte`](Self::next_byte), [`read`](Self::read),
+/// [`advance`](Self::advance) or [`peek`](Self::peek) here.
+///
 /// ```
 /// use cord_rs::Cord;
 /// let cord = Cord::from("header:payload");
@@ -503,30 +515,3 @@ impl<'a> Cursor<'a> {
         self.chunks.clone()
     }
 }
-
-impl Iterator for Cursor<'_> {
-    type Item = u8;
-
-    #[inline]
-    fn next(&mut self) -> Option<u8> {
-        self.next_byte()
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining(), Some(self.remaining()))
-    }
-
-    #[inline]
-    fn nth(&mut self, n: usize) -> Option<u8> {
-        if n >= self.remaining() {
-            self.chunks.advance_bytes(self.remaining());
-            return None;
-        }
-        self.chunks.advance_bytes(n);
-        self.next_byte()
-    }
-}
-
-impl ExactSizeIterator for Cursor<'_> {}
-impl core::iter::FusedIterator for Cursor<'_> {}

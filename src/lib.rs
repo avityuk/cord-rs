@@ -46,10 +46,13 @@
 //! A `Cord` is 16 bytes: either up to 15 bytes of inline data, or a pointer
 //! to a reference counted tree. Trees are B-trees of up to 6 edges per node
 //! whose leaves reference immutable *flat* buffers (allocated in size classes
-//! from 32 bytes to 256 KiB), *external* buffers owned by user values
-//! (`Vec<u8>`, `Arc<[u8]>`, `&'static [u8]`, ...), or *substrings* of those.
-//! Buffers referenced by a single cord are grown in place; buffers shared
-//! between cords are never modified.
+//! from 32 bytes to 4 KiB by default, or up to 64 KiB when built through a
+//! [`CordBuffer`] with a custom limit — the one-byte tag that encodes a
+//! flat's allocation size can address up to 256 KiB, but nothing in the
+//! crate allocates that large today), *external* buffers owned by user
+//! values (`Vec<u8>`, `Arc<[u8]>`, `&'static [u8]`, ...), or *substrings* of
+//! those. Buffers referenced by a single cord are grown in place; buffers
+//! shared between cords are never modified.
 //!
 //! The implementation started from abseil's design — the same heuristics
 //! (copy-vs-share thresholds, amortized growth, buffer size classes) — and

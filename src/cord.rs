@@ -20,6 +20,7 @@ use crate::source::{CordLike, CordSource};
 
 /// Memory accounting modes for [`Cord::estimated_memory_usage`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum MemoryAccounting {
     /// Counts the *approximate* number of bytes held in full or in part by
     /// this cord. Cords that share memory are each "charged" independently
@@ -806,6 +807,11 @@ impl Cord {
     /// Prepends `src` to the cord. Accepts the same inputs as
     /// [`append`](Self::append).
     ///
+    /// Unlike `append`, `prepend` does not currently amortize into spare
+    /// front capacity across calls: each call allocates its own buffer for
+    /// `src`, so repeated prepending is not O(1) amortized the way repeated
+    /// appending is.
+    ///
     /// ```
     /// use cord_rs::Cord;
     /// let mut cord = Cord::from("world");
@@ -1052,6 +1058,7 @@ impl Cord {
 
     /// Non-panicking version of [`slice`](Self::slice): returns `None` if the
     /// range is out of bounds.
+    #[must_use]
     pub fn try_slice(&self, range: impl RangeBounds<usize>) -> Option<Cord> {
         let (pos, new_size) = try_resolve_range(range, self.len())?;
         Some(self.subcord(pos, new_size))
@@ -1220,15 +1227,6 @@ impl Cord {
         Chunks::new(self)
     }
 
-    /// Returns an iterator over the contiguous chunks of the cord; the same
-    /// as [`chunks`](Self::chunks) (provided so `&Cord` iteration has the
-    /// conventional `iter` spelling).
-    #[inline]
-    #[must_use]
-    pub fn iter(&self) -> Chunks<'_> {
-        self.chunks()
-    }
-
     /// Returns an iterator over the bytes of the cord.
     ///
     /// Prefer [`chunks`](Self::chunks) for bulk processing.
@@ -1308,6 +1306,9 @@ impl Cord {
     /// Returns the position of the first occurrence of `needle`, or `None`.
     /// An empty needle is found at position 0.
     ///
+    /// Uses a naive search, not Boyer-Moore/KMP: worst case is O(n·m) for a
+    /// haystack of length n and needle of length m.
+    ///
     /// ```
     /// use cord_rs::Cord;
     /// let cord = Cord::from("hello world");
@@ -1380,6 +1381,12 @@ impl Cord {
     }
 
     /// Returns `true` if the cord ends with `suffix`.
+    ///
+    /// Currently implemented by cloning the cord and calling
+    /// [`advance`](Self::advance) on the clone, which for a tree cord forces
+    /// copy-on-write down the tree spine (the clone shares the tree, so it
+    /// is never privately owned) — this allocates even though the cord
+    /// itself is not modified.
     pub fn ends_with<S: CordLike + ?Sized>(&self, suffix: &S) -> bool {
         let my_size = self.len();
         let suffix_size = suffix.len();
@@ -1593,8 +1600,10 @@ fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> (usize, usize) {
         Bound::Excluded(&e) => e,
         Bound::Unbounded => len,
     };
-    assert!(start <= end, "range start must not be greater than end: {start} <= {end}");
-    assert!(end <= len, "range end out of bounds: {end} <= {len}");
+    // Wording matches `[T]`'s range-indexing panics (`slice_index_order_fail`
+    // / `slice_end_index_len_fail` in core::slice::index).
+    assert!(start <= end, "slice index starts at {start} but ends at {end}");
+    assert!(end <= len, "range end index {end} out of range for slice of length {len}");
     (start, end - start)
 }
 
@@ -1780,9 +1789,20 @@ impl fmt::Debug for Cord {
 
 impl fmt::Display for Cord {
     /// Formats the bytes as UTF-8, replacing invalid sequences with
-    /// `U+FFFD` (like `String::from_utf8_lossy`), without allocating.
+    /// `U+FFFD` (like `String::from_utf8_lossy`). Honors width, fill,
+    /// alignment and precision the same way `str`'s `Display` does; the
+    /// common case (none of those set) streams the decoded text straight to
+    /// the sink without allocating.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        crate::io::fmt_lossy(self.chunks(), f)
+        if f.width().is_none() && f.precision().is_none() && f.align().is_none() && !f.sign_aware_zero_pad() {
+            return crate::io::fmt_lossy(self.chunks(), f);
+        }
+        // A flag that affects layout is set: materialize the lossy string so
+        // `f.pad` can apply width/fill/align/precision the way it would for
+        // a plain `&str`.
+        let mut decoded = String::with_capacity(self.len());
+        crate::io::fmt_lossy(self.chunks(), &mut decoded)?;
+        f.pad(&decoded)
     }
 }
 
@@ -1939,17 +1959,36 @@ impl<S: CordSource> Extend<S> for Cord {
 
 impl Extend<u8> for Cord {
     fn extend<I: IntoIterator<Item = u8>>(&mut self, iter: I) {
-        let mut buffer = [0u8; 256];
-        let mut filled = 0;
-        for byte in iter {
-            buffer[filled] = byte;
-            filled += 1;
-            if filled == buffer.len() {
-                self.append_slice(&buffer);
-                filled = 0;
+        // Buffers up to 256 bytes at a time before appending, so a
+        // panicking `iter` (e.g. a user `Iterator::next` that panics
+        // partway through) must not lose the up-to-255 already-consumed
+        // bytes sitting in the buffer. `Guard::drop` flushes them on
+        // unwinding; the happy path flushes explicitly and defuses the
+        // guard (by zeroing `filled`) so `drop` is then a no-op.
+        struct Guard<'a> {
+            cord: &'a mut Cord,
+            buffer: [u8; 256],
+            filled: usize,
+        }
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                if self.filled > 0 {
+                    self.cord.append_slice(&self.buffer[..self.filled]);
+                }
             }
         }
-        self.append_slice(&buffer[..filled]);
+
+        let mut guard = Guard { cord: self, buffer: [0u8; 256], filled: 0 };
+        for byte in iter {
+            guard.buffer[guard.filled] = byte;
+            guard.filled += 1;
+            if guard.filled == guard.buffer.len() {
+                guard.cord.append_slice(&guard.buffer);
+                guard.filled = 0;
+            }
+        }
+        guard.cord.append_slice(&guard.buffer[..guard.filled]);
+        guard.filled = 0;
     }
 }
 
@@ -1969,11 +2008,19 @@ impl FromIterator<u8> for Cord {
     }
 }
 
+#[expect(
+    clippy::into_iter_without_iter,
+    reason = "the conventional `Cord::iter` alias was deliberately removed (untested, and ambiguous \
+              with std's element-iterator convention); `chunks` is the discoverable inherent method"
+)]
 impl<'a> IntoIterator for &'a Cord {
+    /// A contiguous chunk of the cord's bytes (the same as
+    /// [`chunks`](Cord::chunks) yields), not a single byte.
     type Item = &'a [u8];
     type IntoIter = Chunks<'a>;
 
-    /// Iterates over the chunks of the cord.
+    /// Same as [`chunks`](Cord::chunks): iterates over the cord's
+    /// contiguous byte chunks, not its individual bytes.
     #[inline]
     fn into_iter(self) -> Chunks<'a> {
         self.chunks()

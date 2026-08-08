@@ -1015,14 +1015,17 @@ impl CordRepBtree {
     /// unfilled window holds nulls (every caller fills the window
     /// immediately, before anything can observe or drop the node).
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// Panics if `height > MAX_DEPTH` (it would otherwise be silently
-    /// truncated by `small_u8`, corrupting the node's declared height).
-    /// `MAX_DEPTH`, not `MAX_HEIGHT`, is the bound here: `finalize`'s
-    /// `new_pair` of two `MAX_HEIGHT` children is a legitimate, if
-    /// momentary, `MAX_DEPTH`-high tree that gets folded back down to
-    /// `MAX_HEIGHT` by [`rebuild`](Self::rebuild) right after.
+    /// Aborts the process if `height > MAX_DEPTH` (it would otherwise be
+    /// silently truncated by `small_u8`, corrupting the node's declared
+    /// height) — a debug build's `debug_assert` just below will usually
+    /// panic first, but the fallback is `abort`, not a recoverable panic:
+    /// callers are mid tree-surgery with split ownership, so unwinding here
+    /// is never safe. `MAX_DEPTH`, not `MAX_HEIGHT`, is the bound here:
+    /// `finalize`'s `new_pair` of two `MAX_HEIGHT` children is a
+    /// legitimate, if momentary, `MAX_DEPTH`-high tree that gets folded
+    /// back down to `MAX_HEIGHT` by [`rebuild`](Self::rebuild) right after.
     #[inline]
     fn alloc(length: usize, height: usize, begin: usize, end: usize) -> *mut CordRepBtree {
         debug_assert!(height <= MAX_DEPTH, "cord-rs: height {height} exceeds MAX_DEPTH");
@@ -1039,9 +1042,9 @@ impl CordRepBtree {
 
     /// Creates a new empty node at `height`.
     ///
-    /// # Panics
+    /// # Aborts
     ///
-    /// Panics if `height` is too large for [`alloc`](Self::alloc) to accept
+    /// Aborts if `height` is too large for [`alloc`](Self::alloc) to accept
     /// (see there); callers are expected to keep `height <= MAX_HEIGHT` for
     /// the result to be a well-formed tree.
     #[inline]
@@ -1481,11 +1484,13 @@ impl CordRepBtree {
     ///
     /// `this` must be a non-null pointer to a live, well-formed btree node;
     /// `owned` must accurately state whether `this` is privately owned
-    /// (refcount one) and therefore safe to mutate in place — `add` is only
-    /// reached (via `to_op_result`) when `owned` is true. `edge` must be a
-    /// non-null pointer to a live rep; the caller donates its reference,
-    /// which is incorporated into the result (as a new edge of `this` or of
-    /// a fresh popped node).
+    /// (refcount one) and therefore safe to mutate in place. `add` (called
+    /// on `to_op_result`'s output below) always runs on a uniquely owned
+    /// node either way: `this` itself when `owned`, or the fresh copy
+    /// `to_op_result` makes when it is not. `edge` must be a non-null
+    /// pointer to a live rep; the caller donates its reference, which is
+    /// incorporated into the result (as a new edge of `this` or of a fresh
+    /// popped node).
     #[inline]
     unsafe fn add_edge<const IS_BACK: bool>(
         this: *mut CordRepBtree,

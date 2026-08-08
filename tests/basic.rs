@@ -230,7 +230,7 @@ fn advance_out_of_bounds_panics() {
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
+#[should_panic(expected = "range end index 4 out of range for slice of length 3")]
 fn slice_out_of_bounds_panics() {
     let c = Cord::from("abc");
     let _ = c.slice(2..4);
@@ -360,7 +360,7 @@ fn iteration_and_cursor() {
     check(&mid, &data[510..3510]);
     assert_eq!(cursor.peek(), Some(data[3510]));
     assert_eq!(cursor.next_byte(), Some(data[3510]));
-    let rest: Vec<u8> = cursor.clone().collect();
+    let rest: Vec<u8> = cursor.chunks().flatten().copied().collect();
     assert_eq!(rest, &data[3511..]);
     let last = cursor.read(cursor.remaining());
     check(&last, &data[3511..]);
@@ -385,9 +385,13 @@ fn iteration_and_cursor() {
     assert_eq!(cord.bytes().count(), data.len());
     assert_eq!(cord.bytes().len(), data.len());
     assert_eq!((&cord).into_iter().count(), cord.chunks().count());
+    // `Cursor` doesn't implement `Iterator` (see its doc comment); use
+    // `advance`/`next_byte` for the same "skip then read one, then confirm
+    // exhaustion" check `nth`/`next` performed before the removal.
     let mut c = cord.cursor();
-    assert_eq!(c.nth(data.len() - 1), Some(data[data.len() - 1]));
-    assert_eq!(c.next(), None);
+    c.advance(data.len() - 1);
+    assert_eq!(c.next_byte(), Some(data[data.len() - 1]));
+    assert_eq!(c.next_byte(), None);
 }
 
 #[test]
@@ -563,6 +567,79 @@ fn write_extend_and_formatting() {
     assert!(String::try_from(Cord::from(b"\xff")).is_err());
     let v: Vec<u8> = Cord::from("vec").into();
     assert_eq!(v, b"vec");
+}
+
+#[test]
+fn display_honors_formatter_flags() {
+    // Unflagged: the fast streaming path, matches plain `to_string`/`str`.
+    let cord = Cord::from("hello");
+    assert_eq!(format!("{cord}"), "hello");
+    assert_eq!(format!("{cord}"), "hello".to_string());
+
+    // Width (default alignment), explicit alignments, and a custom fill
+    // character all match `str`'s `Display`.
+    assert_eq!(format!("[{cord:10}]"), format!("[{:10}]", "hello"));
+    assert_eq!(format!("[{cord:>10}]"), format!("[{:>10}]", "hello"));
+    assert_eq!(format!("[{cord:<10}]"), format!("[{:<10}]", "hello"));
+    assert_eq!(format!("[{cord:^10}]"), format!("[{:^10}]", "hello"));
+    assert_eq!(format!("[{cord:*^11}]"), format!("[{:*^11}]", "hello"));
+    assert_eq!(format!("[{cord:0>8}]"), format!("[{:0>8}]", "hello"));
+    // Width narrower than the content has no truncating effect, like `str`.
+    assert_eq!(format!("[{cord:>2}]"), format!("[{:>2}]", "hello"));
+    // Sanity check against a concrete expected value too, not just parity
+    // with `str`.
+    assert_eq!(format!("[{cord:>6}]"), "[ hello]");
+
+    // Precision truncates decoded characters, alone and combined with width.
+    assert_eq!(format!("[{cord:.3}]"), format!("[{:.3}]", "hello"));
+    assert_eq!(format!("[{cord:>6.3}]"), format!("[{:>6.3}]", "hello"));
+
+    // A multi-chunk (btree) cord exercises the materializing slow path
+    // across chunk boundaries, both for width and for precision.
+    let mut big = Cord::from(vec![b'a'; 4000]);
+    big.append(vec![b'b'; 4000]);
+    let expected = "a".repeat(4000) + &"b".repeat(4000);
+    assert_eq!(format!("{big}"), expected);
+    assert_eq!(format!("[{big:>8005}]"), format!("[{:>8005}]", expected));
+    assert_eq!(format!("[{big:.5}]"), format!("[{:.5}]", expected));
+
+    // Lossy replacement combines correctly with precision/width: truncation
+    // and padding operate on the decoded (already-lossy) text.
+    let lossy = Cord::from(&b"a\xffb"[..]);
+    assert_eq!(lossy.to_string(), "a\u{FFFD}b");
+    assert_eq!(format!("[{lossy:.2}]"), format!("[{:.2}]", "a\u{FFFD}b"));
+    assert_eq!(format!("[{lossy:>6}]"), format!("[{:>6}]", "a\u{FFFD}b"));
+}
+
+#[test]
+fn extend_u8_preserves_consumed_bytes_on_panic() {
+    // An iterator that panics partway through, after having already yielded
+    // (been "consumed" by) `limit` bytes.
+    struct PanicAfter {
+        i: u32,
+        limit: u32,
+    }
+    impl Iterator for PanicAfter {
+        type Item = u8;
+        fn next(&mut self) -> Option<u8> {
+            assert!(self.i < self.limit, "PanicAfter: intentional panic for the test");
+            let b = (self.i % 256) as u8;
+            self.i += 1;
+            Some(b)
+        }
+    }
+
+    // `Extend<u8>` batches into a 256-byte block before appending; 300 is
+    // past one full block, so the panic lands with an un-flushed partial
+    // block still in the buffer, exactly the case the drop guard covers.
+    let limit = 300u32;
+    let mut cord = Cord::new();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cord.extend(PanicAfter { i: 0, limit });
+    }));
+    assert!(result.is_err(), "extend should propagate the iterator's panic");
+    let expected: Vec<u8> = (0..limit).map(|i| (i % 256) as u8).collect();
+    assert_eq!(cord.to_vec(), expected, "bytes consumed before the panic must not be lost");
 }
 
 #[test]

@@ -214,7 +214,7 @@ proptest! {
                     let read = cursor.read(y - x);
                     assert_eq!(cursor.position(), y);
                     assert_eq!(cursor.remaining(), oracles[*s].len() - y);
-                    let rest: Vec<u8> = cursor.collect();
+                    let rest: Vec<u8> = cursor.chunks().flatten().copied().collect();
                     assert_eq!(rest, &oracles[*s][y..], "step {step}: cursor rest");
                     cords[*t] = read; oracles[*t] = oracles[*s][x..y].to_vec(); *t
                 }
