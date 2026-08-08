@@ -1049,7 +1049,9 @@ impl Cord {
         if new_size <= MAX_INLINE {
             let mut it = self.chunks();
             it.advance_bytes(pos);
-            return Cord { data: it.read_inline(new_size) };
+            // `it` is discarded right here, so the final positioning
+            // update would be dead work.
+            return Cord { data: it.gather_inline::<false>(new_size) };
         }
         // SAFETY: `tree` is live; `sub_tree` / `substring` return a new
         // reference.
