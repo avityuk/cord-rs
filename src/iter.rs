@@ -42,6 +42,12 @@ pub struct Chunks<'a> {
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(core::mem::size_of::<Chunks<'static>>() == 176);
 
+#[cold]
+#[inline(never)]
+fn invalid_chunks_state() -> ! {
+    panic!("invalid chunk iterator state");
+}
+
 impl<'a> Chunks<'a> {
     /// Creates an iterator positioned at the first chunk of `cord`.
     pub(crate) fn new(cord: &'a Cord) -> Self {
@@ -104,13 +110,7 @@ impl<'a> Chunks<'a> {
                 self.current_chunk = self.btree_reader.next();
                 return;
             }
-            // A non-btree iterator's single chunk always covers the whole
-            // remaining length, so `bytes_remaining` must have reached zero
-            // above; reaching this point means the iterator is corrupted.
-            // Panic outright (not just in debug) rather than falling through
-            // to `current_chunk = &[]`, which would leave `bytes_remaining >
-            // 0` forever and make callers loop yielding empty chunks.
-            unreachable!("step() on an invalid iterator");
+            debug_assert!(!self.current_chunk.is_empty(), "step() on an invalid iterator");
         }
         self.current_chunk = &[];
     }
@@ -299,6 +299,13 @@ impl<'a> Iterator for Chunks<'a> {
     fn next(&mut self) -> Option<&'a [u8]> {
         if self.bytes_remaining == 0 {
             return None;
+        }
+        // `step` is also used by trusted internal consumers such as Cursor,
+        // so keep its impossible-state check debug-only. At this public
+        // iterator boundary, retain the release check that prevents a
+        // corrupted iterator from repeatedly yielding empty chunks.
+        if self.current_chunk.is_empty() {
+            invalid_chunks_state();
         }
         let chunk = self.current_chunk;
         self.step();
