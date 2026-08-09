@@ -139,6 +139,39 @@ fn deep_check(cord: &Cord, expected: &[u8], step: usize, a: f64, b: f64) {
     assert!(cord.starts_with(&expected[..x]), "step {step}: starts_with");
     assert!(cord.ends_with(&expected[y..]), "step {step}: ends_with");
     assert_eq!(cord.contains(needle), oracle.is_some());
+
+    // The checks above only ever probe genuine prefixes/suffixes/substrings
+    // of `expected`, so an implementation that just returned `true`
+    // unconditionally would pass them. Corrupt each one (flip a byte, or
+    // extend an empty needle past the boundary) and compare against the
+    // `Vec` oracle's real (often negative) answer instead of a fixed
+    // expectation.
+    let mutate = |mut bytes: Vec<u8>| -> Vec<u8> {
+        if bytes.is_empty() {
+            bytes.push(0xA5); // extend an empty needle past the boundary
+        } else {
+            let mid = bytes.len() / 2;
+            bytes[mid] ^= 0xFF; // flip a byte partway through
+        }
+        bytes
+    };
+    let bad_prefix = mutate(expected[..x].to_vec());
+    assert_eq!(
+        cord.starts_with(&bad_prefix),
+        expected.starts_with(&bad_prefix[..]),
+        "step {step}: starts_with mutated"
+    );
+    let bad_suffix = mutate(expected[y..].to_vec());
+    assert_eq!(
+        cord.ends_with(&bad_suffix),
+        expected.ends_with(&bad_suffix[..]),
+        "step {step}: ends_with mutated"
+    );
+    let bad_needle = mutate(needle.to_vec());
+    let bad_oracle = expected.windows(bad_needle.len()).position(|w| w == bad_needle);
+    assert_eq!(cord.find(&bad_needle), bad_oracle, "step {step}: find mutated {x}..{y}");
+    assert_eq!(cord.contains(&bad_needle), bad_oracle.is_some(), "step {step}: contains mutated");
+
     let rebuilt = Cord::from(expected);
     assert_eq!(hash(cord), hash(&rebuilt), "step {step}: hash");
     assert_eq!(cord.cmp(&rebuilt), std::cmp::Ordering::Equal);

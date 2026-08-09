@@ -117,16 +117,20 @@ mod bytes_feature {
 
     #[test]
     fn cord_writer_buf_mut() {
+        // Miri interprets every byte; 10_000 + 50_000 bytes is minutes, not
+        // a check.
+        let iters: u32 = if cfg!(miri) { 200 } else { 10_000 };
+        let slice_len: usize = if cfg!(miri) { 500 } else { 50_000 };
         let mut cord = Cord::from("head");
         {
             let mut writer = CordWriter::new(&mut cord);
             assert!(writer.remaining_mut() > usize::MAX / 2);
             writer.put_u32(0xDEAD_BEEF);
             writer.put_slice(b" middle ");
-            for i in 0..10_000u32 {
+            for i in 0..iters {
                 writer.put_u8((i % 256) as u8);
             }
-            writer.put_slice(&vec![b'z'; 50_000]);
+            writer.put_slice(&vec![b'z'; slice_len]);
             writer.put_u16_le(0x1234);
             writer.flush();
             writer.put_slice(b"after flush");
@@ -134,8 +138,8 @@ mod bytes_feature {
         let mut expected = b"head".to_vec();
         expected.extend_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
         expected.extend_from_slice(b" middle ");
-        expected.extend((0..10_000u32).map(|i| (i % 256) as u8));
-        expected.extend(std::iter::repeat_n(b'z', 50_000));
+        expected.extend((0..iters).map(|i| (i % 256) as u8));
+        expected.extend(std::iter::repeat_n(b'z', slice_len));
         expected.extend_from_slice(&0x1234u16.to_le_bytes());
         expected.extend_from_slice(b"after flush");
         assert_eq!(cord, expected);
@@ -149,6 +153,76 @@ mod bytes_feature {
         assert_eq!(*inner, "io write");
         inner.append("!");
         assert_eq!(cord, "io write!");
+    }
+
+    /// Direct coverage of the raw `chunk_mut` + `advance_mut` protocol
+    /// (`BufMut`'s documented low-level contract), not routed through the
+    /// safe `put_slice` override: `chunk_mut`/`advance_mut` are the crate's
+    /// only unsafe impl of a foreign trait and had no direct test coverage.
+    #[test]
+    fn cord_writer_raw_chunk_mut_advance_mut_round_trip() {
+        let mut cord = Cord::from("head-");
+        {
+            let mut writer = CordWriter::new(&mut cord);
+            let chunk = writer.chunk_mut();
+            assert!(chunk.len() >= 5);
+            for (i, b) in b"HELLO".iter().enumerate() {
+                chunk.write_byte(i, *b);
+            }
+            // SAFETY: the 5 bytes just written above via `write_byte` are
+            // now initialized.
+            unsafe { writer.advance_mut(5) };
+
+            // A second round through the same buffer's remaining capacity.
+            let chunk = writer.chunk_mut();
+            chunk.write_byte(0, b'!');
+            // SAFETY: see above.
+            unsafe { writer.advance_mut(1) };
+        }
+        assert_eq!(cord, "head-HELLO!");
+        internal::validate(&cord).unwrap();
+    }
+
+    /// `advance_mut`'s documented contract: the caller must not claim more
+    /// bytes than the chunk `chunk_mut` last returned.
+    #[test]
+    #[should_panic(expected = "exceed the chunk capacity")]
+    fn cord_writer_advance_mut_past_chunk_panics() {
+        let mut cord = Cord::new();
+        let mut writer = CordWriter::new(&mut cord);
+        let chunk_len = writer.chunk_mut().len();
+        // SAFETY: none of these "initialized" bytes are ever read — the
+        // assertion below panics before that could happen.
+        unsafe { writer.advance_mut(chunk_len + 1) };
+    }
+
+    /// `chunk_mut`'s auto-flush-on-full path: filling a buffer exactly (via
+    /// `put_slice`, which does not itself flush) must not prevent the
+    /// *next* `chunk_mut` call from handing out a fresh buffer — it must
+    /// flush the full one first rather than returning an empty chunk.
+    ///
+    /// (`CordWriter` holds `&mut Cord` and has a `Drop` impl that flushes,
+    /// so `cord` can't be peeked at directly while `writer` is still alive;
+    /// this instead checks the flush indirectly, through the size of the
+    /// chunk `chunk_mut` hands back.)
+    #[test]
+    fn cord_writer_chunk_mut_flushes_full_buffer() {
+        let mut cord = Cord::new();
+        let cap;
+        {
+            let mut writer = CordWriter::new(&mut cord);
+            cap = writer.chunk_mut().len();
+            writer.put_slice(&vec![b'x'; cap]);
+            // The buffer is now exactly full. If the next `chunk_mut` call
+            // failed to flush it first, `spare_capacity_mut` on the still-full
+            // buffer would return an empty slice; a fresh buffer instead
+            // gives back the same default capacity.
+            let next_chunk_len = writer.chunk_mut().len();
+            assert!(next_chunk_len > 0, "chunk_mut must flush the full buffer before reallocating");
+            assert_eq!(next_chunk_len, cap, "the fresh buffer should have the same default capacity");
+        }
+        assert_eq!(cord.len(), cap, "the full buffer's bytes must have reached the cord by the end");
+        internal::validate(&cord).unwrap();
     }
 
     #[test]

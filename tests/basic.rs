@@ -125,10 +125,11 @@ fn append_and_prepend_growth() {
 fn large_appends_cross_flat_boundaries() {
     let mut cord = Cord::from("start");
     let mut expected = b"start".to_vec();
+    let max_flat = internal::MAX_FLAT_LENGTH;
     let sizes: &[usize] = if cfg!(miri) {
-        &[1, 15, 16, 4082, 4083, 4084, 10_000]
+        &[1, 15, 16, max_flat - 1, max_flat, max_flat + 1, 10_000]
     } else {
-        &[1, 15, 16, 4082, 4083, 4084, 10_000, 100_000, 300_000]
+        &[1, 15, 16, max_flat - 1, max_flat, max_flat + 1, 10_000, 100_000, 300_000]
     };
     for &size in sizes {
         let piece: Vec<u8> = (0..size).map(|i| (i * 7 % 256) as u8).collect();
@@ -697,4 +698,176 @@ fn send_sync_across_threads() {
         assert_eq!(h.join().unwrap(), data.len() + 1001);
     }
     check(&cord, &data);
+}
+
+#[test]
+fn default_impls() {
+    let cord = Cord::default();
+    check(&cord, b"");
+    let default_buffer = CordBuffer::default();
+    assert!(default_buffer.is_empty());
+    assert_eq!(default_buffer.capacity(), CordBuffer::new().capacity());
+}
+
+#[test]
+fn cordlike_for_cord_buffer() {
+    let mut buffer = CordBuffer::with_default_limit(32);
+    buffer.put_slice(b"needle");
+    let exact = Cord::from("needle");
+    assert!(exact == buffer, "Cord should compare equal to a CordBuffer with the same bytes");
+    assert_ne!(exact, CordBuffer::new());
+    let haystack = Cord::from("a needle in a haystack");
+    assert_eq!(haystack.find(&buffer), Some(2));
+    assert!(haystack.contains(&buffer));
+}
+
+#[test]
+fn from_boxed_str_arc_string_and_refs() {
+    let boxed: Box<str> = "boxed str".into();
+    check(&Cord::from(boxed), b"boxed str");
+
+    let arc_string = Arc::new("arc string".to_string());
+    check(&Cord::from(arc_string.clone()), b"arc string");
+
+    // Large enough to be adopted (shared) rather than copied.
+    let big_string = Arc::new("y".repeat(10_000));
+    let before = Arc::strong_count(&big_string);
+    let shared = Cord::from(big_string.clone());
+    assert_eq!(Arc::strong_count(&big_string), before + 1);
+    check(&shared, big_string.as_bytes());
+    drop(shared);
+    assert_eq!(Arc::strong_count(&big_string), before);
+
+    let v: Vec<u8> = b"by-ref vec".to_vec();
+    check(&Cord::from(&v), &v);
+    let s: String = "by-ref string".to_string();
+    check(&Cord::from(&s), s.as_bytes());
+}
+
+#[test]
+fn chunks_and_bytes_iterator_exhaustion() {
+    let data: Vec<u8> = (0..5000u32).map(|i| (i % 256) as u8).collect();
+    let mut cord = Cord::new();
+    for chunk in data.chunks(300) {
+        cord.append(chunk);
+    }
+    assert!(internal::is_btree(&cord));
+
+    let mut chunks = cord.chunks();
+    assert_eq!(chunks.size_hint(), (1, Some(cord.len())));
+    let mut total = 0;
+    for chunk in chunks.by_ref() {
+        total += chunk.len();
+    }
+    assert_eq!(total, cord.len());
+    // Exhausted: FusedIterator guarantees repeated `None`, not a resumed walk.
+    assert_eq!(chunks.next(), None);
+    assert_eq!(chunks.next(), None);
+    assert_eq!(chunks.size_hint(), (0, Some(0)));
+
+    let mut bytes = cord.bytes();
+    assert_eq!(bytes.len(), cord.len());
+    assert_eq!(bytes.size_hint(), (cord.len(), Some(cord.len())));
+    let mut count = 0;
+    for _ in bytes.by_ref() {
+        count += 1;
+    }
+    assert_eq!(count, cord.len());
+    assert_eq!(bytes.next(), None);
+    assert_eq!(bytes.next(), None);
+    assert_eq!(bytes.len(), 0);
+    assert_eq!(bytes.size_hint(), (0, Some(0)));
+}
+
+#[test]
+fn io_write_for_cord() {
+    let mut cord = Cord::from("a");
+    let n = cord.write(b"bc").unwrap();
+    assert_eq!(n, 2);
+    cord.flush().unwrap();
+    check(&cord, b"abc");
+}
+
+#[test]
+fn io_write_for_cord_buffer_write_zero_on_full() {
+    let mut buffer = CordBuffer::with_default_limit(4);
+    let cap = buffer.capacity();
+    let n = buffer.write(&vec![b'x'; cap]).unwrap();
+    assert_eq!(n, cap);
+    // Documented contract: `write` returns `Ok(0)` once full, so `write_all`
+    // fails with `WriteZero` rather than looping or panicking.
+    let err = buffer.write_all(b"more").unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::WriteZero);
+    buffer.flush().unwrap();
+}
+
+#[test]
+fn btree_height_sanity() {
+    assert_eq!(internal::btree_height(&Cord::new()), None);
+    assert_eq!(internal::btree_height(&Cord::from("inline")), None);
+
+    let mut cord = Cord::new();
+    for i in 0..500u32 {
+        cord.append(vec![(i % 256) as u8; 20]);
+    }
+    assert!(internal::is_btree(&cord));
+    let height = internal::btree_height(&cord).expect("a btree cord must report a height");
+    assert!((1..=6).contains(&height), "unexpected height {height} for a modest 500-leaf tree");
+}
+
+#[test]
+fn constructor_space_with_custom_limit() {
+    let min_flat = internal::MIN_FLAT_LENGTH;
+    let capacities: &[usize] = &[
+        0,
+        1,
+        8,
+        internal::FLAT_OVERHEAD,
+        internal::FLAT_OVERHEAD + 1,
+        CordBuffer::DEFAULT_LIMIT - 1,
+        CordBuffer::DEFAULT_LIMIT,
+        CordBuffer::DEFAULT_LIMIT + 1,
+        1000,
+        19_586,
+        CordBuffer::CUSTOM_LIMIT - 1,
+        CordBuffer::CUSTOM_LIMIT,
+        CordBuffer::CUSTOM_LIMIT + 1,
+        1 << 20,
+    ];
+    let mut block_size = 16usize;
+    while block_size <= CordBuffer::CUSTOM_LIMIT {
+        let expected_max = CordBuffer::maximum_payload_for(block_size);
+        for &capacity in capacities {
+            let buffer = CordBuffer::with_custom_limit(block_size, capacity);
+            // Documented floor: never less than `min(requested, MIN_FLAT_LENGTH)`
+            // (`with_custom_limit` allocates via `flat::new_large`, which
+            // floors the payload at `MIN_FLAT_LENGTH` regardless of how
+            // small `capacity`/`block_size` are).
+            assert!(
+                buffer.capacity() >= capacity.min(min_flat),
+                "block_size={block_size} capacity={capacity}: got {}",
+                buffer.capacity()
+            );
+            // Saturating case: requesting at least the full block size must
+            // agree exactly with `maximum_payload_for`.
+            if capacity >= block_size {
+                assert_eq!(
+                    buffer.capacity(),
+                    expected_max,
+                    "block_size={block_size} capacity={capacity}: disagrees with maximum_payload_for"
+                );
+            }
+        }
+        block_size *= 2;
+    }
+
+    // Illegal block sizes: powers of two at or below FLAT_OVERHEAD must panic.
+    let mut illegal = 1usize;
+    while illegal <= internal::FLAT_OVERHEAD {
+        let result = std::panic::catch_unwind(|| CordBuffer::with_custom_limit(illegal, 10));
+        assert!(result.is_err(), "block_size={illegal} should have panicked");
+        let result = std::panic::catch_unwind(|| CordBuffer::maximum_payload_for(illegal));
+        assert!(result.is_err(), "maximum_payload_for({illegal}) should have panicked");
+        illegal *= 2;
+    }
 }

@@ -874,11 +874,15 @@ fn prepend_data_to_tree() {
 
 #[test]
 fn add_data_to_tree_three_levels_deep() {
-    if cfg!(miri) {
-        return; // ~650 tree operations per parameter set: too slow under Miri.
-    }
     let max_cap = MAX_CAPACITY;
-    let n = max_cap * max_cap * max_cap;
+    let two_deep = max_cap * max_cap;
+    // Miri interprets every operation; the full climb to `max_cap^3` items
+    // (~650 tree operations across the parameter matrix) is minutes, not a
+    // check. Keep the same shape — leaf fill, climb to height 1, fill height
+    // 1 to its max, climb to height 2 — but stop shortly after reaching
+    // height 2 instead of also filling it all the way to its cubic capacity,
+    // so Miri still sees the deepest-surgery code path.
+    let n = if cfg!(miri) { two_deep + max_cap } else { max_cap * max_cap * max_cap };
     let data = create_random_string(n * 3);
     for shared in SHARED {
         for append in [true, false] {
@@ -900,7 +904,7 @@ fn add_data_to_tree_three_levels_deep() {
                 assert_ne!(result, tree);
                 assert_eq!(cord_to_string(result.as_rep()), consumer.consumed());
                 tree = result;
-                for _ in (max_cap + 1)..(max_cap * max_cap) {
+                for _ in (max_cap + 1)..two_deep {
                     refs.ref_if(shared, tree);
                     result = btree_add(tree, append, consumer.next(3));
                     assert_eq!(result != tree, shared);
@@ -915,7 +919,7 @@ fn add_data_to_tree_three_levels_deep() {
                 assert_ne!(result, tree);
                 assert_eq!(cord_to_string(result.as_rep()), consumer.consumed());
                 tree = result;
-                for _ in (max_cap * max_cap + 1)..(max_cap * max_cap * max_cap) {
+                for _ in (two_deep + 1)..n {
                     refs.ref_if(shared, tree);
                     result = btree_add(tree, append, consumer.next(3));
                     assert_eq!(result != tree, shared);
@@ -1317,25 +1321,25 @@ fn assert_valid_death_on_bad_length() {
     }
 }
 
-/// Serializes tests that toggle the global exhaustive validation flag.
-static VALIDATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[test]
 fn check_assert_valid_shallow_vs_deep() {
-    // Restore exhaustive validation on any exit.
-    struct Cleanup(bool);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            super::btree::set_exhaustive_validation(self.0);
-        }
-    }
-    let _guard = VALIDATION_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _cleanup = Cleanup(super::btree::is_exhaustive_validation_enabled());
-
+    // This used to also flip the process-wide `EXHAUSTIVE_VALIDATION` flag
+    // (via `set_exhaustive_validation`) to check that it forces even a
+    // `shallow = true` check to go deep, guarded by a lock serializing it
+    // against other tests that do the same. But that flag is a raw
+    // `AtomicBool` with no scoping of its own, and nothing else that reads
+    // it (in particular the library's own internal, debug-only
+    // `assert_valid(_, true)` calls made while *any* other test mutates a
+    // btree) takes that lock — so toggling it, even briefly, could make an
+    // unrelated concurrently-running test's shallow validation go deep
+    // mid-mutation and spuriously fail. `check_valid(_, shallow = false)`
+    // already *is* the deep path unconditionally (see its doc comment), so
+    // the shallow-vs-deep distinction below is fully covered by the
+    // `shallow` parameter alone, without ever touching the global flag.
     unsafe {
         // Create a tree of at least 2 levels, and mess with the original flat,
         // which should go undetected in shallow mode as the flat is too far
-        // away, but should be detected in forced non-shallow mode.
+        // away, but must be detected by a non-shallow check.
         let f = make_flat(b"abc");
         let mut tree = CordRepBtree::create(f);
         let n = MAX_CAPACITY * MAX_CAPACITY * 2;
@@ -1344,17 +1348,10 @@ fn check_assert_valid_shallow_vs_deep() {
         }
         f.set_length(100);
 
-        super::btree::set_exhaustive_validation(false);
         assert!(!CordRepBtree::is_valid(tree, false));
         assert!(CordRepBtree::is_valid(tree, true));
         CordRepBtree::assert_valid(tree, true);
         assert!(CordRepBtree::check_valid(tree, false).is_err());
-
-        super::btree::set_exhaustive_validation(true);
-        assert!(!CordRepBtree::is_valid(tree, false));
-        assert!(!CordRepBtree::is_valid(tree, true));
-        assert!(CordRepBtree::check_valid(tree, true).is_err());
-        super::btree::set_exhaustive_validation(false);
 
         f.set_length(3);
         unref(tree.as_rep());

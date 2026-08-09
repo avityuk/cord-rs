@@ -186,23 +186,35 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
     (e.g. overlapping-buffer bounds); a routine "freshly allocated, unreffed
     once" note is not worth writing, the test demonstrates it by construction
     and runs under Miri.
-  - **Current unsafe footprint.** As of 2026-08-31 (`unsafe fn` / `unsafe {}`
-    blocks, counted per file as a whole — including any inline `#[cfg(test)]`
-    module it carries, e.g. `inline_data.rs`'s; only the dedicated
-    `*_tests.rs` / `test_util.rs` files under `src/rep/` are excluded): upper
-    layers (`cord.rs`, `iter.rs`, `io.rs`, `buffer.rs`, `inline_data.rs`,
-    `lib.rs`) are at 5/78 combined, down from a recorded baseline of 23/99 —
-    `cord.rs` itself went from 19/49 to 3/34.
-    `unsafe fn` is the number that tracks the actual win: upper-layer call
-    sites essentially never need to *be* unsafe anymore. Blocks didn't shrink
-    the same way, and that's expected, not a miss — the raw operations moved
-    rather than vanished, now living inside the handle constructors and
+  - **Current unsafe footprint.** Exact counts here have drifted stale twice
+    already, so this note gives the shape of the result and how to measure
+    it yourself, not a snapshot. Qualitatively: upper-layer call sites
+    (`cord.rs`, `iter.rs`, `io.rs`, `buffer.rs`, `inline_data.rs`, `lib.rs`)
+    essentially never need to *be* `unsafe fn` anymore — nearly all of that
+    surface now lives in the rep layer (`rep.rs` plus `rep/*.rs`),
+    concentrated exactly where the effort intended: audited once, in one
+    place, with deep btree surgery (`btree.rs`) as the largest single piece.
+    `unsafe {}` *block* counts in the upper layers didn't shrink the same
+    way, and that's expected, not a miss — the raw operations moved rather
+    than vanished, now living inside the handle constructors and
     `InlineData`'s editing helpers in `rep.rs`/`inline_data.rs`, often split
     into more, smaller, individually-justified blocks than the one big block
-    they replaced. The rep layer (`rep.rs` plus `rep/*.rs`) holds 155/197 —
-    essentially the crate's whole remaining `unsafe fn` surface, concentrated
-    exactly where the effort intended: audited once, in one place, with deep
-    btree surgery (`btree.rs`, 92/98) as the largest single piece.
+    they replaced.
+
+    To reproduce the comparison, count `unsafe fn` and `unsafe {` per file —
+    as a whole, including any inline `#[cfg(test)]` module it carries (e.g.
+    `inline_data.rs`'s) — excluding the dedicated `*_tests.rs` /
+    `test_util.rs` files under `src/rep/`:
+
+    ```sh
+    for f in src/cord.rs src/iter.rs src/io.rs src/buffer.rs src/inline_data.rs src/lib.rs \
+             src/rep.rs src/rep/analysis.rs src/rep/btree.rs src/rep/external.rs src/rep/flat.rs \
+             src/rep/navigator.rs src/rep/reader.rs; do
+      printf '%-24s fn=%-4s block=%-4s\n' "$f" "$(grep -c 'unsafe fn' "$f")" "$(grep -c 'unsafe {' "$f")"
+    done
+    ```
+
+    The first six files are the upper layers; the rest are the rep layer.
 - **Lints.** `clippy::pedantic` is on. Justify deliberate casts with
   `#[expect(clippy::..., reason = "...")]` (checked helpers such as
   `small_u8`, `height_to_isize`), not blanket `allow`s. Test files may allow the

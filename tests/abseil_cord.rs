@@ -965,9 +965,9 @@ impl TestData {
     }
 
     fn new() -> Self {
-        // Strings around half of the maximum flat length.
-        const MAX_FLAT: usize = 4096 - 9;
-        const HALF: usize = MAX_FLAT / 2;
+        // Strings around half of the maximum flat length (32-bit-correct:
+        // derived from `MAX_FLAT_LENGTH`, not a hardcoded 64-bit value).
+        const HALF: usize = MAX_FLAT_LENGTH / 2;
         let mut data = Vec::new();
         // Short strings increasing in length by one.
         for i in 0..30 {
@@ -977,7 +977,7 @@ impl TestData {
             data.push(Self::make_string((HALF as i64 + i) as usize));
         }
         for i in -10i64..=10 {
-            data.push(Self::make_string((MAX_FLAT as i64 + i) as usize));
+            data.push(Self::make_string((MAX_FLAT_LENGTH as i64 + i) as usize));
         }
         Self { data }
     }
@@ -2062,6 +2062,28 @@ fn btree_hostile_split_insert_join() {
     }
     check_valid(&cord);
     assert!(cord.len() >= appends * data.len() - 1000 * data.len());
+
+    // Even under this adversarial split/join pattern, height must stay
+    // within a conservative O(log n) bound instead of degenerating toward a
+    // linear chain. The crate doesn't guarantee tight (max-fanout) packing —
+    // this workload is deliberately hostile to packing — so assume nodes
+    // may be as sparse as half of `BTREE_MAX_CAPACITY`, plus a couple of
+    // levels of slack; that's loose enough to tolerate the adversarial
+    // workload while still catching gross (e.g. near-linear) degeneracy.
+    let chunks = cord.chunks().count();
+    let height = internal::btree_height(&cord).expect("a cord this large must be a btree");
+    let min_fanout = internal::BTREE_MAX_CAPACITY / 2;
+    let mut bound = 0usize;
+    let mut reachable = 1usize;
+    while reachable < chunks {
+        reachable *= min_fanout;
+        bound += 1;
+    }
+    bound += 2; // slack
+    assert!(
+        height <= bound,
+        "btree height {height} exceeds conservative O(log_{min_fanout} n) bound {bound} for {chunks} chunks"
+    );
 }
 
 // --- Static / after exit --------------------------------------------------------------

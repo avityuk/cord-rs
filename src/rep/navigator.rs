@@ -335,7 +335,8 @@ impl CordRepBtreeNavigator {
         not(test),
         expect(
             dead_code,
-            reason = "backward navigation kept for API completeness, no production caller yet"
+            reason = "backward navigation kept for API completeness, no production caller yet; \
+                      covers its sole callee, previous_up, too"
         )
     )]
     pub(crate) unsafe fn previous(&mut self) -> *mut CordRep {
@@ -401,13 +402,13 @@ impl CordRepBtreeNavigator {
     /// Same navigator-validity contract as [`current`](Self::current).
     /// Callers must additionally ensure `self.index[0] ==
     /// self.node[0].begin()` (i.e. the leaf is exhausted backward).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "backward navigation kept for API completeness, no production caller yet"
-        )
-    )]
+    ///
+    /// No `expect(dead_code)` here: its only caller, [`previous`](Self::previous),
+    /// already carries one. Once rustc's dead-code pass marks `previous`
+    /// dead, it reports the warning only at that root and folds callees
+    /// reachable exclusively through it (like this one) into the same dead
+    /// subtree without a warning of their own — so this fn's own `expect`
+    /// would never see its lint fire and would be rejected as unfulfilled.
     unsafe fn previous_up(&mut self) -> *mut CordRep {
         unsafe {
             // SAFETY: the contract above guarantees every node on the current
@@ -454,14 +455,14 @@ impl CordRepBtreeNavigator {
     /// # Safety
     ///
     /// Same navigator-validity contract as [`current`](Self::current).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kept for API completeness alongside CordRepBtreeReader::skip, its only \
-                      caller, which is itself dead outside tests"
-        )
-    )]
+    ///
+    /// No `expect(dead_code)` here: its only caller,
+    /// [`super::reader::CordRepBtreeReader::skip`], already carries one and
+    /// is itself dead outside tests. rustc's dead-code pass reports a
+    /// warning only at the root of a dead subtree and silently folds in
+    /// callees reachable exclusively through it (like this one), so a
+    /// second `expect` here would never see its lint fire and would be
+    /// rejected as unfulfilled.
     pub(crate) unsafe fn skip(&mut self, mut n: usize) -> NavPosition {
         unsafe {
             // SAFETY: the contract above guarantees every node reachable from

@@ -19,6 +19,19 @@ cargo clippy --all-features --all-targets -- -D warnings
 step "clippy, no features"
 cargo clippy --no-default-features --all-targets -- -D warnings
 
+# `--all-targets` above builds the lib target too, but folded in among bins,
+# examples, tests and benches; a plain `cargo check` isolates that exact
+# lib-only, no-`cfg(test)` build on its own, matching what CI's dedicated
+# MSRV step (`cargo check --all-features` on the pinned toolchain) runs. Keep
+# both: this is a different, narrower check that fails faster and reads
+# unambiguously when it does. `cargo check` has no trailing `-- <rustc args>`
+# (unlike `build`/`test`/`clippy`), so `-D warnings` goes through RUSTFLAGS.
+step "check, all features (lib only, no test cfg)"
+RUSTFLAGS="${RUSTFLAGS:--D warnings}" cargo check --all-features
+
+step "check, no features (lib only, no test cfg)"
+RUSTFLAGS="${RUSTFLAGS:--D warnings}" cargo check --no-default-features
+
 step "tests, all features"
 cargo test --all-features
 

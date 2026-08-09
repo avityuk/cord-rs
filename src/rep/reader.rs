@@ -117,7 +117,11 @@ impl<'a> CordRepBtreeReader<'a> {
     #[inline]
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "API completeness for CordRepBtreeReader, exercised only by tests")
+        expect(
+            dead_code,
+            reason = "API completeness for CordRepBtreeReader and its sole callee, \
+                      Navigator::skip, exercised only by tests"
+        )
     )]
     pub(crate) unsafe fn skip(&mut self, skip: usize) -> &'a [u8] {
         // SAFETY: per this reader's invariant the tree is live for `'a`, so
