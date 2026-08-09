@@ -1410,11 +1410,13 @@ impl Cord {
     /// assert_eq!(cord.compare(b"ab"), Ordering::Greater);
     /// ```
     pub fn compare<R: CordLike + ?Sized>(&self, rhs: &R) -> Ordering {
-        if let Some(rhs_cord) = rhs.as_cord()
-            && !self.is_tree()
-            && !rhs_cord.is_tree()
-        {
-            return self.data.compare(&rhs_cord.data);
+        if let Some(rhs_cord) = rhs.as_cord() {
+            if self.data.is_same(&rhs_cord.data) {
+                return Ordering::Equal;
+            }
+            if !self.is_tree() && !rhs_cord.is_tree() {
+                return self.data.compare(&rhs_cord.data);
+            }
         }
         let lhs_size = self.len();
         let rhs_size = rhs.len();
