@@ -14,7 +14,7 @@ use crate::rep::btree::{BtreePtr, CordRepBtree, as_btree};
 use crate::rep::external::{CordRepExternal, StableBytes};
 use crate::rep::flat::{self, MAX_FLAT_LENGTH};
 use crate::rep::{
-    self, CordRep, CordRepSubstring, MAX_BYTES_TO_COPY, MAX_INLINE, OwnedRep, RepPtr, RepRef, RepView, unref,
+    self, CordRep, CordRepSubstring, MAX_BYTES_TO_COPY, MAX_INLINE, OwnedRep, RepPtr, RepRef, unref,
 };
 use crate::source::{CordLike, CordSource};
 
@@ -1279,41 +1279,39 @@ impl Cord {
         let mut offset = index;
         loop {
             debug_assert!(offset < rep.len());
-            match rep.view() {
-                RepView::Btree(mut node) => {
-                    let mut height = node.height();
-                    loop {
-                        // SAFETY: on the first iteration, `offset <
-                        // rep.len() == node.len()` (the outer loop's
-                        // `debug_assert` above, `node` being `rep` viewed as
-                        // a btree); on later iterations, `offset` was just
-                        // set to `front.n`, which `index_of`'s own
-                        // postcondition keeps `< node.len()` for the
-                        // reassigned `node` below.
-                        let front = unsafe { node.index_of(offset) };
-                        if height == 0 {
-                            // SAFETY: `height == 0` means `node` is a leaf;
-                            // `index_of`'s postcondition keeps `front.index`
-                            // in `[begin(), end())` for the in-range
-                            // `offset` established above.
-                            return &unsafe { node.data(front.index) }[front.n];
-                        }
-                        height -= 1;
-                        offset = front.n;
-                        // SAFETY: `front.index` is in bounds (see above),
-                        // and every non-leaf edge of a well-formed btree is
-                        // a btree node (`height > 0` here).
-                        node = unsafe { node.edge(front.index).btree_unchecked() };
+            let tag = rep.tag();
+            if tag == rep::BTREE {
+                // SAFETY: tag == BTREE, checked immediately above.
+                let mut node = unsafe { rep.btree_unchecked() };
+                let mut height = node.height();
+                loop {
+                    // SAFETY: on the first iteration, `offset <
+                    // rep.len() == node.len()` (the outer loop's
+                    // `debug_assert` above); on later iterations, `offset`
+                    // comes from `index_of` for the reassigned child node.
+                    let front = unsafe { node.index_of(offset) };
+                    if height == 0 {
+                        // SAFETY: `height == 0` means `node` is a leaf;
+                        // `index_of` returned an in-range edge index.
+                        return &unsafe { node.data(front.index) }[front.n];
                     }
+                    height -= 1;
+                    offset = front.n;
+                    // SAFETY: every non-leaf edge of a well-formed btree is
+                    // a btree node, and `front.index` is in range.
+                    node = unsafe { node.edge(front.index).btree_unchecked() };
                 }
-                RepView::Substring { start, child } => {
-                    offset += start;
-                    rep = child;
-                }
-                // SAFETY: `Btree` and `Substring` are matched above, so this
-                // arm only sees `Flat`/`External`, both data edges.
-                _ => return &unsafe { rep.data() }[offset],
             }
+            if tag == rep::SUBSTRING {
+                // SAFETY: tag == SUBSTRING, checked immediately above.
+                let (start, child) = unsafe { rep.substring_unchecked() };
+                offset += start;
+                rep = child;
+                continue;
+            }
+            // SAFETY: BTREE and SUBSTRING were excluded above, so this is a
+            // FLAT or EXTERNAL data edge.
+            return &unsafe { rep.data() }[offset];
         }
     }
 

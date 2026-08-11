@@ -355,6 +355,15 @@ fn bench_access(c: &mut Criterion) {
             sum
         });
     });
+    g.bench_function("index_flat_every_byte", |b| {
+        b.iter(|| (0..flat.len()).map(|i| usize::from(black_box(&flat)[i])).sum::<usize>());
+    });
+    let flat_substring = flat.slice(100..3900);
+    g.bench_function("index_flat_substring_every_byte", |b| {
+        b.iter(|| {
+            (0..flat_substring.len()).map(|i| usize::from(black_box(&flat_substring)[i])).sum::<usize>()
+        });
+    });
     g.bench_function("copy_prefix_to_flat", |b| {
         let mut dst = vec![0u8; 4000];
         b.iter(|| black_box(&flat).copy_prefix_to(&mut dst));

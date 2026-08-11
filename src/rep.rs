@@ -821,6 +821,22 @@ impl<'a> RepRef<'a> {
         unsafe { btree::BtreeRef::from_raw(self.ptr.as_ptr().cast()) }
     }
 
+    /// This handle as a substring without checked dispatch.
+    ///
+    /// # Safety
+    ///
+    /// `self.is_substring()` must hold.
+    #[inline]
+    pub(crate) unsafe fn substring_unchecked(self) -> (usize, RepRef<'a>) {
+        debug_assert!(self.is_substring());
+        let sub = self.ptr.as_ptr().cast::<CordRepSubstring>();
+        // SAFETY: tag == SUBSTRING per this fn's precondition, so the cast is
+        // sound; the substring's reference keeps `child` live for `'a`.
+        let (start, child) = unsafe { ((*sub).start, (*sub).child) };
+        // SAFETY: a well-formed substring owns a non-null, live child.
+        (start, unsafe { RepRef::from_raw(child) })
+    }
+
     /// The checked, typed view of this handle: one tag read, then a
     /// dispatch to the concrete node kind (mirrors [`destroy`]'s dispatch).
     #[inline]
@@ -832,13 +848,9 @@ impl<'a> RepRef<'a> {
             // live and unmutated for exactly `'a`.
             BTREE => RepView::Btree(unsafe { btree::BtreeRef::from_raw(ptr.cast()) }),
             SUBSTRING => {
-                let sub: *mut CordRepSubstring = ptr.cast();
-                // SAFETY: tag == SUBSTRING guarantees this cast is sound
-                // (the module's tag invariant); the substring holds a
-                // reference on `child`, keeping it live for exactly as long
-                // as `self`, i.e. `'a`.
-                let (start, child) = unsafe { ((*sub).start, (*sub).child) };
-                RepView::Substring { start, child: unsafe { RepRef::from_raw(child) } }
+                // SAFETY: tag == SUBSTRING in this match arm.
+                let (start, child) = unsafe { self.substring_unchecked() };
+                RepView::Substring { start, child }
             }
             // SAFETY: tag == EXTERNAL guarantees this cast is sound (the
             // module's tag invariant); see the BTREE arm above for liveness.
