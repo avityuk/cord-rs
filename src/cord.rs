@@ -431,8 +431,22 @@ impl Cord {
                 self.data.push_front_inline(src);
                 return;
             }
+            self.prepend_tree(new_tree(src, 0));
+            return;
         }
-        self.prepend_tree(new_tree(src, 0));
+
+        let owned_cur = self.data.take_tree().expect("is_tree() checked above");
+        // Unlike append capacity, spare bytes at the end of a flat cannot
+        // absorb a later prepend, so request no unusable extra capacity.
+        // SAFETY: `prepend_data`'s raw result carries the reference that
+        // `force_btree`'s consumed input transferred in; adopted here and
+        // installed below.
+        let owned = unsafe {
+            let tree = force_btree(owned_cur);
+            let tree = CordRepBtree::prepend_data(tree, src, 0);
+            OwnedRep::from_raw(tree.as_rep())
+        };
+        self.data.set_tree(owned);
     }
 
     /// Appends `src` with precise sizing (no spare capacity is used or

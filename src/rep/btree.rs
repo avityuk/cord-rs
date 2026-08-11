@@ -1890,10 +1890,6 @@ impl CordRepBtree {
     ///
     /// Same contract as [`append_data`](Self::append_data).
     #[inline]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "abseil parity (PrependData), exercised only by ported tests")
-    )]
     pub(crate) unsafe fn prepend_data(
         tree: *mut CordRepBtree,
         data: &[u8],
