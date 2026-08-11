@@ -365,6 +365,26 @@ fn find() {
 }
 
 #[test]
+fn find_across_fragment_boundaries_matches_slice_windows() {
+    let bytes: Vec<u8> = (0..64).map(|i| (i * 17 % 251) as u8).collect();
+    for chunk_size in 1..=12 {
+        let haystack = make_fragmented_cord(bytes.chunks(chunk_size));
+        for start in 0..bytes.len() {
+            for end in (start + 1)..=(start + 12).min(bytes.len()) {
+                let needle = &bytes[start..end];
+                let expected = bytes.windows(needle.len()).position(|window| window == needle);
+                assert_eq!(haystack.find(needle), expected, "chunk_size={chunk_size}, range={start}..{end}");
+            }
+        }
+    }
+
+    let repeated = vec![b'a'; 4096];
+    let haystack = make_fragmented_cord(repeated.chunks(31));
+    assert_eq!(haystack.find(&b"aaaaab"[..]), None);
+    assert_eq!(haystack.find(&b"aaaaaa"[..]), Some(0));
+}
+
+#[test]
 fn subcord() {
     let mut rng = Rng::new(1);
     let s = rng.lowercase(1024);

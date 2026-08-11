@@ -231,6 +231,19 @@ fn bench_find(c: &mut Criterion) {
     g.bench_function("vec_windows_baseline", |b| {
         b.iter(|| black_box(&vec).windows(6).position(|w| w == b"needle"));
     });
+
+    let adversarial_vec = vec![b'a'; 64 << 10];
+    let mut adversarial = Cord::new();
+    for chunk in adversarial_vec.chunks(1000) {
+        adversarial.append(chunk);
+    }
+    g.throughput(Throughput::Bytes(adversarial_vec.len() as u64));
+    g.bench_function("adversarial_repeated_prefix", |b| {
+        b.iter(|| black_box(&adversarial).find(black_box(&b"aaaaab"[..])));
+    });
+    g.bench_function("adversarial_vec_windows_baseline", |b| {
+        b.iter(|| black_box(&adversarial_vec).windows(6).position(|w| w == b"aaaaab"));
+    });
     g.finish();
 }
 

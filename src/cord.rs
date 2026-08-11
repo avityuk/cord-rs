@@ -1320,8 +1320,10 @@ impl Cord {
     /// Returns the position of the first occurrence of `needle`, or `None`.
     /// An empty needle is found at position 0.
     ///
-    /// Uses a naive search, not Boyer-Moore/KMP: worst case is O(n·m) for a
-    /// haystack of length n and needle of length m.
+    /// Searches within each contiguous chunk using an optimized substring
+    /// search and checks the few candidates that cross chunk boundaries
+    /// without flattening either input. Pathological fragmentation can still
+    /// produce O(n·m) work for a haystack of length n and needle length m.
     ///
     /// ```
     /// use cord_rs::Cord;
@@ -1554,23 +1556,38 @@ impl Cord {
 fn find_impl(it: &mut Cursor<'_>, needle: &[u8]) -> bool {
     debug_assert!(!needle.is_empty());
     debug_assert!(it.remaining() >= needle.len());
-    // Go chunk by chunk looking for the first byte of `needle`; on a hit
-    // check whether the needle is there, else advance one byte and retry.
     while it.remaining() >= needle.len() {
         let haystack_chunk = it.chunk();
         debug_assert!(!haystack_chunk.is_empty());
-        let Some(idx) = haystack_chunk.iter().position(|&b| b == needle[0]) else {
-            it.advance(haystack_chunk.len());
-            continue;
-        };
-        it.advance(idx);
-        if it.remaining() < needle.len() {
-            break;
-        }
-        if is_slice_at(it.clone(), needle) {
+
+        // Search complete in-chunk matches with memmem. If none exists,
+        // only the final `needle.len() - 1` positions can start a match that
+        // crosses into the next chunk.
+        if haystack_chunk.len() >= needle.len()
+            && let Some(idx) = memchr::memmem::find(haystack_chunk, needle)
+        {
+            it.advance(idx);
             return true;
         }
-        it.advance(1);
+
+        let mut offset = haystack_chunk.len().saturating_sub(needle.len() - 1);
+        // Exclude starts too close to the end of the complete haystack to
+        // hold `needle`; this also establishes is_slice_at's precondition.
+        let end = haystack_chunk.len().min(it.remaining() - needle.len() + 1);
+        while offset < end {
+            let Some(relative) = memchr::memchr(needle[0], &haystack_chunk[offset..end]) else {
+                break;
+            };
+            let candidate = offset + relative;
+            let mut position = it.clone();
+            position.advance(candidate);
+            if is_slice_at(position, needle) {
+                it.advance(candidate);
+                return true;
+            }
+            offset = candidate + 1;
+        }
+        it.advance(haystack_chunk.len());
     }
     false
 }
