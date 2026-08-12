@@ -1396,20 +1396,16 @@ impl Cord {
 
     /// Returns `true` if the cord ends with `suffix`.
     ///
-    /// Currently implemented by cloning the cord and calling
-    /// [`advance`](Self::advance) on the clone, which for a tree cord forces
-    /// copy-on-write down the tree spine (the clone shares the tree, so it
-    /// is never privately owned) — this allocates even though the cord
-    /// itself is not modified.
+    /// Compares through chunk cursors without flattening or allocating.
     pub fn ends_with<S: CordLike + ?Sized>(&self, suffix: &S) -> bool {
         let my_size = self.len();
         let suffix_size = suffix.len();
         if my_size < suffix_size {
             return false;
         }
-        let mut tmp = self.clone();
-        tmp.advance(my_size - suffix_size);
-        tmp.compare_prefix(suffix, suffix_size) == Ordering::Equal
+        let mut position = self.cursor();
+        position.advance(my_size - suffix_size);
+        is_subcord_at(&mut position, suffix.chunks())
     }
 
     /// Compares the cord with `rhs` lexicographically as sequences of
@@ -1608,13 +1604,22 @@ fn is_slice_at(mut position: Cursor<'_>, mut needle: &[u8]) -> bool {
     }
 }
 
-/// Whether the bytes at `haystack` start with the chunks of `needle`.
+/// Whether the bytes at `haystack` start with the chunks of `needle`,
+/// consuming matching bytes directly. The cursor position after `false` is
+/// unspecified; callers must pass a disposable cursor.
+#[inline]
 fn is_subcord_at(haystack: &mut Cursor<'_>, needle: Chunks<'_>) -> bool {
-    for needle_chunk in needle {
-        if !is_slice_at(haystack.clone(), needle_chunk) {
-            return false;
+    for mut needle_chunk in needle {
+        while !needle_chunk.is_empty() {
+            let haystack_chunk = haystack.chunk();
+            debug_assert!(!haystack_chunk.is_empty());
+            let n = haystack_chunk.len().min(needle_chunk.len());
+            if haystack_chunk[..n] != needle_chunk[..n] {
+                return false;
+            }
+            haystack.advance(n);
+            needle_chunk = &needle_chunk[n..];
         }
-        haystack.advance(needle_chunk.len());
     }
     true
 }

@@ -213,6 +213,14 @@ fn bench_compare(c: &mut Criterion) {
         let clone = a.clone();
         b.iter(|| black_box(&a).cmp(black_box(&clone)));
     });
+    let slice_suffix = &vec[vec.len() - 64..];
+    let fragmented_suffix = a.slice(a.len() - (64 << 10)..);
+    g.bench_function("ends_with_slice_64B", |b| {
+        b.iter(|| black_box(&a).ends_with(black_box(slice_suffix)));
+    });
+    g.bench_function("ends_with_fragmented_64KiB", |b| {
+        b.iter(|| black_box(&a).ends_with(black_box(&fragmented_suffix)));
+    });
     g.bench_function("vec_eq_baseline", |b| b.iter(|| black_box(&vec) == black_box(&vec)));
     g.finish();
 }
