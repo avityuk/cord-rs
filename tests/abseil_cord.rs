@@ -384,6 +384,65 @@ fn find_across_fragment_boundaries_matches_slice_windows() {
     assert_eq!(haystack.find(&b"aaaaaa"[..]), Some(0));
 }
 
+/// `ends_with` against a genuinely fragmented suffix. `make_fragmented_cord`
+/// gives every fragment its own external node (unlike plain `append`, which
+/// coalesces small pieces back together), so this checks the fragmentation
+/// held rather than assuming it.
+#[test]
+fn ends_with_fragmented_suffix() {
+    let haystack = make_fragmented_cord(["this", " ", "is", " ", "a", " ", "fragmented", " ", "cord"]);
+    assert!(haystack.chunks().count() > 1, "haystack must stay fragmented");
+
+    // Suffix straddling multiple chunk boundaries.
+    let suffix = make_fragmented_cord(["a", " ", "fragmented", " ", "cord"]);
+    assert!(suffix.chunks().count() > 1, "suffix must stay fragmented");
+    assert!(haystack.ends_with(&suffix));
+    assert!(haystack.ends_with("a fragmented cord"));
+
+    // Suffix == whole cord.
+    let whole = make_fragmented_cord(["this", " ", "is", " ", "a", " ", "fragmented", " ", "cord"]);
+    assert!(whole.chunks().count() > 1, "whole-cord suffix must stay fragmented");
+    assert!(haystack.ends_with(&whole));
+
+    // Mismatch in the last byte.
+    let mismatch_last = make_fragmented_cord(["a", " ", "fragmented", " ", "corD"]);
+    assert!(!haystack.ends_with(&mismatch_last));
+
+    // Mismatch in the first suffix chunk.
+    let mismatch_first = make_fragmented_cord(["X", " ", "fragmented", " ", "cord"]);
+    assert!(!haystack.ends_with(&mismatch_first));
+}
+
+/// A fragmented `find` match that lands flush against the very end of a
+/// fragmented haystack: the needle's last byte and the haystack's last byte
+/// coincide, so `is_subcord_at` consumes both cursors down to nothing in
+/// lockstep across many single-byte chunk boundaries. Regression coverage
+/// for the hardening in `is_subcord_at`/`is_slice_at`, which now return
+/// `false` instead of relying on a length precondition that, if violated,
+/// used to infinite-loop.
+#[test]
+fn find_fragmented_needle_flush_with_haystack_end() {
+    let bytes: Vec<u8> = (0..40).map(|i| (i * 17 % 251) as u8).collect();
+    let haystack = make_fragmented_cord(bytes.chunks(1));
+    assert!(haystack.chunks().count() > 1, "haystack must stay fragmented");
+
+    // The needle is the tail of the haystack, itself fragmented into
+    // single-byte chunks: matching it exhausts both cursors on the same
+    // step.
+    let needle = make_fragmented_cord(bytes[30..].chunks(1));
+    assert!(needle.chunks().count() > 1, "needle must stay fragmented");
+    assert_eq!(needle.chunks().count(), bytes.len() - 30);
+    assert_eq!(haystack.find(&needle), Some(30));
+
+    // Same needle, but the very last byte differs: the mismatch is only
+    // discovered on the final chunk pair, after the cursors have advanced
+    // in lockstep through every preceding one.
+    let mut mismatched = bytes[30..].to_vec();
+    *mismatched.last_mut().unwrap() = mismatched.last().unwrap().wrapping_add(1);
+    let needle_mismatched = make_fragmented_cord(mismatched.chunks(1));
+    assert_eq!(haystack.find(&needle_mismatched), None);
+}
+
 #[test]
 fn subcord() {
     let mut rng = Rng::new(1);

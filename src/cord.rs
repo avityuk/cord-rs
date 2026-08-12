@@ -1287,8 +1287,11 @@ impl Cord {
                 loop {
                     // SAFETY: on the first iteration, `offset <
                     // rep.len() == node.len()` (the outer loop's
-                    // `debug_assert` above); on later iterations, `offset`
-                    // comes from `index_of` for the reassigned child node.
+                    // `debug_assert` above, `node` being `rep` viewed as
+                    // a btree); on later iterations, `offset` was just
+                    // set to `front.n`, which `index_of`'s own
+                    // postcondition keeps `< node.len()` for the
+                    // reassigned `node` below.
                     let front = unsafe { node.index_of(offset) };
                     if height == 0 {
                         // SAFETY: `height == 0` means `node` is a leaf;
@@ -1566,7 +1569,8 @@ fn find_impl(it: &mut Cursor<'_>, needle: &[u8]) -> bool {
 
         let mut offset = haystack_chunk.len().saturating_sub(needle.len() - 1);
         // Exclude starts too close to the end of the complete haystack to
-        // hold `needle`; this also establishes is_slice_at's precondition.
+        // hold `needle`, so `is_slice_at` never has to run off the end of
+        // the haystack.
         let end = haystack_chunk.len().min(it.remaining() - needle.len() + 1);
         while offset < end {
             let Some(relative) = memchr::memchr(needle[0], &haystack_chunk[offset..end]) else {
@@ -1586,12 +1590,14 @@ fn find_impl(it: &mut Cursor<'_>, needle: &[u8]) -> bool {
     false
 }
 
-/// Whether the bytes at `position` start with `needle`. Requires the
-/// remaining bytes to be at least `needle.len()`.
+/// Whether the bytes at `position` start with `needle`.
 fn is_slice_at(mut position: Cursor<'_>, mut needle: &[u8]) -> bool {
     loop {
         let haystack_chunk = position.chunk();
-        debug_assert!(!haystack_chunk.is_empty());
+        if haystack_chunk.is_empty() {
+            // The haystack ran out before `needle` did.
+            return false;
+        }
         let min_length = haystack_chunk.len().min(needle.len());
         if haystack_chunk[..min_length] != needle[..min_length] {
             return false;
@@ -1612,7 +1618,10 @@ fn is_subcord_at(haystack: &mut Cursor<'_>, needle: Chunks<'_>) -> bool {
     for mut needle_chunk in needle {
         while !needle_chunk.is_empty() {
             let haystack_chunk = haystack.chunk();
-            debug_assert!(!haystack_chunk.is_empty());
+            if haystack_chunk.is_empty() {
+                // The haystack ran out before `needle` did.
+                return false;
+            }
             let n = haystack_chunk.len().min(needle_chunk.len());
             if haystack_chunk[..n] != needle_chunk[..n] {
                 return false;

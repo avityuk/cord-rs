@@ -78,6 +78,9 @@ Cargo features:
   `CordWriter`, and zero-copy conversions with `bytes::Bytes`.
 - `serde`: `Serialize` / `Deserialize` for `Cord` as a byte sequence.
 
+The crate has one required dependency, [`memchr`], used for substring search
+(`find`, `contains`, `starts_with`/`ends_with`).
+
 ## Relationship to abseil's `absl::Cord`
 
 `cord-rs` is a port of [`absl::Cord`][absl-cord] — the same data structure
@@ -151,6 +154,7 @@ Libraries, Copyright The Abseil Authors.
 
 [absl-cord]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
 [`bytes`]: https://crates.io/crates/bytes
+[`memchr`]: https://crates.io/crates/memchr
 [`CordSource`]: https://docs.rs/cord-rs/latest/cord_rs/trait.CordSource.html
 [proptest]: https://crates.io/crates/proptest
 [Miri]: https://github.com/rust-lang/miri

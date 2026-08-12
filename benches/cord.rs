@@ -14,7 +14,7 @@
 use std::hash::{Hash, Hasher};
 use std::hint::black_box;
 
-use cord_rs::{Cord, CordBuffer};
+use cord_rs::{Cord, CordBuffer, internal};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 const SIZES: [usize; 5] = [8, 100, 4 << 10, 64 << 10, 1 << 20];
@@ -29,6 +29,23 @@ fn fragmented(n: usize, chunk: usize) -> Cord {
     let mut cord = Cord::new();
     for piece in bytes.chunks(chunk) {
         cord.append(piece);
+    }
+    cord
+}
+
+/// A cord built from `chunk` sized pieces, each its own external node,
+/// joined by `prepend` (like the test suite's `make_fragmented_cord`).
+/// Plain `Cord::prepend`/`append` of a raw slice below `MIN_FLAT_LENGTH`
+/// still rounds up to a size-classed flat and can absorb later small
+/// pieces into that same spare capacity; giving each piece its own
+/// external node guarantees it stays exactly `chunk`-sized and never
+/// coalesces with its neighbors.
+fn fragmented_external(bytes: &[u8], chunk: usize) -> Cord {
+    let mut cord = Cord::new();
+    for piece in bytes.chunks(chunk) {
+        let mut tmp = internal::make_external(piece);
+        tmp.prepend(&cord);
+        cord = tmp;
     }
     cord
 }
@@ -213,6 +230,15 @@ fn bench_compare(c: &mut Criterion) {
         let clone = a.clone();
         b.iter(|| black_box(&a).cmp(black_box(&clone)));
     });
+    // Two distinct small inline cords: guards the only regression path of
+    // 0351c79 (the `is_same` shared-pointer check added ahead of the
+    // existing inline fast path costs a little extra for cords that were
+    // never going to be `is_same` anyway).
+    let inline_a = Cord::from("inline cord a");
+    let inline_b = Cord::from("inline cord b");
+    g.bench_function("cmp_inline_vs_inline", |b| {
+        b.iter(|| black_box(&inline_a).cmp(black_box(&inline_b)));
+    });
     let slice_suffix = &vec[vec.len() - 64..];
     let fragmented_suffix = a.slice(a.len() - (64 << 10)..);
     g.bench_function("ends_with_slice_64B", |b| {
@@ -251,6 +277,25 @@ fn bench_find(c: &mut Criterion) {
     });
     g.bench_function("adversarial_vec_windows_baseline", |b| {
         b.iter(|| black_box(&adversarial_vec).windows(6).position(|w| w == b"aaaaab"));
+    });
+
+    // Fine fragmentation: haystack chunks shorter than the needle, built
+    // with `prepend` (see `fragmented_prepend`) so pieces don't coalesce
+    // back into larger chunks the way `append` would. The needle matches
+    // only at the very end, so almost every position is a false start that
+    // has to cross several tiny chunk boundaries before failing — the
+    // documented O(n*m) pathology of `find`, otherwise unbenchmarked.
+    let fine_needle = b"aaaaaaaaaaab";
+    let mut fine_bytes = vec![b'a'; 8 << 10];
+    *fine_bytes.last_mut().unwrap() = b'b';
+    let fine_haystack = fragmented_external(&fine_bytes, 3);
+    assert!(
+        fine_haystack.chunks().all(|c| c.len() < fine_needle.len()),
+        "fine haystack must stay fragmented into chunks shorter than the needle"
+    );
+    g.throughput(Throughput::Bytes(fine_bytes.len() as u64));
+    g.bench_function("fine_fragmentation_matching_needle", |b| {
+        b.iter(|| black_box(&fine_haystack).find(black_box(&fine_needle[..])));
     });
     g.finish();
 }
