@@ -23,6 +23,28 @@ fn data(n: usize) -> Vec<u8> {
     (0..n).map(|i| (i * 31 % 251) as u8).collect()
 }
 
+/// Deterministic owned strings with a mixed, boundary-heavy size distribution.
+fn mixed_strings(total: usize) -> Vec<String> {
+    let mut seed = 0x4d59_5df4_d0f3_3173_u64;
+    let mut remaining = total;
+    let mut pieces = Vec::new();
+    while remaining != 0 {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        let bucket = (seed >> 32) % 100;
+        let (min, max) = match bucket {
+            0..50 => (1usize, 15),
+            50..80 => (16, 511),
+            80..97 => (512, 4095),
+            _ => (4096, 64 << 10),
+        };
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        let len = (min + (seed as usize % (max - min + 1))).min(remaining);
+        pieces.push(String::from_utf8(vec![b'a' + (pieces.len() % 26) as u8; len]).unwrap());
+        remaining -= len;
+    }
+    pieces
+}
+
 /// A cord of `n` bytes built from `chunk` sized appends (fragmented tree).
 fn fragmented(n: usize, chunk: usize) -> Cord {
     let bytes = data(n);
@@ -104,6 +126,23 @@ fn bench_append(c: &mut Criterion) {
             });
         });
     }
+    // Exercise inline transitions, copied flats, adopted external buffers,
+    // B-tree packing, and occasional large nodes in a single stable workload.
+    let mixed = mixed_strings(1 << 20);
+    g.throughput(Throughput::Bytes(1 << 20));
+    g.bench_function("owned_strings_mixed_to_1MiB", |b| {
+        b.iter_batched(
+            || mixed.clone(),
+            |pieces| {
+                let mut cord = Cord::new();
+                for piece in pieces {
+                    cord.append(black_box(piece));
+                }
+                cord
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
     // Appending cords: shared vs owned.
     let piece = fragmented(64 << 10, 4000);
     g.throughput(Throughput::Bytes((64 << 10) * 16));
