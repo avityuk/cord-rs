@@ -1553,6 +1553,7 @@ impl Cord {
 fn find_impl(it: &mut Cursor<'_>, needle: &[u8]) -> bool {
     debug_assert!(!needle.is_empty());
     debug_assert!(it.remaining() >= needle.len());
+    let finder = memchr::memmem::Finder::new(needle);
     while it.remaining() >= needle.len() {
         let haystack_chunk = it.chunk();
         debug_assert!(!haystack_chunk.is_empty());
@@ -1561,7 +1562,7 @@ fn find_impl(it: &mut Cursor<'_>, needle: &[u8]) -> bool {
         // only the final `needle.len() - 1` positions can start a match that
         // crosses into the next chunk.
         if haystack_chunk.len() >= needle.len()
-            && let Some(idx) = memchr::memmem::find(haystack_chunk, needle)
+            && let Some(idx) = finder.find(haystack_chunk)
         {
             it.advance(idx);
             return true;
