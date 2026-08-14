@@ -113,7 +113,8 @@ pub(crate) struct RawGlobalParts {
 /// # Safety
 ///
 /// `allocation_size` must return the exact non-zero layout size used for the
-/// allocation whenever the buffer is non-empty. `into_raw_parts` must
+/// allocation whenever the buffer is non-empty, and that allocation must have
+/// one-byte alignment. `into_raw_parts` must
 /// transfer sole ownership of that live global allocation, preserve its
 /// pointer provenance, return the same length and allocation size, and not
 /// unwind after disarming the owner. The returned length must not exceed the

@@ -145,7 +145,9 @@ fn rep_from_global<O: GlobalBytes>(owner: O) -> OwnedRep {
     if bytes.len() <= MAX_BYTES_TO_COPY || bytes.len() < allocation_size / 2 {
         return new_tree(bytes, 0);
     }
-    // SAFETY: `CordRepExternal::create_global` returns a fresh non-empty rep.
+    // SAFETY: the copy branch above returned for lengths at or below
+    // `MAX_BYTES_TO_COPY`, so `owner` is non-empty. `create_global` returns a
+    // fresh rep that is adopted by `OwnedRep`.
     unsafe { OwnedRep::from_raw(CordRepExternal::create_global(owner)) }
 }
 
@@ -745,8 +747,9 @@ impl Cord {
             // `total_size` bytes (`buffer`'s full capacity) of `buffer`'s
             // spare capacity.
             unsafe { buffer.set_len(total_size) };
-            // SAFETY: `CordRepExternal::create_global` returns a fresh non-empty
-            // rep.
+            // SAFETY: this is the `total_size > MAX_FLAT_LENGTH` branch, so
+            // `buffer` is non-empty. `create_global` returns a fresh rep that
+            // is adopted by `OwnedRep`.
             unsafe { OwnedRep::from_raw(CordRepExternal::create_global(buffer)) }
         };
         self.data.take_tree(); // Drops (unrefs) the old tree.
