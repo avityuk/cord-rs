@@ -63,8 +63,24 @@ fn construction_from_various_sources() {
     check(&big.chunks(7).collect::<Cord>(), &big);
     let owned = Cord::from(big.clone());
     assert!(internal::is_external(&owned), "large vec should be adopted");
+    let string = "x".repeat(10_000);
+    let string_ptr = string.as_ptr();
+    let owned = Cord::from(string);
+    assert!(internal::is_external(&owned), "large string should be adopted");
+    assert_eq!(owned.as_flat().unwrap().as_ptr(), string_ptr);
+    let boxed = vec![7u8; 10_000].into_boxed_slice();
+    let boxed_ptr = boxed.as_ptr();
+    let owned = Cord::from(boxed);
+    assert!(internal::is_external(&owned), "large boxed slice should be adopted");
+    assert_eq!(owned.as_flat().unwrap().as_ptr(), boxed_ptr);
     let small = Cord::from(vec![1u8; 100]);
     assert!(internal::is_flat(&small), "small vec should be copied into a flat");
+    assert!(internal::is_flat(&Cord::from(vec![1u8; 511])));
+    assert!(internal::is_external(&Cord::from(vec![1u8; 512])));
+    assert!(internal::is_flat(&Cord::from("x".repeat(511))));
+    assert!(internal::is_external(&Cord::from("x".repeat(512))));
+    assert!(internal::is_flat(&Cord::from(vec![1u8; 511].into_boxed_slice())));
+    assert!(internal::is_external(&Cord::from(vec![1u8; 512].into_boxed_slice())));
     let wasteful = {
         let mut v = Vec::with_capacity(100_000);
         v.extend_from_slice(&big);

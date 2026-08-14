@@ -112,14 +112,29 @@ macro_rules! impl_owned_source {
 }
 
 impl_owned_source! {
-    Vec<u8> => |v| v.capacity(),
-    String => |v| v.capacity(),
-    Box<[u8]> => |v| v.len(),
     Arc<[u8]> => |v| v.len(),
     Arc<str> => |v| v.len(),
     Arc<Vec<u8>> => |v| v.len(),
     Arc<String> => |v| v.len(),
 }
+
+macro_rules! impl_global_source {
+    ($($t:ty),* $(,)?) => {$(
+        impl sealed::SourceSealed for $t {}
+        impl CordSource for $t {
+            #[inline]
+            fn append_to(self, cord: &mut Cord) {
+                cord.append_global(self);
+            }
+            #[inline]
+            fn prepend_to(self, cord: &mut Cord) {
+                cord.prepend_global(self);
+            }
+        }
+    )*};
+}
+
+impl_global_source!(Vec<u8>, String, Box<[u8]>);
 
 impl sealed::SourceSealed for Box<str> {}
 impl CordSource for Box<str> {

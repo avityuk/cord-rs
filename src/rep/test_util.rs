@@ -65,7 +65,9 @@ pub(crate) unsafe fn make_flat(value: &[u8]) -> *mut CordRep {
 
 /// `MakeExternal(s)`: an external node owning a private copy of `s`.
 pub(crate) fn make_external(s: &[u8]) -> *mut CordRep {
-    CordRepExternal::create(s.to_vec())
+    assert!(!s.is_empty());
+    // SAFETY: asserted non-empty above.
+    unsafe { CordRepExternal::create_global(s.to_vec()) }
 }
 
 /// A minimal `std::minstd_rand` (Park-Miller LCG, default seed 1). Only used

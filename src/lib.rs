@@ -240,7 +240,8 @@ pub mod internal {
             return Cord::new();
         }
         // SAFETY: a fresh, non-empty external rep.
-        let owned = unsafe { OwnedRep::from_raw(rep::external::CordRepExternal::create(data.to_vec())) };
+        let owned =
+            unsafe { OwnedRep::from_raw(rep::external::CordRepExternal::create_global(data.to_vec())) };
         Cord::from_owned_rep(owned)
     }
 

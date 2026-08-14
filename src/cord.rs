@@ -11,7 +11,7 @@ use crate::buffer::{ConsumedBuffer, CordBuffer};
 use crate::inline_data::{InlineData, Repr};
 use crate::iter::{Bytes, Chunks, Cursor};
 use crate::rep::btree::{BtreePtr, CordRepBtree, as_btree};
-use crate::rep::external::{CordRepExternal, StableBytes};
+use crate::rep::external::{CordRepExternal, GlobalBytes, StableBytes};
 use crate::rep::flat::{self, MAX_FLAT_LENGTH};
 use crate::rep::{
     self, CordRep, CordRepSubstring, MAX_BYTES_TO_COPY, MAX_INLINE, OwnedRep, RepPtr, RepRef, unref,
@@ -133,6 +133,20 @@ fn rep_from_owned<O: StableBytes>(owner: O, capacity: usize) -> OwnedRep {
     }
     // SAFETY: `CordRepExternal::create` returns a fresh non-empty rep.
     unsafe { OwnedRep::from_raw(CordRepExternal::create(owner)) }
+}
+
+/// Creates a rep from a standard global byte allocation. Copies the data if
+/// the buffer is small or wasteful, and otherwise transfers the allocation
+/// to the compact global external node. Requires `len > MAX_INLINE`.
+fn rep_from_global<O: GlobalBytes>(owner: O) -> OwnedRep {
+    let bytes = owner.as_bytes();
+    let allocation_size = owner.allocation_size();
+    debug_assert!(bytes.len() > MAX_INLINE);
+    if bytes.len() <= MAX_BYTES_TO_COPY || bytes.len() < allocation_size / 2 {
+        return new_tree(bytes, 0);
+    }
+    // SAFETY: `CordRepExternal::create_global` returns a fresh non-empty rep.
+    unsafe { OwnedRep::from_raw(CordRepExternal::create_global(owner)) }
 }
 
 /// Attempts to append (a prefix of) `src` in place into the writable end of
@@ -603,6 +617,17 @@ impl Cord {
         }
     }
 
+    /// Appends a standard globally allocated byte buffer, adopting its
+    /// allocation when worthwhile.
+    pub(crate) fn append_global<O: GlobalBytes>(&mut self, owner: O) {
+        let len = owner.as_bytes().len();
+        if len <= MAX_BYTES_TO_COPY {
+            self.append_slice(owner.as_bytes());
+        } else {
+            self.append_tree(rep_from_global(owner));
+        }
+    }
+
     /// Prepends a large owned buffer, adopting it if worthwhile.
     pub(crate) fn prepend_owned<O: StableBytes>(&mut self, owner: O, capacity: usize) {
         let len = owner.as_bytes().len();
@@ -613,6 +638,17 @@ impl Cord {
         }
     }
 
+    /// Prepends a standard globally allocated byte buffer, adopting its
+    /// allocation when worthwhile.
+    pub(crate) fn prepend_global<O: GlobalBytes>(&mut self, owner: O) {
+        let len = owner.as_bytes().len();
+        if len <= MAX_BYTES_TO_COPY {
+            self.prepend_slice(owner.as_bytes());
+        } else {
+            self.prepend_tree(rep_from_global(owner));
+        }
+    }
+
     /// Creates a cord from an owned buffer, adopting it if worthwhile.
     pub(crate) fn from_owned<O: StableBytes>(owner: O, capacity: usize) -> Self {
         let bytes = owner.as_bytes();
@@ -620,6 +656,15 @@ impl Cord {
             return Self::from_inline(bytes);
         }
         Self::from_owned_rep(rep_from_owned(owner, capacity))
+    }
+
+    /// Creates a cord from a standard globally allocated byte buffer.
+    pub(crate) fn from_global<O: GlobalBytes>(owner: O) -> Self {
+        let bytes = owner.as_bytes();
+        if bytes.len() <= MAX_INLINE {
+            return Self::from_inline(bytes);
+        }
+        Self::from_owned_rep(rep_from_global(owner))
     }
 
     /// Appends the contents of a [`CordBuffer`].
@@ -700,9 +745,9 @@ impl Cord {
             // `total_size` bytes (`buffer`'s full capacity) of `buffer`'s
             // spare capacity.
             unsafe { buffer.set_len(total_size) };
-            // SAFETY: `CordRepExternal::create` returns a fresh non-empty
+            // SAFETY: `CordRepExternal::create_global` returns a fresh non-empty
             // rep.
-            unsafe { OwnedRep::from_raw(CordRepExternal::create(buffer)) }
+            unsafe { OwnedRep::from_raw(CordRepExternal::create_global(buffer)) }
         };
         self.data.take_tree(); // Drops (unrefs) the old tree.
         self.data.set_tree(new_tree);
@@ -1902,8 +1947,7 @@ impl From<Vec<u8>> for Cord {
     /// copies it otherwise.
     #[inline]
     fn from(data: Vec<u8>) -> Self {
-        let capacity = data.capacity();
-        Self::from_owned(data, capacity)
+        Self::from_global(data)
     }
 }
 
@@ -1911,8 +1955,7 @@ impl From<String> for Cord {
     /// See `From<Vec<u8>>`.
     #[inline]
     fn from(data: String) -> Self {
-        let capacity = data.capacity();
-        Self::from_owned(data, capacity)
+        Self::from_global(data)
     }
 }
 
@@ -1920,8 +1963,7 @@ impl From<Box<[u8]>> for Cord {
     /// Adopts the box without copying if it is more than 511 bytes.
     #[inline]
     fn from(data: Box<[u8]>) -> Self {
-        let capacity = data.len();
-        Self::from_owned(data, capacity)
+        Self::from_global(data)
     }
 }
 

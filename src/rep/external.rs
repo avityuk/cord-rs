@@ -1,27 +1,28 @@
-//! External reps: nodes referencing memory owned by a user supplied value.
+//! External reps: nodes referencing separately owned byte storage.
 //!
-//! An external rep is allocated together with the value that owns the bytes
-//! (a `Vec<u8>`, `Arc<[u8]>`, `bytes::Bytes`, `()` for `&'static` data, ...)
-//! in a single allocation, mirroring abseil's `CordRepExternalImpl<Releaser>`.
-//! When the reference count drops to zero the owner is dropped, releasing the
-//! memory.
+//! General owners (`Arc`, `bytes::Bytes`, static data, ...) are stored beside
+//! the external header, mirroring abseil's `CordRepExternalImpl<Releaser>`.
+//! Standard global byte allocations (`Vec<u8>`, `String`, `Box<[u8]>`) use a
+//! compact node containing only the allocation size and share one releaser.
+//! When the reference count drops to zero, both storage and node are released.
 
+use core::alloc::Layout;
 use core::marker::PhantomData;
+use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 
 use super::{CordRep, EXTERNAL, RepPtr};
 
-/// Function that drops the owner and frees the `CordRepExternalImpl`.
+/// Function that releases the referenced storage and frees its external node.
 type ReleaserInvoker = unsafe fn(*mut CordRepExternal);
 
-/// Header of an external rep. The owner value follows in memory (see
-/// [`CordRepExternalImpl`]).
+/// Header shared by both generic-owner and global-allocation external nodes.
 #[repr(C)]
 pub(crate) struct CordRepExternal {
     pub(crate) rep: CordRep,
     /// Start of the referenced bytes.
     pub(crate) base: *const u8,
-    /// Knows how to drop the owner and deallocate the node.
+    /// Knows how to release the storage and deallocate the node.
     releaser_invoker: ReleaserInvoker,
 }
 
@@ -31,9 +32,17 @@ struct CordRepExternalImpl<O> {
     owner: O,
 }
 
-/// Size used for memory accounting of an external node (abseil uses
-/// `sizeof(CordRepExternalImpl<intptr_t>)`).
-pub(crate) const EXTERNAL_REP_SIZE: usize = core::mem::size_of::<CordRepExternalImpl<usize>>();
+/// External node owning a raw allocation made by Rust's global allocator.
+#[repr(C)]
+struct CordRepExternalGlobal {
+    ext: CordRepExternal,
+    allocation_size: usize,
+}
+
+/// Size used for memory accounting of an external node (abseil similarly
+/// accounts `sizeof(CordRepExternalImpl<intptr_t>)`). This is exact for the
+/// compact global node and remains approximate for arbitrary generic owners.
+pub(crate) const EXTERNAL_REP_SIZE: usize = core::mem::size_of::<CordRepExternalGlobal>();
 
 /// Trait implemented by values that own a stable byte buffer a cord may
 /// reference without copying.
@@ -47,24 +56,6 @@ pub(crate) unsafe trait StableBytes: Send + Sync + 'static {
     fn as_bytes(&self) -> &[u8];
 }
 
-unsafe impl StableBytes for Vec<u8> {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self
-    }
-}
-unsafe impl StableBytes for Box<[u8]> {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self
-    }
-}
-unsafe impl StableBytes for String {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self.as_bytes()
-    }
-}
 unsafe impl StableBytes for std::sync::Arc<[u8]> {
     #[inline]
     fn as_bytes(&self) -> &[u8] {
@@ -109,6 +100,107 @@ unsafe impl StableBytes for bytes::Bytes {
     }
 }
 
+/// Raw parts of a byte buffer allocated by Rust's global allocator.
+pub(crate) struct RawGlobalParts {
+    base: NonNull<u8>,
+    len: usize,
+    allocation_size: usize,
+}
+
+/// An owned byte buffer whose allocation can be released with
+/// `dealloc(base, Layout::from_size_align(allocation_size, 1))`.
+///
+/// # Safety
+///
+/// `allocation_size` must return the exact non-zero layout size used for the
+/// allocation whenever the buffer is non-empty. `into_raw_parts` must
+/// transfer sole ownership of that live global allocation, preserve its
+/// pointer provenance, return the same length and allocation size, and not
+/// unwind after disarming the owner. The returned length must not exceed the
+/// allocation size. No element destruction may be required.
+pub(crate) unsafe trait GlobalBytes: StableBytes {
+    fn allocation_size(&self) -> usize;
+
+    /// Transfers the allocation out of `self`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must eventually deallocate the returned allocation using
+    /// the layout described by this trait's safety contract.
+    unsafe fn into_raw_parts(self) -> RawGlobalParts;
+}
+
+unsafe impl StableBytes for Vec<u8> {
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        self
+    }
+}
+
+unsafe impl GlobalBytes for Vec<u8> {
+    #[inline]
+    fn allocation_size(&self) -> usize {
+        self.capacity()
+    }
+
+    unsafe fn into_raw_parts(self) -> RawGlobalParts {
+        let mut owner = ManuallyDrop::new(self);
+        RawGlobalParts {
+            // SAFETY: a Vec pointer is always non-null, including for an
+            // empty vector; ownership remains disarmed in `owner`.
+            base: unsafe { NonNull::new_unchecked(owner.as_mut_ptr()) },
+            len: owner.len(),
+            allocation_size: owner.capacity(),
+        }
+    }
+}
+
+unsafe impl StableBytes for String {
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+unsafe impl GlobalBytes for String {
+    #[inline]
+    fn allocation_size(&self) -> usize {
+        self.capacity()
+    }
+
+    #[inline]
+    unsafe fn into_raw_parts(self) -> RawGlobalParts {
+        // `String::into_bytes` preserves the allocation and cannot unwind.
+        unsafe { GlobalBytes::into_raw_parts(self.into_bytes()) }
+    }
+}
+
+unsafe impl StableBytes for Box<[u8]> {
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        self
+    }
+}
+
+unsafe impl GlobalBytes for Box<[u8]> {
+    #[inline]
+    fn allocation_size(&self) -> usize {
+        self.len()
+    }
+
+    unsafe fn into_raw_parts(self) -> RawGlobalParts {
+        let len = self.len();
+        let base = Box::into_raw(self).cast::<u8>();
+        RawGlobalParts {
+            // SAFETY: Box allocations are non-null, including empty slices;
+            // ownership was transferred by `Box::into_raw` above.
+            base: unsafe { NonNull::new_unchecked(base) },
+            len,
+            allocation_size: len,
+        }
+    }
+}
+
 impl CordRepExternal {
     /// Creates an external rep referencing the bytes of `owner`.
     ///
@@ -137,14 +229,49 @@ impl CordRepExternal {
         node.cast()
     }
 
+    /// Creates an external rep owning a standard global byte allocation.
+    ///
+    /// The payload and node are deallocated when the rep is destroyed.
+    ///
+    /// # Safety
+    ///
+    /// `owner.as_bytes()` must be non-empty, so it represents a live
+    /// allocation rather than a dangling zero-capacity sentinel.
+    pub(crate) unsafe fn create_global<O: GlobalBytes>(owner: O) -> *mut CordRep {
+        let length = owner.as_bytes().len();
+        let allocation_size = owner.allocation_size();
+        debug_assert!(length > 0);
+        debug_assert!(length <= allocation_size);
+
+        // Allocate the metadata while `owner` still provides panic-safe
+        // ownership of the payload. Everything after `into_raw_parts` is
+        // infallible field assignment and ownership transfer.
+        let mut node = Box::new(CordRepExternalGlobal {
+            ext: CordRepExternal {
+                rep: CordRep::new(length, EXTERNAL),
+                base: core::ptr::null(),
+                releaser_invoker: release_global,
+            },
+            allocation_size,
+        });
+        // SAFETY: this function assumes responsibility for releasing the
+        // allocation through `release_global` below.
+        let raw = unsafe { owner.into_raw_parts() };
+        node.ext.rep.length = raw.len;
+        node.ext.base = raw.base.as_ptr();
+        node.allocation_size = raw.allocation_size;
+        Box::into_raw(node).cast()
+    }
+
     /// Drops the owner and deallocates the rep. Requires `rep.is_external()`.
     ///
     /// # Safety
     ///
     /// `rep` must be a non-null pointer to a live external rep (tag ==
-    /// `EXTERNAL`) originally produced by [`create`](Self::create), whose
-    /// reference count has just reached zero, transferring final ownership
-    /// to this call; `rep` must not be used again afterwards.
+    /// `EXTERNAL`) originally produced by [`create`](Self::create) or
+    /// [`create_global`](Self::create_global), whose reference count has just
+    /// reached zero, transferring final ownership to this call; `rep` must
+    /// not be used again afterwards.
     #[inline]
     pub(crate) unsafe fn delete(rep: *mut CordRep) {
         debug_assert!(unsafe { rep.is_external() });
@@ -152,10 +279,9 @@ impl CordRepExternal {
         // SAFETY: `ext` is `rep` reinterpreted as its actual concrete type
         // (sound because `rep`'s EXTERNAL tag guarantees it really is a
         // `CordRepExternal` header, per this fn's contract), so its
-        // `releaser_invoker` field may be read. `releaser_invoker` was set
-        // by `create::<O>` to `release::<O>`, whose own contract (that `ext`
-        // points at a live `CordRepExternalImpl<O>` with a refcount of zero)
-        // is satisfied by this fn's contract on `rep`.
+        // `releaser_invoker` field may be read. The matching constructor set
+        // it to a function whose concrete-node contract is satisfied by this
+        // fn's final-ownership contract on `rep`.
         unsafe { ((*ext).releaser_invoker)(ext) }
     }
 }
@@ -179,6 +305,27 @@ unsafe fn release<O>(ext: *mut CordRepExternal) {
     // `Box::into_raw` produced in `create`; dropping it runs `O`'s
     // destructor and frees the node.
     unsafe { drop(Box::from_raw(ext.cast::<CordRepExternalImpl<O>>())) }
+}
+
+/// Releases a payload produced by [`GlobalBytes`] and its metadata node.
+///
+/// # Safety
+///
+/// `ext` must point to a uniquely owned live `CordRepExternalGlobal` whose
+/// reference count has reached zero.
+unsafe fn release_global(ext: *mut CordRepExternal) {
+    let node = ext.cast::<CordRepExternalGlobal>();
+    // Copy everything needed before either allocation is released.
+    let base = unsafe { (*ext).base.cast_mut() };
+    let allocation_size = unsafe { (*node).allocation_size };
+    // SAFETY: `GlobalBytes` guarantees this is the exact non-zero layout of
+    // the live payload allocation and final refcount ownership guarantees no
+    // payload references remain. Deallocate the payload before the metadata,
+    // matching normal owner-field drop order.
+    unsafe {
+        std::alloc::dealloc(base, Layout::from_size_align_unchecked(allocation_size, 1));
+        drop(Box::from_raw(node));
+    }
 }
 
 /// Copy handle borrowing a live external rep for `'a`.
@@ -233,9 +380,10 @@ impl<'a> ExternalRef<'a> {
     pub(crate) fn data(self) -> &'a [u8] {
         let len = self.len();
         // SAFETY: `self`'s invariant makes `self.ptr` a live external rep
-        // for `'a`; `base` was derived (in `create`) from the owner's final
-        // address and the `StableBytes` contract keeps it valid for `len`
-        // bytes for as long as the node itself, i.e. `'a`.
+        // for `'a`. Generic nodes derive `base` from a final-position owner
+        // whose `StableBytes` contract keeps it valid; global nodes retain
+        // sole ownership of the live raw allocation. Both keep `len` bytes
+        // readable for as long as the node itself, i.e. `'a`.
         unsafe { core::slice::from_raw_parts((*self.ptr.as_ptr()).base, len) }
     }
 
@@ -299,20 +447,20 @@ mod tests {
     }
 
     #[test]
-    fn static_and_arc_owners() {
+    fn generic_and_global_owners() {
         unsafe {
             let rep = CordRepExternal::create(b"static bytes" as &'static [u8]);
             assert_eq!(super::super::edge_data(rep), b"static bytes");
             super::super::unref(rep);
 
             let boxed: Box<[u8]> = vec![7u8; 10_000].into_boxed_slice();
-            let rep = CordRepExternal::create(boxed);
+            let rep = CordRepExternal::create_global(boxed);
             assert_eq!(super::super::edge_data(rep).len(), 10_000);
             assert!(super::super::edge_data(rep).iter().all(|&b| b == 7));
             super::super::unref(rep);
 
             let string = String::from("owned string data");
-            let rep = CordRepExternal::create(string);
+            let rep = CordRepExternal::create_global(string);
             assert_eq!(super::super::edge_data(rep), b"owned string data");
             super::super::unref(rep);
 
@@ -322,5 +470,35 @@ mod tests {
             super::super::unref(rep);
             assert_eq!(Arc::strong_count(&arc), 1);
         }
+    }
+
+    #[test]
+    fn global_owners_preserve_payload_pointer() {
+        unsafe {
+            let vec = vec![1u8; 4096];
+            let expected = vec.as_ptr();
+            let rep = CordRepExternal::create_global(vec);
+            assert_eq!(super::super::edge_data(rep).as_ptr(), expected);
+            super::super::unref(rep);
+
+            let string = "x".repeat(4096);
+            let expected = string.as_ptr();
+            let rep = CordRepExternal::create_global(string);
+            assert_eq!(super::super::edge_data(rep).as_ptr(), expected);
+            super::super::unref(rep);
+
+            let boxed = vec![2u8; 4096].into_boxed_slice();
+            let expected = boxed.as_ptr();
+            let rep = CordRepExternal::create_global(boxed);
+            assert_eq!(super::super::edge_data(rep).as_ptr(), expected);
+            super::super::unref(rep);
+        }
+    }
+
+    #[test]
+    fn global_node_matches_accounted_size() {
+        assert_eq!(EXTERNAL_REP_SIZE, core::mem::size_of::<CordRepExternalGlobal>());
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(EXTERNAL_REP_SIZE, 40);
     }
 }
