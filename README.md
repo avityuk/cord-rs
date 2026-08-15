@@ -64,7 +64,7 @@ access (`cord[i]`) is O(log n).
 Naming follows the [`bytes`] crate where a convention exists: `append` /
 `prepend` (accepting slices, strings, cords, owned buffers — see
 [`CordSource`]), `advance`, `truncate`, `slice`, `try_slice`, `split_off`,
-`split_to`, `as_flat`, `flatten`, `chunks()`, `bytes()`, `cursor()` (chunked
+`split_to`, `as_contiguous`, `make_contiguous`, `chunks()`, `bytes()`, `cursor()` (chunked
 reading, skipping, sub-cord extraction), `find`, `starts_with` / `ends_with` /
 `contains`, `compare`/`equals` plus `PartialEq`/`Ord` against slices, strings
 and cords, `Hash` (chunk-layout independent), `Index`, `Extend`,
@@ -105,7 +105,7 @@ Cordz sampling / profiling layer and the CRC checksum node are not ported.
 | `RemovePrefix(n)`                     | `advance(n)`                                    |
 | `RemoveSuffix(n)`                     | `truncate(len - n)`                             |
 | `Subcord(pos, n)`                     | `slice(range)`, `try_slice`, `split_off`, `split_to` |
-| `TryFlat` / `Flatten`                 | `as_flat` / `flatten`                           |
+| `TryFlat` / `Flatten`                 | `as_contiguous` / `make_contiguous`             |
 | `Chunks()` / `Chars()`                | `chunks()` / `bytes()`                          |
 | `CharIterator` + `AdvanceAndRead`     | `cursor()` + `Cursor::read_cord`                |
 | `Compare` / `StartsWith` / ...        | `compare`, `starts_with`, `ends_with`, `contains`, `find`, `PartialEq`/`Ord` |

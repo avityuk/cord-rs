@@ -347,7 +347,7 @@ fn bench_flatten(c: &mut Criterion) {
             b.iter_batched(
                 || fragmented(size, 500),
                 |mut c| {
-                    let _ = c.flatten();
+                    let _ = c.make_contiguous();
                     c
                 },
                 criterion::BatchSize::SmallInput,

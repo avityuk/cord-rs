@@ -726,7 +726,7 @@ impl Cord {
         unsafe { tree.data(tree.begin()) }
     }
 
-    /// Slow path of [`flatten`](Self::flatten).
+    /// Slow path of [`make_contiguous`](Self::make_contiguous).
     fn flatten_slow_path(&mut self) {
         let total_size = self.len();
         let new_tree = if total_size <= MAX_FLAT_LENGTH {
@@ -759,7 +759,7 @@ impl Cord {
     /// Copies all bytes to `dst`, which must have room for `self.len()`
     /// bytes.
     fn copy_to_uninit(&self, dst: &mut [MaybeUninit<u8>]) {
-        if let Some(chunk) = self.as_flat() {
+        if let Some(chunk) = self.as_contiguous() {
             dst[..chunk.len()].write_copy_of_slice(chunk);
             return;
         }
@@ -796,7 +796,7 @@ impl Cord {
     /// use cord_rs::Cord;
     /// static PAYLOAD: [u8; 32] = [0xAB; 32];
     /// let cord = Cord::from_static(&PAYLOAD);
-    /// assert_eq!(cord.as_flat(), Some(&PAYLOAD[..]));
+    /// assert_eq!(cord.as_contiguous(), Some(&PAYLOAD[..]));
     /// ```
     pub fn from_static<T: AsRef<[u8]> + ?Sized>(data: &'static T) -> Self {
         let bytes = data.as_ref();
@@ -1207,11 +1207,11 @@ impl Cord {
     /// ```
     /// use cord_rs::Cord;
     /// let cord = Cord::from("contiguous");
-    /// assert_eq!(cord.as_flat(), Some(&b"contiguous"[..]));
+    /// assert_eq!(cord.as_contiguous(), Some(&b"contiguous"[..]));
     /// ```
     #[inline]
     #[must_use]
-    pub fn as_flat(&self) -> Option<&[u8]> {
+    pub fn as_contiguous(&self) -> Option<&[u8]> {
         match self.data.view() {
             Repr::Inline(bytes) => Some(bytes),
             Repr::Tree(rep) => get_flat_aux(rep),
@@ -1219,21 +1219,21 @@ impl Cord {
     }
 
     /// Flattens the cord into a single contiguous buffer and returns it.
-    /// If the cord is already flat its contents are not modified.
+    /// If the cord is already contiguous its contents are not modified.
     ///
     /// ```
     /// use cord_rs::Cord;
     /// let mut cord = Cord::from(vec![b'a'; 5000]);
     /// cord.append(vec![b'b'; 5000]);
-    /// assert!(cord.as_flat().is_none());
-    /// assert_eq!(cord.flatten().len(), 10_000);
-    /// assert!(cord.as_flat().is_some());
+    /// assert!(cord.as_contiguous().is_none());
+    /// assert_eq!(cord.make_contiguous().len(), 10_000);
+    /// assert!(cord.as_contiguous().is_some());
     /// ```
-    pub fn flatten(&mut self) -> &[u8] {
-        if self.as_flat().is_none() {
+    pub fn make_contiguous(&mut self) -> &[u8] {
+        if self.as_contiguous().is_none() {
             self.flatten_slow_path();
         }
-        self.as_flat().unwrap_or_default()
+        self.as_contiguous().unwrap_or_default()
     }
 
     /// Copies the cord's bytes into a new `Vec<u8>`.
@@ -1253,7 +1253,7 @@ impl Cord {
     /// (With the `bytes` feature, `bytes::Buf::copy_to_slice` is the
     /// *consuming* variant.)
     pub fn copy_prefix_to(&self, dst: &mut [u8]) -> usize {
-        if let Some(flat) = self.as_flat() {
+        if let Some(flat) = self.as_contiguous() {
             // Contiguous (inline or single flat): one memcpy.
             let n = flat.len().min(dst.len());
             dst[..n].copy_from_slice(&flat[..n]);
@@ -1787,7 +1787,7 @@ impl Hash for Cord {
     fn hash<H: Hasher>(&self, state: &mut H) {
         const BLOCK: usize = 1024;
         state.write_usize(self.len());
-        if let Some(flat) = self.as_flat() {
+        if let Some(flat) = self.as_contiguous() {
             for block in flat.chunks(BLOCK) {
                 state.write(block);
             }

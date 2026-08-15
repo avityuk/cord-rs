@@ -24,7 +24,7 @@ fn check(cord: &Cord, expected: &[u8]) {
     assert_eq!(joined, expected);
     let bytes: Vec<u8> = cord.bytes().collect();
     assert_eq!(bytes, expected);
-    if let Some(flat) = cord.as_flat() {
+    if let Some(flat) = cord.as_contiguous() {
         assert_eq!(flat, expected);
     }
 }
@@ -33,7 +33,7 @@ fn check(cord: &Cord, expected: &[u8]) {
 fn empty_and_inline() {
     let cord = Cord::new();
     check(&cord, b"");
-    assert_eq!(cord.as_flat(), Some(&b""[..]));
+    assert_eq!(cord.as_contiguous(), Some(&b""[..]));
     assert!(!internal::is_tree(&cord));
     let cord = Cord::from("hello");
     check(&cord, b"hello");
@@ -67,12 +67,12 @@ fn construction_from_various_sources() {
     let string_ptr = string.as_ptr();
     let owned = Cord::from(string);
     assert!(internal::is_external(&owned), "large string should be adopted");
-    assert_eq!(owned.as_flat().unwrap().as_ptr(), string_ptr);
+    assert_eq!(owned.as_contiguous().unwrap().as_ptr(), string_ptr);
     let boxed = vec![7u8; 10_000].into_boxed_slice();
     let boxed_ptr = boxed.as_ptr();
     let owned = Cord::from(boxed);
     assert!(internal::is_external(&owned), "large boxed slice should be adopted");
-    assert_eq!(owned.as_flat().unwrap().as_ptr(), boxed_ptr);
+    assert_eq!(owned.as_contiguous().unwrap().as_ptr(), boxed_ptr);
     let small = Cord::from(vec![1u8; 100]);
     assert!(internal::is_flat(&small), "small vec should be copied into a flat");
     assert!(internal::is_flat(&Cord::from(vec![1u8; 511])));
@@ -90,7 +90,7 @@ fn construction_from_various_sources() {
     let s = Cord::from_static(&STATIC);
     check(&s, &STATIC);
     assert!(internal::is_external(&s));
-    assert_eq!(s.as_flat().unwrap().as_ptr(), STATIC.as_ptr(), "from_static must not copy");
+    assert_eq!(s.as_contiguous().unwrap().as_ptr(), STATIC.as_ptr(), "from_static must not copy");
     check(&Cord::from_static("static str"), b"static str");
     let arc: Arc<str> = Arc::from("x".repeat(1000).as_str());
     let c = Cord::from(arc.clone());
@@ -412,13 +412,13 @@ fn iteration_and_cursor() {
 }
 
 #[test]
-fn flatten_and_memory_usage() {
+fn make_contiguous_and_memory_usage() {
     let mut cord = Cord::new();
     for i in 0..100u8 {
         cord.append(vec![i; 100]);
     }
     let expected: Vec<u8> = (0..100u8).flat_map(|i| vec![i; 100]).collect();
-    assert!(cord.as_flat().is_none());
+    assert!(cord.as_contiguous().is_none());
     let total = cord.estimated_memory_usage(MemoryAccounting::Total);
     let precise = cord.estimated_memory_usage(MemoryAccounting::TotalMorePrecise);
     let fair = cord.estimated_memory_usage(MemoryAccounting::FairShare);
@@ -437,17 +437,17 @@ fn flatten_and_memory_usage() {
     drop(clone);
     drop(doubled);
 
-    assert_eq!(cord.flatten(), &expected[..]);
-    assert!(cord.as_flat().is_some());
+    assert_eq!(cord.make_contiguous(), &expected[..]);
+    assert!(cord.as_contiguous().is_some());
     check(&cord, &expected);
     assert!(internal::is_external(&cord), "10000 bytes > max flat length -> external");
     let mut small = Cord::from("a");
     small.append(vec![b'b'; 20]);
     small.append("c");
-    assert_eq!(small.flatten(), [b"a".as_slice(), &[b'b'; 20], b"c"].concat());
+    assert_eq!(small.make_contiguous(), [b"a".as_slice(), &[b'b'; 20], b"c"].concat());
     assert!(internal::is_flat(&small));
     let mut inline = Cord::from("xyz");
-    assert_eq!(inline.flatten(), b"xyz");
+    assert_eq!(inline.make_contiguous(), b"xyz");
     assert_eq!(Cord::new().estimated_memory_usage(MemoryAccounting::Total), 16);
 }
 

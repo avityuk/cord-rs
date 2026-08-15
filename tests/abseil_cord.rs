@@ -929,45 +929,45 @@ fn get_append_buffer_on_shared_cord() {
 
 #[test]
 fn try_flat_empty() {
-    assert_eq!(Cord::new().as_flat(), Some(&b""[..]));
+    assert_eq!(Cord::new().as_contiguous(), Some(&b""[..]));
 }
 
 #[test]
 fn try_flat_flat() {
-    assert_eq!(Cord::from("hello").as_flat(), Some(&b"hello"[..]));
+    assert_eq!(Cord::from("hello").as_contiguous(), Some(&b"hello"[..]));
 }
 
 #[test]
 fn try_flat_substr_inlined() {
     let mut c = Cord::from("hello");
     c.advance(1);
-    assert_eq!(c.as_flat(), Some(&b"ello"[..]));
+    assert_eq!(c.as_contiguous(), Some(&b"ello"[..]));
 }
 
 #[test]
 fn try_flat_substr_flat() {
     let c = Cord::from("longer than 15 bytes");
     let sub = internal::make_substring(&c, 1, c.len() - 1);
-    assert_eq!(sub.as_flat(), Some(&b"onger than 15 bytes"[..]));
+    assert_eq!(sub.as_contiguous(), Some(&b"onger than 15 bytes"[..]));
 }
 
 #[test]
 fn try_flat_concat() {
     let c = make_fragmented_cord(["hel", "lo"]);
-    assert_eq!(c.as_flat(), None);
+    assert_eq!(c.as_contiguous(), None);
 }
 
 #[test]
 fn try_flat_external() {
     let c = internal::make_external(b"hell");
-    assert_eq!(c.as_flat(), Some(&b"hell"[..]));
+    assert_eq!(c.as_contiguous(), Some(&b"hell"[..]));
 }
 
 #[test]
 fn try_flat_substr_external() {
     let c = internal::make_external(b"hell");
     let sub = internal::make_substring(&c, 1, c.len() - 1);
-    assert_eq!(sub.as_flat(), Some(&b"ell"[..]));
+    assert_eq!(sub.as_contiguous(), Some(&b"ell"[..]));
 }
 
 /// Not part of the API contract, but intended to be true of the current
@@ -991,8 +991,8 @@ fn try_flat_commonly_assumed_invariants() {
         let expected = fragments[fragment].as_bytes();
         let subcord1 = c.slice(offset..offset + sv.len());
         let subcord2 = cursor.read_cord(sv.len());
-        assert_eq!(subcord1.as_flat(), Some(expected));
-        assert_eq!(subcord2.as_flat(), Some(expected));
+        assert_eq!(subcord1.as_contiguous(), Some(expected));
+        assert_eq!(subcord2.as_contiguous(), Some(expected));
         offset += sv.len();
     }
 }
@@ -1006,7 +1006,7 @@ fn verify_flatten(mut c: Cord) {
     let already_flat_and_non_empty = is_flat(&c) && !c.is_empty();
     let old_flat_ptr =
         if already_flat_and_non_empty { Some(c.chunks().next().unwrap().as_ptr()) } else { None };
-    let new_flat = c.flatten();
+    let new_flat = c.make_contiguous();
     assert_eq!(new_flat, &old_contents[..]);
     if let Some(old_ptr) = old_flat_ptr {
         assert_eq!(old_ptr, new_flat.as_ptr(), "Allocated new memory even though the Cord was already flat.");
@@ -1458,7 +1458,7 @@ fn construct_from_external_compare_contents() {
         let cord = Cord::from(shared.clone());
         assert_eq!(cord, data);
         if length > 511 {
-            assert_eq!(cord.as_flat().unwrap().as_ptr(), shared.as_ptr(), "large Arc data is shared");
+            assert_eq!(cord.as_contiguous().unwrap().as_ptr(), shared.as_ptr(), "large Arc data is shared");
         }
         length *= 2;
     }
@@ -2093,7 +2093,7 @@ fn small_buffer_assign_from_own_data() {
     for pos in 0..contents.len() {
         for count in (1..=contents.len() - pos).rev() {
             let mut c = Cord::from(&contents[..]);
-            let sub = c.flatten()[pos..pos + count].to_vec();
+            let sub = c.make_contiguous()[pos..pos + count].to_vec();
             c = Cord::from(&sub[..]);
             assert_eq!(c, &contents[pos..pos + count], "pos = {pos}; count = {count}");
         }
@@ -2232,7 +2232,7 @@ fn after_exit() {
     test_after_exit(&LONG_CORD, "String that does not fit SSO.");
     // Static data is referenced, not copied.
     let c = Cord::from_static(&DATA);
-    assert_eq!(c.as_flat().unwrap().as_ptr(), DATA.as_ptr());
+    assert_eq!(c.as_contiguous().unwrap().as_ptr(), DATA.as_ptr());
 }
 
 // --- Populated cord factories and mutators (from the checksum tests) ------------------
@@ -2253,7 +2253,7 @@ const CORD_FACTORIES: &[PopulatedCordFactory] = &[
         generator: || {
             // Too large for SSO, small enough to be a single flat.
             let mut flat = Cord::from([b"abcde".as_slice(), &[b'x'; 1000]].concat());
-            flat.flatten();
+            flat.make_contiguous();
             flat
         },
     },
@@ -2269,7 +2269,7 @@ const CORD_FACTORIES: &[PopulatedCordFactory] = &[
         name: "substring",
         generator: || {
             let mut flat = Cord::from([b"-abcde".as_slice(), &[b'x'; 1000]].concat());
-            flat.flatten();
+            flat.make_contiguous();
             flat.slice(1..999)
         },
     },
@@ -2359,7 +2359,7 @@ const CORD_MUTATORS: &[CordMutator] = &[
     CordMutator {
         name: "flatten",
         mutate: |c| {
-            let _ = c.flatten();
+            let _ = c.make_contiguous();
         },
         undo: Some(|_| {}),
     },

@@ -77,7 +77,7 @@ struct FlatCord(Cord);
 impl AsRef<[u8]> for FlatCord {
     #[inline]
     fn as_ref(&self) -> &[u8] {
-        self.0.as_flat().expect("FlatCord holds a flat cord")
+        self.0.as_contiguous().expect("FlatCord holds a flat cord")
     }
 }
 
@@ -85,7 +85,7 @@ impl From<Cord> for Bytes {
     /// Converts without copying if the cord's bytes are contiguous (and not
     /// inline); copies otherwise.
     fn from(cord: Cord) -> Self {
-        match cord.as_flat() {
+        match cord.as_contiguous() {
             Some(flat) if flat.len() <= MAX_INLINE || !cord.is_tree() => Bytes::copy_from_slice(flat),
             Some(_) => Bytes::from_owner(FlatCord(cord)),
             None => Bytes::from(cord.to_vec()),

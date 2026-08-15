@@ -36,7 +36,7 @@ enum Op {
     SplitTo { t: usize, s: usize, frac: f64 },
     Clone { t: usize, s: usize },
     Clear { t: usize },
-    Flatten { t: usize },
+    MakeContiguous { t: usize },
     CursorRead { t: usize, s: usize, a: f64, b: f64 },
     ExtendBytes { t: usize, data: Vec<u8> },
 }
@@ -76,7 +76,7 @@ fn op() -> impl Strategy<Value = Op> {
         (slot(), slot(), frac()).prop_map(|(t, s, frac)| Op::SplitTo { t, s, frac }),
         (slot(), slot()).prop_map(|(t, s)| Op::Clone { t, s }),
         slot().prop_map(|t| Op::Clear { t }),
-        slot().prop_map(|t| Op::Flatten { t }),
+        slot().prop_map(|t| Op::MakeContiguous { t }),
         (slot(), slot(), frac(), frac()).prop_map(|(t, s, a, b)| Op::CursorRead { t, s, a, b }),
         (slot(), prop::collection::vec(any::<u8>(), 0..700))
             .prop_map(|(t, data)| Op::ExtendBytes { t, data }),
@@ -111,8 +111,8 @@ fn check(cord: &Cord, expected: &[u8], step: usize) {
         .copied()
         .collect();
     assert_eq!(joined, expected, "step {step}: chunks");
-    if let Some(flat) = cord.as_flat() {
-        assert_eq!(flat, expected, "step {step}: as_flat");
+    if let Some(flat) = cord.as_contiguous() {
+        assert_eq!(flat, expected, "step {step}: as_contiguous");
     }
 }
 
@@ -239,7 +239,7 @@ proptest! {
                 }
                 Op::Clone { t, s } => { cords[*t] = cords[*s].clone(); oracles[*t] = oracles[*s].clone(); *t }
                 Op::Clear { t } => { cords[*t].clear(); oracles[*t].clear(); *t }
-                Op::Flatten { t } => { let flat = cords[*t].flatten().to_vec(); assert_eq!(flat, oracles[*t], "step {step}: flatten"); *t }
+                Op::MakeContiguous { t } => { let flat = cords[*t].make_contiguous().to_vec(); assert_eq!(flat, oracles[*t], "step {step}: make_contiguous"); *t }
                 Op::CursorRead { t, s, a, b } => {
                     let (x, y) = range(*a, *b, oracles[*s].len());
                     let mut cursor = cords[*s].cursor();

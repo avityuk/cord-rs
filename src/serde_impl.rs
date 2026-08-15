@@ -9,7 +9,7 @@ use crate::cord::Cord;
 
 impl Serialize for Cord {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self.as_flat() {
+        match self.as_contiguous() {
             Some(flat) => serializer.serialize_bytes(flat),
             None => serializer.serialize_bytes(&self.to_vec()),
         }

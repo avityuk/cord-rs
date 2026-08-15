@@ -77,7 +77,7 @@ mod bytes_feature {
         let large = Bytes::from(vec![7u8; 10_000]);
         let cord = Cord::from(large.clone());
         assert!(internal::is_external(&cord));
-        assert_eq!(cord.as_flat().unwrap().as_ptr(), large.as_ptr());
+        assert_eq!(cord.as_contiguous().unwrap().as_ptr(), large.as_ptr());
         // Back to Bytes without copying when flat.
         let back = Bytes::from(cord);
         assert_eq!(back.as_ptr(), large.as_ptr());
@@ -92,7 +92,7 @@ mod bytes_feature {
         assert_eq!(&bytes[..], b"abc");
         // A flat (non external) cord hands out its buffer.
         let flat = Cord::from(&expected[..1000]);
-        let ptr = flat.as_flat().unwrap().as_ptr();
+        let ptr = flat.as_contiguous().unwrap().as_ptr();
         let bytes = Bytes::from(flat);
         assert_eq!(bytes.as_ptr(), ptr);
         assert_eq!(&bytes[..], &expected[..1000]);
