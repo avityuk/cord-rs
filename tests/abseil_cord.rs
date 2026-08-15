@@ -1539,6 +1539,29 @@ fn cord_memory_usage_external_memory() {
 }
 
 #[test]
+fn cord_memory_usage_global_external_capacity() {
+    fn assert_usage(cord: &Cord, allocation_size: usize) {
+        let expected = SIZEOF_CORD + allocation_size + internal::EXTERNAL_NODE_SIZE;
+        assert_eq!(cord.estimated_memory_usage(TOTAL), expected);
+        assert_eq!(cord.estimated_memory_usage(FAIR_SHARE), expected);
+        assert_eq!(cord.estimated_memory_usage(TOTAL_MORE_PRECISE), expected);
+    }
+
+    let mut bytes = Vec::with_capacity(1536);
+    bytes.resize(1024, b'x');
+    let allocation_size = bytes.capacity();
+    assert_usage(&Cord::from(bytes), allocation_size);
+
+    let mut string = String::with_capacity(1536);
+    string.push_str(&"x".repeat(1024));
+    let allocation_size = string.capacity();
+    assert_usage(&Cord::from(string), allocation_size);
+
+    let boxed = vec![b'x'; 1024].into_boxed_slice();
+    assert_usage(&Cord::from(boxed), 1024);
+}
+
+#[test]
 fn cord_memory_usage_flat() {
     let cord = make_cord(1000, b'a');
     let flat_size = internal::flat_allocated_size(&cord).unwrap();

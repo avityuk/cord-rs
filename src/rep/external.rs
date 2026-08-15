@@ -16,6 +16,9 @@ use super::{CordRep, EXTERNAL, RepPtr};
 /// Function that releases the referenced storage and frees its external node.
 type ReleaserInvoker = unsafe fn(*mut CordRepExternal);
 
+/// Marks an external rep whose concrete layout is `CordRepExternalGlobal`.
+const GLOBAL_EXTERNAL: u8 = 1;
+
 /// Header shared by both generic-owner and global-allocation external nodes.
 #[repr(C)]
 pub(crate) struct CordRepExternal {
@@ -244,15 +247,14 @@ impl CordRepExternal {
         debug_assert!(length > 0);
         debug_assert!(length <= allocation_size);
 
+        let mut rep = CordRep::new(length, EXTERNAL);
+        rep.storage[0] = GLOBAL_EXTERNAL;
+
         // Allocate the metadata while `owner` still provides panic-safe
         // ownership of the payload. Everything after `into_raw_parts` is
         // infallible field assignment and ownership transfer.
         let mut node = Box::new(CordRepExternalGlobal {
-            ext: CordRepExternal {
-                rep: CordRep::new(length, EXTERNAL),
-                base: core::ptr::null(),
-                releaser_invoker: release_global,
-            },
+            ext: CordRepExternal { rep, base: core::ptr::null(), releaser_invoker: release_global },
             allocation_size,
         });
         // SAFETY: this function assumes responsibility for releasing the
@@ -389,11 +391,22 @@ impl<'a> ExternalRef<'a> {
     }
 
     /// The size this external node contributes to memory-usage accounting:
-    /// the fixed per-node overhead ([`EXTERNAL_REP_SIZE`]) plus the
-    /// referenced length.
+    /// the fixed per-node overhead ([`EXTERNAL_REP_SIZE`]) plus the owned
+    /// allocation size when known, or the referenced length otherwise.
     #[inline]
     pub(crate) fn allocated_size(self) -> usize {
-        self.len() + EXTERNAL_REP_SIZE
+        // SAFETY: constructors reserve `storage[0] == GLOBAL_EXTERNAL` for
+        // `CordRepExternalGlobal`, so the marker proves the concrete layout
+        // and makes its trailing `allocation_size` field readable.
+        let payload_size = unsafe {
+            let ext = self.ptr.as_ptr();
+            if (*ext).rep.storage[0] == GLOBAL_EXTERNAL {
+                (*ext.cast::<CordRepExternalGlobal>()).allocation_size
+            } else {
+                (*ext).rep.length
+            }
+        };
+        payload_size + EXTERNAL_REP_SIZE
     }
 
     /// Escape hatch to the raw pointer: a permanent, intentional interop
