@@ -153,7 +153,7 @@ fn check_valid(cord: &Cord) {
 #[test]
 fn flat_constants() {
     const { assert!(internal::FLAT_OVERHEAD < 32) };
-    assert_eq!(CordBuffer::DEFAULT_LIMIT, MAX_FLAT_LENGTH);
+    assert_eq!(CordBuffer::DEFAULT_MAX_CAPACITY, MAX_FLAT_LENGTH);
     assert_eq!(MAX_FLAT_LENGTH, 4096 - internal::FLAT_OVERHEAD);
 }
 
@@ -625,7 +625,7 @@ fn copy_to_span() {
 fn append_empty_buffer() {
     let mut cord = Cord::new();
     cord.append(CordBuffer::new());
-    cord.append(CordBuffer::with_default_limit(2000));
+    cord.append(CordBuffer::with_capacity(2000));
     assert!(cord.is_empty());
 }
 
@@ -633,7 +633,7 @@ fn append_empty_buffer() {
 fn append_empty_buffer_to_flat() {
     let mut cord = Cord::from(vec![b'x'; 2000]);
     cord.append(CordBuffer::new());
-    cord.append(CordBuffer::with_default_limit(2000));
+    cord.append(CordBuffer::with_capacity(2000));
     assert_eq!(cord.len(), 2000);
 }
 
@@ -642,19 +642,19 @@ fn append_empty_buffer_to_tree() {
     let mut cord = Cord::from(vec![b'x'; 2000]);
     cord.append(vec![b'y'; 2000]);
     cord.append(CordBuffer::new());
-    cord.append(CordBuffer::with_default_limit(2000));
+    cord.append(CordBuffer::with_capacity(2000));
     assert_eq!(cord.len(), 4000);
 }
 
 #[test]
 fn append_small_buffer() {
     let mut cord = Cord::new();
-    let mut buffer = CordBuffer::with_default_limit(3);
+    let mut buffer = CordBuffer::with_capacity(3);
     assert!(buffer.capacity() <= 15);
     buffer.put_slice(b"Abc");
     cord.append(buffer);
 
-    let mut buffer = CordBuffer::with_default_limit(3);
+    let mut buffer = CordBuffer::with_capacity(3);
     buffer.put_slice(b"defgh");
     cord.append(buffer);
 
@@ -672,11 +672,11 @@ fn append_and_prepend_buffer_are_precise() {
     let size1 = cord1.estimated_memory_usage(MemoryAccounting::Total);
     let size2 = cord2.estimated_memory_usage(MemoryAccounting::Total);
 
-    let mut buffer = CordBuffer::with_default_limit(3);
+    let mut buffer = CordBuffer::with_capacity(3);
     buffer.put_slice(b"Abc");
     cord1.append(buffer);
 
-    let mut buffer = CordBuffer::with_default_limit(3);
+    let mut buffer = CordBuffer::with_capacity(3);
     buffer.put_slice(b"Abc");
     cord2.prepend(buffer);
 
@@ -690,12 +690,12 @@ fn append_and_prepend_buffer_are_precise() {
 #[test]
 fn prepend_small_buffer() {
     let mut cord = Cord::new();
-    let mut buffer = CordBuffer::with_default_limit(3);
+    let mut buffer = CordBuffer::with_capacity(3);
     assert!(buffer.capacity() <= 15);
     buffer.put_slice(b"Abc");
     cord.prepend(buffer);
 
-    let mut buffer = CordBuffer::with_default_limit(3);
+    let mut buffer = CordBuffer::with_capacity(3);
     buffer.put_slice(b"defgh");
     cord.prepend(buffer);
 
@@ -706,12 +706,12 @@ fn prepend_small_buffer() {
 fn append_large_buffer() {
     let mut cord = Cord::new();
     let s1 = vec![b'1'; 700];
-    let mut buffer = CordBuffer::with_default_limit(s1.len());
+    let mut buffer = CordBuffer::with_capacity(s1.len());
     buffer.put_slice(&s1);
     cord.append(buffer);
 
     let s2 = vec![b'2'; 1000];
-    let mut buffer = CordBuffer::with_default_limit(s2.len());
+    let mut buffer = CordBuffer::with_capacity(s2.len());
     buffer.put_slice(&s2);
     cord.append(buffer);
 
@@ -722,12 +722,12 @@ fn append_large_buffer() {
 fn prepend_large_buffer() {
     let mut cord = Cord::new();
     let s1 = vec![b'1'; 700];
-    let mut buffer = CordBuffer::with_default_limit(s1.len());
+    let mut buffer = CordBuffer::with_capacity(s1.len());
     buffer.put_slice(&s1);
     cord.prepend(buffer);
 
     let s2 = vec![b'2'; 1000];
-    let mut buffer = CordBuffer::with_default_limit(s2.len());
+    let mut buffer = CordBuffer::with_capacity(s2.len());
     buffer.put_slice(&s2);
     cord.prepend(buffer);
 
@@ -745,14 +745,14 @@ impl AppendBufferParam {
         [AppendBufferParam { is_default: true }, AppendBufferParam { is_default: false }];
 
     fn limit(&self) -> usize {
-        if self.is_default { CordBuffer::DEFAULT_LIMIT } else { CordBuffer::CUSTOM_LIMIT }
+        if self.is_default { CordBuffer::DEFAULT_MAX_CAPACITY } else { CordBuffer::MAX_BLOCK_SIZE }
     }
 
-    fn maximum_payload(&self) -> usize {
+    fn max_capacity(&self) -> usize {
         if self.is_default {
-            CordBuffer::maximum_payload()
+            CordBuffer::DEFAULT_MAX_CAPACITY
         } else {
-            CordBuffer::maximum_payload_for(self.limit())
+            CordBuffer::max_capacity_for(self.limit())
         }
     }
 
@@ -799,7 +799,7 @@ fn get_append_buffer_on_inlined_cord_capacity_close_to_max() {
             let mut cord = Cord::from("Abc");
             let size = usize::MAX - dist_from_max;
             let buffer = p.get_append_buffer(&mut cord, size, 1);
-            assert!(buffer.capacity() >= p.maximum_payload());
+            assert!(buffer.capacity() >= p.max_capacity());
             assert_eq!(buffer.len(), 3);
             assert_eq!(&*buffer, b"Abc");
             assert!(cord.is_empty());
@@ -812,7 +812,7 @@ fn get_append_buffer_on_flat() {
     for p in AppendBufferParam::ALL {
         // Create a cord with a single flat and extra capacity.
         let mut cord = Cord::new();
-        let mut buffer = CordBuffer::with_default_limit(500);
+        let mut buffer = CordBuffer::with_capacity(500);
         let expected_capacity = buffer.capacity();
         buffer.put_slice(b"Abc");
         cord.append(buffer);
@@ -829,7 +829,7 @@ fn get_append_buffer_on_flat() {
 fn get_append_buffer_on_flat_without_min_capacity() {
     for p in AppendBufferParam::ALL {
         let mut cord = Cord::new();
-        let mut buffer = CordBuffer::with_default_limit(500);
+        let mut buffer = CordBuffer::with_capacity(500);
         buffer.put_slice(&[b'x'; 30]);
         cord.append(buffer);
 
@@ -852,7 +852,7 @@ fn get_append_buffer_on_tree() {
             for _ in 0..num_flats - 1 {
                 prefix.extend_from_slice(&last);
                 last = rng.lowercase(10);
-                let mut buffer = CordBuffer::with_default_limit(500);
+                let mut buffer = CordBuffer::with_capacity(500);
                 buffer.put_slice(&last);
                 cord.append(buffer);
             }
@@ -870,7 +870,7 @@ fn get_append_buffer_on_tree_without_min_capacity() {
     for p in AppendBufferParam::ALL {
         let mut cord = Cord::new();
         for i in 0..2 {
-            let mut buffer = CordBuffer::with_default_limit(500);
+            let mut buffer = CordBuffer::with_capacity(500);
             buffer.put_slice(if i != 0 { b"def" } else { b"Abc" });
             cord.append(buffer);
         }
@@ -886,7 +886,7 @@ fn get_append_buffer_on_substring() {
     for p in AppendBufferParam::ALL {
         // A large cord with a single flat and some extra capacity.
         let mut cord = Cord::new();
-        let mut buffer = CordBuffer::with_default_limit(500);
+        let mut buffer = CordBuffer::with_capacity(500);
         buffer.put_slice(&[b'x'; 450]);
         cord.append(buffer);
         cord.advance(1);
@@ -903,7 +903,7 @@ fn get_append_buffer_on_shared_cord() {
     for p in AppendBufferParam::ALL {
         // A shared cord with a single flat and extra capacity.
         let mut cord = Cord::new();
-        let mut buffer = CordBuffer::with_default_limit(500);
+        let mut buffer = CordBuffer::with_capacity(500);
         buffer.put_slice(b"Abc");
         cord.append(buffer);
         let _shared_cord = cord.clone();
@@ -913,7 +913,7 @@ fn get_append_buffer_on_shared_cord() {
         assert_eq!(buffer.len(), 0);
         assert_eq!(cord, "Abc");
 
-        let mut buffer = CordBuffer::with_default_limit(500);
+        let mut buffer = CordBuffer::with_capacity(500);
         buffer.put_slice(b"def");
         cord.append(buffer);
         let _shared_cord = cord.clone();

@@ -31,7 +31,7 @@
 //! assert_eq!(cord.len(), 3 + 11 + 4096);
 //!
 //! // Zero-copy building through `CordBuffer`.
-//! let mut buffer = CordBuffer::with_default_limit(1024);
+//! let mut buffer = CordBuffer::with_capacity(1024);
 //! buffer.put_slice(b" tail");
 //! cord.append(buffer);
 //!

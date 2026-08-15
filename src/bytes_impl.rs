@@ -159,7 +159,7 @@ impl<'a> CordWriter<'a> {
                 self.cord
                     .as_deref_mut()
                     .expect("CordWriter used after into_inner")
-                    .take_append_buffer(CordBuffer::DEFAULT_LIMIT),
+                    .take_append_buffer(CordBuffer::DEFAULT_MAX_CAPACITY),
             );
         }
         self.buffer.as_mut().expect("buffer was just set")

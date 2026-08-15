@@ -893,8 +893,9 @@ impl Cord {
     /// together with its existing contents (so the returned buffer has a
     /// non-zero length and a capacity of at least `len + 16`). Otherwise a
     /// new buffer of the requested `capacity` (capped at
-    /// [`CordBuffer::DEFAULT_LIMIT`]) is returned. Either way the caller must
-    /// [`append`](Self::append) the buffer back to restore the data.
+    /// [`CordBuffer::DEFAULT_MAX_CAPACITY`]) is returned. Either way the
+    /// caller must [`append`](Self::append) the buffer back to restore the
+    /// data.
     ///
     /// ```
     /// use cord_rs::Cord;
@@ -904,7 +905,7 @@ impl Cord {
     ///         let mut buffer = if first {
     ///             cord.take_append_buffer(n)
     ///         } else {
-    ///             cord_rs::CordBuffer::with_default_limit(n)
+    ///             cord_rs::CordBuffer::with_capacity(n)
     ///         };
     ///         let count = buffer.available().min(n);
     ///         let data = vec![42u8; count]; // e.g. fill from a random source
@@ -921,16 +922,16 @@ impl Cord {
     #[inline]
     pub fn take_append_buffer(&mut self, capacity: usize) -> CordBuffer {
         if self.is_empty() {
-            return CordBuffer::with_default_limit(capacity);
+            return CordBuffer::with_capacity(capacity);
         }
         self.take_append_buffer_slow_path(0, capacity, 16)
     }
 
     /// Like [`take_append_buffer`](Self::take_append_buffer) with explicit
     /// parameters: a newly allocated buffer uses
-    /// [`CordBuffer::with_custom_limit`]`(block_size, capacity)` (or the
-    /// default limit if `block_size` is 0), and an existing buffer is only
-    /// reused if it has at least `min_capacity` bytes available.
+    /// [`CordBuffer::with_capacity_and_block_size`]`(capacity, block_size)`
+    /// (or the default limit if `block_size` is 0), and an existing buffer is
+    /// only reused if it has at least `min_capacity` bytes available.
     pub fn take_append_buffer_with(
         &mut self,
         block_size: usize,
@@ -939,9 +940,9 @@ impl Cord {
     ) -> CordBuffer {
         if self.is_empty() {
             return if block_size != 0 {
-                CordBuffer::with_custom_limit(block_size, capacity)
+                CordBuffer::with_capacity_and_block_size(capacity, block_size)
             } else {
-                CordBuffer::with_default_limit(capacity)
+                CordBuffer::with_capacity(capacity)
             };
         }
         self.take_append_buffer_slow_path(block_size, capacity, min_capacity)
@@ -968,9 +969,9 @@ impl Cord {
                 return unsafe { CordBuffer::from_flat(extracted.as_ptr()) };
             }
             return if block_size != 0 {
-                CordBuffer::with_custom_limit(block_size, capacity)
+                CordBuffer::with_capacity_and_block_size(capacity, block_size)
             } else {
-                CordBuffer::with_default_limit(capacity)
+                CordBuffer::with_capacity(capacity)
             };
         }
         // Inline: move the inline data into a new buffer.
@@ -978,9 +979,9 @@ impl Cord {
         let max_capacity = usize::MAX - size;
         let capacity = capacity.min(max_capacity) + size;
         let mut buffer = if block_size != 0 {
-            CordBuffer::with_custom_limit(block_size, capacity)
+            CordBuffer::with_capacity_and_block_size(capacity, block_size)
         } else {
-            CordBuffer::with_default_limit(capacity)
+            CordBuffer::with_capacity(capacity)
         };
         buffer.put_slice(self.data.inline_slice());
         self.data = InlineData::new();

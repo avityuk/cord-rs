@@ -173,7 +173,7 @@ fn bench_append(c: &mut Criterion) {
             let mut cord = Cord::new();
             let mut src = &bytes[..];
             while !src.is_empty() {
-                let mut buffer = CordBuffer::with_default_limit(src.len());
+                let mut buffer = CordBuffer::with_capacity(src.len());
                 let n = buffer.put_slice_partial(src);
                 src = &src[n..];
                 cord.append(buffer);

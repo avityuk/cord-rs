@@ -210,7 +210,7 @@ proptest! {
                 Op::AppendCord { t, s } => { let src = cords[*s].clone(); cords[*t].append(&src); let o = oracles[*s].clone(); oracles[*t].extend_from_slice(&o); *t }
                 Op::AppendOwnedClone { t, s } => { let src = cords[*s].clone(); cords[*t].append(src); let o = oracles[*s].clone(); oracles[*t].extend_from_slice(&o); *t }
                 Op::AppendBuffer { t, data, reuse } => {
-                    let mut buffer = if *reuse { cords[*t].take_append_buffer(data.len()) } else { CordBuffer::with_default_limit(data.len()) };
+                    let mut buffer = if *reuse { cords[*t].take_append_buffer(data.len()) } else { CordBuffer::with_capacity(data.len()) };
                     let n = buffer.put_slice_partial(data);
                     cords[*t].append(buffer);
                     oracles[*t].extend_from_slice(&data[..n]);

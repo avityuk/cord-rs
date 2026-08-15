@@ -458,7 +458,7 @@ fn cord_buffer_roundtrip() {
     let mut n = 25_000usize;
     let mut first = true;
     while n > 0 {
-        let mut buffer = if first { cord.take_append_buffer(n) } else { CordBuffer::with_default_limit(n) };
+        let mut buffer = if first { cord.take_append_buffer(n) } else { CordBuffer::with_capacity(n) };
         first = false;
         let count = buffer.available().min(n);
         let piece = vec![(n % 256) as u8; count];
@@ -535,7 +535,7 @@ fn cord_buffer_roundtrip() {
     // Empty buffers are no-ops; small buffers are copied inline.
     let mut cord = Cord::from("ab");
     cord.append(CordBuffer::new());
-    cord.prepend(CordBuffer::with_default_limit(1000));
+    cord.prepend(CordBuffer::with_capacity(1000));
     check(&cord, b"ab");
     let mut b = CordBuffer::new();
     b.put_slice(b"cd");
@@ -543,7 +543,7 @@ fn cord_buffer_roundtrip() {
     check(&cord, b"abcd");
     assert!(!internal::is_tree(&cord));
     let from_buffer: Cord = {
-        let mut b = CordBuffer::with_default_limit(100);
+        let mut b = CordBuffer::with_capacity(100);
         b.put_slice(b"hello");
         b.into()
     };
@@ -727,7 +727,7 @@ fn default_impls() {
 
 #[test]
 fn cordlike_for_cord_buffer() {
-    let mut buffer = CordBuffer::with_default_limit(32);
+    let mut buffer = CordBuffer::with_capacity(32);
     buffer.put_slice(b"needle");
     let exact = Cord::from("needle");
     assert!(exact == buffer, "Cord should compare equal to a CordBuffer with the same bytes");
@@ -806,7 +806,7 @@ fn io_write_for_cord() {
 
 #[test]
 fn io_write_for_cord_buffer_write_zero_on_full() {
-    let mut buffer = CordBuffer::with_default_limit(4);
+    let mut buffer = CordBuffer::with_capacity(4);
     let cap = buffer.capacity();
     let n = buffer.write(&vec![b'x'; cap]).unwrap();
     assert_eq!(n, cap);
@@ -832,7 +832,7 @@ fn btree_height_sanity() {
 }
 
 #[test]
-fn constructor_space_with_custom_limit() {
+fn constructor_space_with_capacity_and_block_size() {
     let min_flat = internal::MIN_FLAT_LENGTH;
     let capacities: &[usize] = &[
         0,
@@ -840,24 +840,24 @@ fn constructor_space_with_custom_limit() {
         8,
         internal::FLAT_OVERHEAD,
         internal::FLAT_OVERHEAD + 1,
-        CordBuffer::DEFAULT_LIMIT - 1,
-        CordBuffer::DEFAULT_LIMIT,
-        CordBuffer::DEFAULT_LIMIT + 1,
+        CordBuffer::DEFAULT_MAX_CAPACITY - 1,
+        CordBuffer::DEFAULT_MAX_CAPACITY,
+        CordBuffer::DEFAULT_MAX_CAPACITY + 1,
         1000,
         19_586,
-        CordBuffer::CUSTOM_LIMIT - 1,
-        CordBuffer::CUSTOM_LIMIT,
-        CordBuffer::CUSTOM_LIMIT + 1,
+        CordBuffer::MAX_BLOCK_SIZE - 1,
+        CordBuffer::MAX_BLOCK_SIZE,
+        CordBuffer::MAX_BLOCK_SIZE + 1,
         1 << 20,
     ];
     let mut block_size = 16usize;
-    while block_size <= CordBuffer::CUSTOM_LIMIT {
-        let expected_max = CordBuffer::maximum_payload_for(block_size);
+    while block_size <= CordBuffer::MAX_BLOCK_SIZE {
+        let expected_max = CordBuffer::max_capacity_for(block_size);
         for &capacity in capacities {
-            let buffer = CordBuffer::with_custom_limit(block_size, capacity);
+            let buffer = CordBuffer::with_capacity_and_block_size(capacity, block_size);
             // Documented floor: never less than `min(requested, MIN_FLAT_LENGTH)`
-            // (`with_custom_limit` allocates via `flat::new_large`, which
-            // floors the payload at `MIN_FLAT_LENGTH` regardless of how
+            // (`with_capacity_and_block_size` allocates via `flat::new_large`,
+            // which floors the payload at `MIN_FLAT_LENGTH` regardless of how
             // small `capacity`/`block_size` are).
             assert!(
                 buffer.capacity() >= capacity.min(min_flat),
@@ -865,12 +865,12 @@ fn constructor_space_with_custom_limit() {
                 buffer.capacity()
             );
             // Saturating case: requesting at least the full block size must
-            // agree exactly with `maximum_payload_for`.
+            // agree exactly with `max_capacity_for`.
             if capacity >= block_size {
                 assert_eq!(
                     buffer.capacity(),
                     expected_max,
-                    "block_size={block_size} capacity={capacity}: disagrees with maximum_payload_for"
+                    "block_size={block_size} capacity={capacity}: disagrees with max_capacity_for"
                 );
             }
         }
@@ -880,10 +880,10 @@ fn constructor_space_with_custom_limit() {
     // Illegal block sizes: powers of two at or below FLAT_OVERHEAD must panic.
     let mut illegal = 1usize;
     while illegal <= internal::FLAT_OVERHEAD {
-        let result = std::panic::catch_unwind(|| CordBuffer::with_custom_limit(illegal, 10));
+        let result = std::panic::catch_unwind(|| CordBuffer::with_capacity_and_block_size(10, illegal));
         assert!(result.is_err(), "block_size={illegal} should have panicked");
-        let result = std::panic::catch_unwind(|| CordBuffer::maximum_payload_for(illegal));
-        assert!(result.is_err(), "maximum_payload_for({illegal}) should have panicked");
+        let result = std::panic::catch_unwind(|| CordBuffer::max_capacity_for(illegal));
+        assert!(result.is_err(), "max_capacity_for({illegal}) should have panicked");
         illegal *= 2;
     }
 }

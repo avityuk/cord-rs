@@ -46,12 +46,12 @@ fn cord_buffer_set_len_over_capacity_panics() {
 #[test]
 #[should_panic(expected = "exceed the available capacity")]
 fn put_slice_overflow_panics_on_heap_buffer() {
-    // `with_custom_limit` always allocates through `flat::new_large` (unlike
-    // `with_default_limit`, which stays inline for small requests), so this
-    // exercises `put_slice`'s heap (`Flat`) branch specifically, not the
-    // inline `Short` branch the crate's own internal unit test already
-    // covers.
-    let mut buffer = CordBuffer::with_custom_limit(64, 64);
+    // `with_capacity_and_block_size` always allocates through
+    // `flat::new_large` (unlike `with_capacity`, which stays inline for
+    // small requests), so this exercises `put_slice`'s heap (`Flat`) branch
+    // specifically, not the inline `Short` branch the crate's own internal
+    // unit test already covers.
+    let mut buffer = CordBuffer::with_capacity_and_block_size(64, 64);
     let overflow = vec![0u8; buffer.capacity() + 1];
     buffer.put_slice(&overflow);
 }

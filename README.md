@@ -25,7 +25,7 @@ assert_eq!(world, "world");
 cord.append(vec![b'!'; 4096]);
 
 // Zero-copy building through CordBuffer (e.g. read from a socket).
-let mut buffer = CordBuffer::with_default_limit(1024);
+let mut buffer = CordBuffer::with_capacity(1024);
 buffer.put_slice(b" tail");
 cord.append(buffer);
 
