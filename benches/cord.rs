@@ -242,8 +242,8 @@ fn bench_iterate(c: &mut Criterion) {
         b.iter(|| {
             let mut cursor = black_box(&tree).cursor();
             let mut n = 0;
-            while !cursor.is_empty() {
-                n += cursor.read(4096.min(cursor.remaining())).len();
+            while cursor.has_remaining() {
+                n += cursor.read_cord(4096.min(cursor.remaining())).len();
             }
             n
         });
@@ -470,7 +470,7 @@ fn bench_access(c: &mut Criterion) {
             let mut cursor = black_box(&small).cursor();
             let mut n = 0usize;
             while cursor.remaining() != 0 {
-                n += cursor.read(8.min(cursor.remaining())).len();
+                n += cursor.read_cord(8.min(cursor.remaining())).len();
             }
             n
         });

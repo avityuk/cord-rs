@@ -57,7 +57,7 @@ impl Buf for Cursor<'_> {
     }
 
     fn copy_to_bytes(&mut self, len: usize) -> Bytes {
-        Bytes::from(self.read(len))
+        Bytes::from(self.read_cord(len))
     }
 }
 

@@ -368,21 +368,21 @@ fn iteration_and_cursor() {
     let mut cursor = cord.cursor();
     assert_eq!(cursor.remaining(), data.len());
     assert_eq!(cursor.position(), 0);
-    let first = cursor.read(10);
+    let first = cursor.read_cord(10);
     check(&first, &data[..10]);
     assert_eq!(cursor.position(), 10);
     cursor.advance(500);
     assert_eq!(cursor.position(), 510);
-    let mid = cursor.read(3000);
+    let mid = cursor.read_cord(3000);
     check(&mid, &data[510..3510]);
     assert_eq!(cursor.peek(), Some(data[3510]));
     assert_eq!(cursor.next_byte(), Some(data[3510]));
     let rest: Vec<u8> = cursor.chunks().flatten().copied().collect();
     assert_eq!(rest, &data[3511..]);
-    let last = cursor.read(cursor.remaining());
+    let last = cursor.read_cord(cursor.remaining());
     check(&last, &data[3511..]);
-    assert!(cursor.is_empty());
-    assert_eq!(cursor.read(0), Cord::new());
+    assert!(!cursor.has_remaining());
+    assert_eq!(cursor.read_cord(0), Cord::new());
     assert_eq!(cursor.next_byte(), None);
 
     // io::Read / BufRead.

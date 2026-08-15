@@ -107,7 +107,7 @@ Cordz sampling / profiling layer and the CRC checksum node are not ported.
 | `Subcord(pos, n)`                     | `slice(range)`, `try_slice`, `split_off`, `split_to` |
 | `TryFlat` / `Flatten`                 | `as_flat` / `flatten`                           |
 | `Chunks()` / `Chars()`                | `chunks()` / `bytes()`                          |
-| `CharIterator` + `AdvanceAndRead`     | `cursor()` + `Cursor::read`                     |
+| `CharIterator` + `AdvanceAndRead`     | `cursor()` + `Cursor::read_cord`                |
 | `Compare` / `StartsWith` / ...        | `compare`, `starts_with`, `ends_with`, `contains`, `find`, `PartialEq`/`Ord` |
 | `operator[]`                          | `cord[i]`, `get(i)`                             |
 | `CopyCordToString` / `CopyCordToSpan` | `to_vec`, `copy_prefix_to`, `io::Read` on `Cursor` |

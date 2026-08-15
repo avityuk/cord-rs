@@ -990,7 +990,7 @@ fn try_flat_commonly_assumed_invariants() {
     for (fragment, sv) in c.chunks().enumerate() {
         let expected = fragments[fragment].as_bytes();
         let subcord1 = c.slice(offset..offset + sv.len());
-        let subcord2 = cursor.read(sv.len());
+        let subcord2 = cursor.read_cord(sv.len());
         assert_eq!(subcord1.as_flat(), Some(expected));
         assert_eq!(subcord2.as_flat(), Some(expected));
         offset += sv.len();
@@ -1881,22 +1881,22 @@ fn advance_and_read_on_data_edge() {
         let cord = if as_flat { Cord::from(&data[..]) } else { internal::make_external(&data) };
 
         let mut it = cord.cursor();
-        let frag = it.read(2000);
+        let frag = it.read_cord(2000);
         assert_eq!(frag, data);
-        assert!(it.is_empty());
+        assert!(!it.has_remaining());
 
         let mut it = cord.cursor();
-        let frag = it.read(200);
+        let frag = it.read_cord(200);
         assert_eq!(frag, &data[..200]);
-        assert!(!it.is_empty());
+        assert!(it.has_remaining());
 
-        let frag = it.read(1500);
+        let frag = it.read_cord(1500);
         assert_eq!(frag, &data[200..1700]);
-        assert!(!it.is_empty());
+        assert!(it.has_remaining());
 
-        let frag = it.read(300);
+        let frag = it.read_cord(300);
         assert_eq!(frag, &data[1700..2000]);
-        assert!(it.is_empty());
+        assert!(!it.has_remaining());
     }
 }
 
@@ -1905,7 +1905,7 @@ fn advance_and_read_on_data_edge() {
 fn advance_and_read_beyond_end_panics() {
     let cord = Cord::from(vec![b'x'; 2000]);
     let mut it = cord.cursor();
-    let _ = it.read(2001);
+    let _ = it.read_cord(2001);
 }
 
 #[test]
@@ -1918,29 +1918,29 @@ fn advance_and_read_on_substring_data_edge() {
         let substr = &data[200..2200];
 
         let mut it = cord.cursor();
-        let frag = it.read(2000);
+        let frag = it.read_cord(2000);
         assert_eq!(frag, substr);
-        assert!(it.is_empty());
+        assert!(!it.has_remaining());
 
         let mut it = cord.cursor();
-        let frag = it.read(200);
+        let frag = it.read_cord(200);
         assert_eq!(frag, &substr[..200]);
-        assert!(!it.is_empty());
+        assert!(it.has_remaining());
 
-        let frag = it.read(1500);
+        let frag = it.read_cord(1500);
         assert_eq!(frag, &substr[200..1700]);
-        assert!(!it.is_empty());
+        assert!(it.has_remaining());
 
-        let frag = it.read(300);
+        let frag = it.read_cord(300);
         assert_eq!(frag, &substr[1700..2000]);
-        assert!(it.is_empty());
+        assert!(!it.has_remaining());
     }
 }
 
 // --- Char iteration --------------------------------------------------------------------
 
 fn verify_char_iterator(cord: &Cord) {
-    assert_eq!(cord.cursor().is_empty(), cord.is_empty());
+    assert_eq!(!cord.cursor().has_remaining(), cord.is_empty());
     assert_eq!(cord.cursor().remaining(), cord.len());
     assert_eq!(cord.bytes().len(), cord.len());
 
@@ -1948,7 +1948,7 @@ fn verify_char_iterator(cord: &Cord) {
     let mut i = 0;
     let mut pre_iter = cord.cursor();
     let mut post_iter = cord.bytes();
-    while !pre_iter.is_empty() {
+    while pre_iter.has_remaining() {
         assert!(i < cord.len());
         assert_eq!(content[i], pre_iter.peek().unwrap());
         assert_eq!(pre_iter.position(), i);
@@ -1964,18 +1964,18 @@ fn verify_char_iterator(cord: &Cord) {
         assert_eq!(advance_iter.chunk(), pre_iter.chunk());
 
         let mut advance_iter = cord.cursor();
-        assert_eq!(advance_iter.read(i), cord.slice(..i));
+        assert_eq!(advance_iter.read_cord(i), cord.slice(..i));
         assert_eq!(advance_iter.position(), i);
 
         let mut advance_iter = pre_iter.clone();
         advance_iter.advance(cord.len() - i);
-        assert!(advance_iter.is_empty());
+        assert!(!advance_iter.has_remaining());
         assert_eq!(advance_iter.position(), cord.len());
         assert_eq!(advance_iter.remaining(), 0);
 
         let mut advance_iter = pre_iter.clone();
-        assert_eq!(advance_iter.read(cord.len() - i), cord.slice(i..));
-        assert!(advance_iter.is_empty());
+        assert_eq!(advance_iter.read_cord(cord.len() - i), cord.slice(i..));
+        assert!(!advance_iter.has_remaining());
 
         i += 1;
         assert_eq!(pre_iter.next_byte(), Some(content[i - 1]));
@@ -1987,7 +1987,7 @@ fn verify_char_iterator(cord: &Cord) {
     let mut zero_advanced_end = cord.cursor();
     zero_advanced_end.advance(cord.len());
     zero_advanced_end.advance(0);
-    assert!(zero_advanced_end.is_empty());
+    assert!(!zero_advanced_end.has_remaining());
 
     let mut it = cord.cursor();
     for chunk in cord.chunks() {
@@ -2057,7 +2057,7 @@ fn char_iterator_advance_and_read() {
             assert_eq!(it.remaining(), it_remaining);
             assert_eq!(it.position(), it_advanced);
             let n = (data.len() - offset).min(chunk_size);
-            let chunk = it.read(n);
+            let chunk = it.read_cord(n);
             assert_eq!(chunk.len(), n);
             assert_eq!(chunk.compare(&data[offset..offset + n]), std::cmp::Ordering::Equal);
             offset += n;
@@ -2410,7 +2410,7 @@ fn factories_and_mutators() {
 
             let mut char_it = cc3.cursor();
             char_it.advance(2);
-            assert_eq!(char_it.read(2), "cd");
+            assert_eq!(char_it.read_cord(2), "cd");
             assert_eq!(char_it.peek(), Some(b'e'));
             let mut char_it = cc3.cursor();
             char_it.advance(2);

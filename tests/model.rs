@@ -244,7 +244,7 @@ proptest! {
                     let (x, y) = range(*a, *b, oracles[*s].len());
                     let mut cursor = cords[*s].cursor();
                     cursor.advance(x);
-                    let read = cursor.read(y - x);
+                    let read = cursor.read_cord(y - x);
                     assert_eq!(cursor.position(), y);
                     assert_eq!(cursor.remaining(), oracles[*s].len() - y);
                     let rest: Vec<u8> = cursor.chunks().flatten().copied().collect();

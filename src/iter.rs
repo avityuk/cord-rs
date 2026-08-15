@@ -250,7 +250,7 @@ impl<'a> Chunks<'a> {
         // whenever `btree_reader` stays empty and the cord holds a tree, and
         // nothing clears it afterwards) — the only path that can reach
         // `read_bytes` at all, since `Cursor` (this fn's sole caller via
-        // `Cursor::read`) is only ever built over a `Cord` by `Cursor::new`.
+        // `Cursor::read_cord`) is only ever built over a `Cord` by `Cursor::new`.
         // `Chunks::single` (used by `CordLike::chunks`, e.g. `&[u8]`) leaves
         // `current_leaf` unset, but a `Cursor` is never built over one, so
         // that state can't reach here; `expect` (not the unchecked cousin)
@@ -404,14 +404,14 @@ impl core::iter::FusedIterator for Bytes<'_> {}
 /// `Cursor` does not implement [`Iterator`]: `take`/`by_ref` would be
 /// ambiguous with the `bytes::Buf` and `std::io::Read` methods of the same
 /// name, and per-byte iteration belongs to [`Cord::bytes`] instead. Use
-/// [`next_byte`](Self::next_byte), [`read`](Self::read),
+/// [`next_byte`](Self::next_byte), [`read_cord`](Self::read_cord),
 /// [`advance`](Self::advance) or [`peek`](Self::peek) here.
 ///
 /// ```
 /// use cord_rs::Cord;
 /// let cord = Cord::from("header:payload");
 /// let mut cursor = cord.cursor();
-/// let header = cursor.read(7);
+/// let header = cursor.read_cord(7);
 /// assert_eq!(header, "header:");
 /// assert_eq!(cursor.position(), 7);
 /// assert_eq!(cursor.chunk(), b"payload");
@@ -442,11 +442,15 @@ impl<'a> Cursor<'a> {
         self.len - self.chunks.bytes_remaining
     }
 
-    /// Returns `true` if the cursor is at the end.
+    /// Returns `true` if at least one byte remains after the cursor.
+    ///
+    /// With the `bytes` feature enabled, this shadows the
+    /// identically-behaved `bytes::Buf::has_remaining` also implemented for
+    /// `Cursor`.
     #[inline]
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.chunks.bytes_remaining == 0
+    pub fn has_remaining(&self) -> bool {
+        self.chunks.bytes_remaining != 0
     }
 
     /// The longest contiguous run of bytes starting at the cursor (empty at
@@ -483,11 +487,14 @@ impl<'a> Cursor<'a> {
     /// Reads the next `n` bytes into a new cord and advances past them.
     /// The returned cord shares memory with the source where possible.
     ///
+    /// Named `read_cord` rather than `read` because `Cursor` also implements
+    /// [`std::io::Read`], whose `read` fills a caller-provided buffer.
+    ///
     /// # Panics
     ///
     /// Panics if `n > remaining()`.
     #[track_caller]
-    pub fn read(&mut self, n: usize) -> Cord {
+    pub fn read_cord(&mut self, n: usize) -> Cord {
         assert!(
             n <= self.chunks.bytes_remaining,
             "cannot read past the end of a Cord: n = {n}, remaining = {}",
