@@ -1562,6 +1562,16 @@ fn cord_memory_usage_global_external_capacity() {
 }
 
 #[test]
+fn cord_memory_usage_generic_external_length() {
+    let owner: Arc<[u8]> = Arc::from(vec![b'x'; 1024]);
+    let cord = Cord::from(owner);
+    let expected = SIZEOF_CORD + cord.len() + internal::EXTERNAL_NODE_SIZE;
+    assert_eq!(cord.estimated_memory_usage(TOTAL), expected);
+    assert_eq!(cord.estimated_memory_usage(FAIR_SHARE), expected);
+    assert_eq!(cord.estimated_memory_usage(TOTAL_MORE_PRECISE), expected);
+}
+
+#[test]
 fn cord_memory_usage_flat() {
     let cord = make_cord(1000, b'a');
     let flat_size = internal::flat_allocated_size(&cord).unwrap();

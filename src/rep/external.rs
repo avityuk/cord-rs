@@ -301,6 +301,9 @@ impl CordRepExternal {
 /// from `Box::into_raw`, whose reference count has just reached zero; `ext`
 /// must not be used again afterwards.
 unsafe fn release<O>(ext: *mut CordRepExternal) {
+    // SAFETY: `ext` points to a live external header per this function's
+    // contract, so its representation marker may be read.
+    debug_assert_ne!(unsafe { (*ext).rep.storage[0] }, GLOBAL_EXTERNAL);
     // SAFETY: `ext` is the live, uniquely owned `ext` field of a
     // `CordRepExternalImpl<O>` box per this fn's contract, so casting back
     // to the enclosing `CordRepExternalImpl<O>` (repr(C), `ext` is the first
@@ -317,6 +320,9 @@ unsafe fn release<O>(ext: *mut CordRepExternal) {
 /// `ext` must point to a uniquely owned live `CordRepExternalGlobal` whose
 /// reference count has reached zero.
 unsafe fn release_global(ext: *mut CordRepExternal) {
+    // SAFETY: `ext` points to a live external header per this function's
+    // contract, so its representation marker may be read.
+    debug_assert_eq!(unsafe { (*ext).rep.storage[0] }, GLOBAL_EXTERNAL);
     let node = ext.cast::<CordRepExternalGlobal>();
     // Copy everything needed before either allocation is released.
     let base = unsafe { (*ext).base.cast_mut() };
