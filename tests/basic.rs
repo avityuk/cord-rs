@@ -561,70 +561,13 @@ fn write_extend_and_formatting() {
     expected.extend_from_slice(&[b'c'; 1000]);
     check(&cord, &expected);
     assert_eq!(format!("{:?}", Cord::from(b"a\"b\n\xff")), "b\"a\\\"b\\n\\xff\"");
-    assert_eq!(Cord::from("héllo wörld").to_string(), "héllo wörld");
-    assert_eq!(Cord::from(b"a\xffb").to_string(), "a\u{FFFD}b");
-    // Multi-byte characters split across chunks decode correctly.
-    let text = "🦀 ünïcödé 🦀 ".repeat(200);
-    let bytes = text.as_bytes();
-    for chunk_size in [1usize, 2, 3, 5, 7, 16, 100] {
-        let mut c = Cord::new();
-        for chunk in bytes.chunks(chunk_size) {
-            c.append(chunk);
-        }
-        assert_eq!(c.to_string(), text, "chunk size {chunk_size}");
-    }
-    let mut invalid = Cord::new();
-    for chunk in b"ok\xf0\x9f\xa6\x80x\xe2\x82y\xf0\x9fz\xff".chunks(3) {
-        invalid.append(chunk);
-    }
-    assert_eq!(invalid.to_string(), String::from_utf8_lossy(&invalid.to_vec()));
+    let s: String = Cord::from("héllo wörld").try_into().unwrap();
+    assert_eq!(s, "héllo wörld");
     let s: String = Cord::from("utf8").try_into().unwrap();
     assert_eq!(s, "utf8");
     assert!(String::try_from(Cord::from(b"\xff")).is_err());
     let v: Vec<u8> = Cord::from("vec").into();
     assert_eq!(v, b"vec");
-}
-
-#[test]
-fn display_honors_formatter_flags() {
-    // Unflagged: the fast streaming path, matches plain `to_string`/`str`.
-    let cord = Cord::from("hello");
-    assert_eq!(format!("{cord}"), "hello");
-    assert_eq!(format!("{cord}"), "hello".to_string());
-
-    // Width (default alignment), explicit alignments, and a custom fill
-    // character all match `str`'s `Display`.
-    assert_eq!(format!("[{cord:10}]"), format!("[{:10}]", "hello"));
-    assert_eq!(format!("[{cord:>10}]"), format!("[{:>10}]", "hello"));
-    assert_eq!(format!("[{cord:<10}]"), format!("[{:<10}]", "hello"));
-    assert_eq!(format!("[{cord:^10}]"), format!("[{:^10}]", "hello"));
-    assert_eq!(format!("[{cord:*^11}]"), format!("[{:*^11}]", "hello"));
-    assert_eq!(format!("[{cord:0>8}]"), format!("[{:0>8}]", "hello"));
-    // Width narrower than the content has no truncating effect, like `str`.
-    assert_eq!(format!("[{cord:>2}]"), format!("[{:>2}]", "hello"));
-    // Sanity check against a concrete expected value too, not just parity
-    // with `str`.
-    assert_eq!(format!("[{cord:>6}]"), "[ hello]");
-
-    // Precision truncates decoded characters, alone and combined with width.
-    assert_eq!(format!("[{cord:.3}]"), format!("[{:.3}]", "hello"));
-    assert_eq!(format!("[{cord:>6.3}]"), format!("[{:>6.3}]", "hello"));
-
-    // A multi-chunk (btree) cord exercises the materializing slow path
-    // across chunk boundaries, both for width and for precision.
-    let mut big = Cord::from(vec![b'a'; 4000]);
-    big.append(vec![b'b'; 4000]);
-    let expected = "a".repeat(4000) + &"b".repeat(4000);
-    assert_eq!(format!("{big}"), expected);
-    assert_eq!(format!("[{big:>8005}]"), format!("[{:>8005}]", expected));
-    assert_eq!(format!("[{big:.5}]"), format!("[{:.5}]", expected));
-
-    // Lossy replacement combines correctly with precision/width: truncation
-    // and padding operate on the decoded (already-lossy) text.
-    let lossy = Cord::from(&b"a\xffb"[..]);
-    assert_eq!(lossy.to_string(), "a\u{FFFD}b");
-    assert_eq!(format!("[{lossy:.2}]"), format!("[{:.2}]", "a\u{FFFD}b"));
-    assert_eq!(format!("[{lossy:>6}]"), format!("[{:>6}]", "a\u{FFFD}b"));
 }
 
 #[test]

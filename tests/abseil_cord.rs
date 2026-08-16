@@ -522,7 +522,7 @@ fn verify_copy_to_string(cord: &Cord) {
     has_initial_contents.extend(cord.chunks().flatten());
     assert_eq!(*cord, has_initial_contents);
     let string: Result<String, _> = cord.clone().try_into();
-    assert_eq!(string.unwrap(), cord.to_string());
+    assert_eq!(string.unwrap(), String::from_utf8(cord.to_vec()).unwrap());
 }
 
 #[test]
@@ -2071,8 +2071,9 @@ fn char_iterator_advance_and_read() {
 #[test]
 fn streaming_output() {
     let c = make_fragmented_cord(["A ", "small ", "fragmented ", "Cord", "."]);
-    assert_eq!(c.to_string(), "A small fragmented Cord.");
-    assert_eq!(format!("{c}"), "A small fragmented Cord.");
+    let mut out = Vec::new();
+    std::io::Write::write_all(&mut out, &c.to_vec()).unwrap();
+    assert_eq!(out, b"A small fragmented Cord.");
 }
 
 #[test]
@@ -2111,7 +2112,7 @@ fn format() {
 #[test]
 fn stringify() {
     let c = make_fragmented_cord(["A ", "small ", "fragmented ", "Cord", "."]);
-    assert_eq!(c.to_string(), "A small fragmented Cord.");
+    assert_eq!(String::try_from(c).unwrap(), "A small fragmented Cord.");
 }
 
 #[test]

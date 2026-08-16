@@ -1880,31 +1880,17 @@ impl<const N: usize> PartialEq<Cord> for &[u8; N] {
 
 impl fmt::Debug for Cord {
     /// Formats the bytes as a byte string literal, e.g. `b"hello\n"`.
+    ///
+    /// `Cord` has no `Display` impl: its contents are arbitrary bytes.
+    /// Use `Debug`, or convert to a `String` explicitly
+    /// ([`TryFrom<Cord>`](String) for lossless, `String::from_utf8_lossy`
+    /// on [`to_vec`](Self::to_vec) for lossy).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("b\"")?;
         for chunk in self.chunks() {
             write!(f, "{}", chunk.escape_ascii())?;
         }
         f.write_str("\"")
-    }
-}
-
-impl fmt::Display for Cord {
-    /// Formats the bytes as UTF-8, replacing invalid sequences with
-    /// `U+FFFD` (like `String::from_utf8_lossy`). Honors width, fill,
-    /// alignment and precision the same way `str`'s `Display` does; the
-    /// common case (none of those set) streams the decoded text straight to
-    /// the sink without allocating.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if f.width().is_none() && f.precision().is_none() && f.align().is_none() && !f.sign_aware_zero_pad() {
-            return crate::io::fmt_lossy(self.chunks(), f);
-        }
-        // A flag that affects layout is set: materialize the lossy string so
-        // `f.pad` can apply width/fill/align/precision the way it would for
-        // a plain `&str`.
-        let mut decoded = String::with_capacity(self.len());
-        crate::io::fmt_lossy(self.chunks(), &mut decoded)?;
-        f.pad(&decoded)
     }
 }
 
@@ -2042,6 +2028,7 @@ impl TryFrom<Cord> for String {
     type Error = std::string::FromUtf8Error;
 
     /// Copies the bytes into a `String`, failing if they are not valid UTF-8.
+    /// For a lossy conversion use `String::from_utf8_lossy(&cord.to_vec())`.
     #[inline]
     fn try_from(cord: Cord) -> Result<Self, Self::Error> {
         String::from_utf8(cord.to_vec())

@@ -111,7 +111,7 @@ Cordz sampling / profiling layer and the CRC checksum node are not ported.
 | `Compare` / `StartsWith` / ...        | `compare`, `starts_with`, `ends_with`, `contains`, `find`, `PartialEq`/`Ord` |
 | `operator[]`                          | `cord[i]`, `get(i)`                             |
 | `CopyCordToString` / `CopyCordToSpan` | `to_vec`, `copy_prefix_to`, `io::Read` on `Cursor` |
-| `AbslFormatFlush` / `operator<<`      | `fmt::Write`, `io::Write`, `Display`            |
+| `AbslFormatFlush` / `operator<<`      | `fmt::Write`, `io::Write`                       |
 
 </details>
 

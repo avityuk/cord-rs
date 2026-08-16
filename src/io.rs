@@ -5,7 +5,7 @@ use std::io;
 
 use crate::buffer::CordBuffer;
 use crate::cord::Cord;
-use crate::iter::{Chunks, Cursor};
+use crate::iter::Cursor;
 
 impl io::Write for Cord {
     /// Appends `buf` to the cord. Never fails and never writes partially.
@@ -88,73 +88,4 @@ impl io::BufRead for Cursor<'_> {
     fn consume(&mut self, amt: usize) {
         self.advance(amt);
     }
-}
-
-/// Writes the chunks as UTF-8, replacing invalid sequences with `U+FFFD`
-/// (like `String::from_utf8_lossy`) and correctly decoding characters that
-/// span chunk boundaries. Generic over the sink so callers can either stream
-/// straight to a [`fmt::Formatter`] without allocating, or collect into a
-/// `String` (e.g. to then go through `Formatter::pad`).
-pub(crate) fn fmt_lossy<W: fmt::Write>(chunks: Chunks<'_>, f: &mut W) -> fmt::Result {
-    /// Decodes `buf`, storing an incomplete trailing sequence in `carry`.
-    fn decode<W: fmt::Write>(
-        buf: &[u8],
-        carry: &mut [u8; 4],
-        carry_len: &mut usize,
-        f: &mut W,
-    ) -> fmt::Result {
-        let mut chunks = buf.utf8_chunks().peekable();
-        while let Some(chunk) = chunks.next() {
-            f.write_str(chunk.valid())?;
-            let invalid = chunk.invalid();
-            if invalid.is_empty() {
-                continue;
-            }
-            if chunks.peek().is_some() {
-                // An invalid chunk that isn't the last one in `buf` is
-                // always a genuine error, never an incomplete sequence
-                // (more bytes followed it and still didn't extend it).
-                f.write_char(char::REPLACEMENT_CHARACTER)?;
-            } else if core::str::from_utf8(invalid).unwrap_err().error_len().is_none() {
-                // Incomplete sequence at the end of `buf`: keep it.
-                carry[..invalid.len()].copy_from_slice(invalid);
-                *carry_len = invalid.len();
-            } else {
-                f.write_char(char::REPLACEMENT_CHARACTER)?;
-            }
-        }
-        Ok(())
-    }
-
-    let mut carry = [0u8; 4];
-    let mut carry_len = 0;
-    for chunk in chunks {
-        let mut rest = chunk;
-        // Complete (or reject) a pending sequence using at most the bytes
-        // needed for a maximal UTF-8 character. Rejecting it may leave a new
-        // partial sequence from the taken bytes, hence the loop; every
-        // iteration consumes at least one byte of `rest`.
-        while carry_len > 0 && !rest.is_empty() {
-            let take = (4 - carry_len).min(rest.len());
-            // `carry_len` is always < 4 here (a complete 4-byte carry would
-            // already have been decoded) and `take <= 4 - carry_len`, so the
-            // combined sequence never exceeds 4 bytes — the longest possible
-            // UTF-8 character.
-            let mut tmp = [0u8; 4];
-            tmp[..carry_len].copy_from_slice(&carry[..carry_len]);
-            tmp[carry_len..carry_len + take].copy_from_slice(&rest[..take]);
-            let tmp_len = carry_len + take;
-            rest = &rest[take..];
-            carry_len = 0;
-            decode(&tmp[..tmp_len], &mut carry, &mut carry_len, f)?;
-        }
-        if !rest.is_empty() {
-            debug_assert_eq!(carry_len, 0);
-            decode(rest, &mut carry, &mut carry_len, f)?;
-        }
-    }
-    if carry_len > 0 {
-        f.write_char(char::REPLACEMENT_CHARACTER)?;
-    }
-    Ok(())
 }

@@ -178,7 +178,11 @@ fn deep_check(cord: &Cord, expected: &[u8], step: usize, a: f64, b: f64) {
     let mut copy = vec![0u8; len / 2];
     assert_eq!(cord.copy_prefix_to(&mut copy), len / 2);
     assert_eq!(&copy[..], &expected[..len / 2]);
-    assert_eq!(cord.to_string(), String::from_utf8_lossy(expected), "step {step}: display");
+    assert_eq!(
+        String::try_from(cord.clone()).ok(),
+        String::from_utf8(expected.to_vec()).ok(),
+        "step {step}: string"
+    );
 }
 
 proptest! {
