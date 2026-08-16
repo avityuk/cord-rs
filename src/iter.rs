@@ -1,4 +1,10 @@
-//! Iterators over the contents of a [`Cord`].
+//! Iterators over the contents of a [`Cord`]: [`Chunks`] yields contiguous
+//! byte slices, [`Bytes`] yields individual bytes, and [`Cursor`] is a
+//! positioned reader supporting skipping, `std::io::Read`, and cheap
+//! sub-cord extraction. Not re-exported at the crate root — `Bytes` and
+//! `Cursor` would collide with `bytes::Bytes` and `std::io::Cursor`, so
+//! (like `str::Bytes`, `slice::Chunks` and `io::Cursor` in `std`) they stay
+//! reachable through this module.
 
 use core::marker::PhantomData;
 

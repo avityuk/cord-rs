@@ -62,8 +62,9 @@
 //!
 //! # Features
 //!
-//! * `bytes` — `bytes::Buf` for [`Cord`] and [`Cursor`], `bytes::BufMut`
-//!   for [`CordWriter`], and zero-copy conversions with `bytes::Bytes`.
+//! * `bytes` — `bytes::Buf` for [`Cord`] and [`Cursor`](crate::iter::Cursor),
+//!   `bytes::BufMut` for [`CordWriter`], and zero-copy conversions with
+//!   `bytes::Bytes`.
 //! * `serde` — `Serialize` / `Deserialize` for [`Cord`] as a byte sequence.
 //!
 //! [`absl::Cord`]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
@@ -87,7 +88,6 @@ mod serde_impl;
 
 pub use buffer::CordBuffer;
 pub use cord::{Cord, MemoryAccounting};
-pub use iter::{Bytes, Chunks, Cursor};
 pub use source::{CordLike, CordSource};
 
 #[cfg(feature = "bytes")]
@@ -109,9 +109,9 @@ const fn assert_send_sync<T: ?Sized + Send + Sync>() {}
 const _: () = {
     assert_send_sync::<Cord>();
     assert_send_sync::<CordBuffer>();
-    assert_send_sync::<Chunks<'_>>();
-    assert_send_sync::<Cursor<'_>>();
-    assert_send_sync::<Bytes<'_>>();
+    assert_send_sync::<crate::iter::Chunks<'_>>();
+    assert_send_sync::<crate::iter::Cursor<'_>>();
+    assert_send_sync::<crate::iter::Bytes<'_>>();
 };
 
 #[cfg(feature = "bytes")]
