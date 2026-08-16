@@ -97,7 +97,7 @@ mod bytes_feature {
         assert_eq!(bytes.as_ptr(), ptr);
         assert_eq!(&bytes[..], &expected[..1000]);
         // Cords compare with Bytes.
-        assert!(Cord::from("xyz").equals(&Bytes::from_static(b"xyz")));
+        assert_eq!(Cord::from("xyz"), Bytes::from_static(b"xyz"));
         assert_eq!(Cord::from("xyz").find(&Bytes::from_static(b"z")), Some(2));
     }
 

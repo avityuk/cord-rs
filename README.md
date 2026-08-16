@@ -66,7 +66,7 @@ Naming follows the [`bytes`] crate where a convention exists: `append` /
 [`CordSource`]), `advance`, `truncate`, `slice`, `try_slice`, `split_off`,
 `split_to`, `as_contiguous`, `make_contiguous`, `chunks()`, `bytes()`, `cursor()` (chunked
 reading, skipping, sub-cord extraction), `find`, `starts_with` / `ends_with` /
-`contains`, `compare`/`equals` plus `PartialEq`/`Ord` against slices, strings
+`contains`, `compare` plus `PartialEq`/`Ord` against slices, strings
 and cords, `Hash` (chunk-layout independent), `Index`, `Extend`,
 `FromIterator`, `io::Write`/`fmt::Write`, and `take_append_buffer` for
 reusing a cord's spare capacity. Out-of-range indices and ranges panic, like

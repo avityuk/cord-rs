@@ -1831,7 +1831,6 @@ fn verify_chunk_iterator(cord: &Cord, expected_chunks: usize) {
     assert_eq!(pos, content.len());
     assert!(post_iter.next().is_none());
     assert_eq!(cord.chunks().count(), expected_chunks);
-    assert_eq!(cord.into_iter().count(), expected_chunks);
 }
 
 #[test]

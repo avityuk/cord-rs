@@ -168,9 +168,9 @@ impl CordSource for bytes::Bytes {
 /// [`Cord`], `[u8]`, `str`, `Vec<u8>`, `String`, `[u8; N]`, [`CordBuffer`]
 /// and references to those.
 ///
-/// Used by [`Cord::compare`], [`Cord::equals`], [`Cord::starts_with`],
-/// [`Cord::ends_with`], [`Cord::contains`], [`Cord::find`] and the
-/// `PartialEq` / `PartialOrd` impls.
+/// Used by [`Cord::compare`], [`Cord::starts_with`], [`Cord::ends_with`],
+/// [`Cord::contains`], [`Cord::find`] and the `PartialEq` / `PartialOrd`
+/// impls.
 ///
 /// This trait is sealed and cannot be implemented outside this crate.
 #[diagnostic::on_unimplemented(

@@ -1278,6 +1278,10 @@ impl Cord {
     /// Every yielded chunk is non-empty. Iterating chunks is the most
     /// efficient way to process a cord's data.
     ///
+    /// `Cord` deliberately has no `IntoIterator` impl: a cord has two
+    /// equally natural iteration units, bytes and chunks, so pick one
+    /// explicitly with [`chunks`](Self::chunks) or [`bytes`](Self::bytes).
+    ///
     /// ```
     /// use cord_rs::Cord;
     /// let cord = Cord::from("hello");
@@ -1494,7 +1498,10 @@ impl Cord {
     }
 
     /// Returns `true` if the cord's bytes equal those of `rhs`.
-    pub fn equals<R: CordLike + ?Sized>(&self, rhs: &R) -> bool {
+    ///
+    /// Backs the `PartialEq` impls below; callers outside the crate should
+    /// use `==` instead.
+    pub(crate) fn equals<R: CordLike + ?Sized>(&self, rhs: &R) -> bool {
         let rhs_size = rhs.len();
         if self.len() != rhs_size {
             return false;
@@ -2097,24 +2104,5 @@ impl FromIterator<u8> for Cord {
         let mut cord = Cord::new();
         cord.extend(iter);
         cord
-    }
-}
-
-#[expect(
-    clippy::into_iter_without_iter,
-    reason = "the conventional `Cord::iter` alias was deliberately removed (untested, and ambiguous \
-              with std's element-iterator convention); `chunks` is the discoverable inherent method"
-)]
-impl<'a> IntoIterator for &'a Cord {
-    /// A contiguous chunk of the cord's bytes (the same as
-    /// [`chunks`](Cord::chunks) yields), not a single byte.
-    type Item = &'a [u8];
-    type IntoIter = Chunks<'a>;
-
-    /// Same as [`chunks`](Cord::chunks): iterates over the cord's
-    /// contiguous byte chunks, not its individual bytes.
-    #[inline]
-    fn into_iter(self) -> Chunks<'a> {
-        self.chunks()
     }
 }

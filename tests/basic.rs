@@ -401,7 +401,6 @@ fn iteration_and_cursor() {
     assert_eq!(cord.bytes().nth(4567), Some(data[4567]));
     assert_eq!(cord.bytes().count(), data.len());
     assert_eq!(cord.bytes().len(), data.len());
-    assert_eq!((&cord).into_iter().count(), cord.chunks().count());
     // `Cursor` doesn't implement `Iterator` (see its doc comment); use
     // `advance`/`next_byte` for the same "skip then read one, then confirm
     // exhaustion" check `nth`/`next` performed before the removal.
