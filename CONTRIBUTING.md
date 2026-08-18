@@ -220,8 +220,9 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
   `small_u8`, `height_to_isize`), not blanket `allow`s. Test files may allow the
   small-integer cast lints at file level with a reason.
 - **API.** Idiomatic Rust modeled on the `bytes` crate; out-of-range indices and
-  ranges panic, with `get` / `try_slice` as the non-panicking forms. New public
-  items need docs and, where useful, a doctest.
+  ranges panic, with `get` as the non-panicking form (covering both indices and
+  ranges via the sealed `CordIndex` trait). New public items need docs and,
+  where useful, a doctest.
 - **Portability.** Keep 32-bit and big-endian targets working: no assumptions
   about pointer width beyond what `InlineData`/`CordBuffer` encode explicitly.
 

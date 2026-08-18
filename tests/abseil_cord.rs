@@ -497,9 +497,9 @@ fn subcord() {
     }
 
     // Asking for too much is an error in Rust (abseil clamps).
-    assert!(a.try_slice(0..=a.len()).is_none());
-    assert!(a.try_slice((a.len() + 1)..=a.len()).is_none());
-    assert!(a.try_slice(a.len()..a.len()).unwrap().is_empty());
+    assert!(a.get(0..=a.len()).is_none());
+    assert!(a.get((a.len() + 1)..=a.len()).is_none());
+    assert!(a.get(a.len()..a.len()).unwrap().is_empty());
 }
 
 #[test]

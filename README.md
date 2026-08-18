@@ -63,14 +63,14 @@ access (`cord[i]`) is O(log n).
 
 Naming follows the [`bytes`] crate where a convention exists: `append` /
 `prepend` (accepting slices, strings, cords, owned buffers — see
-[`CordSource`]), `advance`, `truncate`, `slice`, `try_slice`, `split_off`,
+[`CordSource`]), `advance`, `truncate`, `slice`, `split_off`,
 `split_to`, `as_contiguous`, `make_contiguous`, `chunks()`, `bytes()`, `cursor()` (chunked
 reading, skipping, sub-cord extraction), `find`, `starts_with` / `ends_with` /
 `contains`, `compare` plus `PartialEq`/`Ord` against slices, strings
 and cords, `Hash` (chunk-layout independent), `Index`, `Extend`,
 `FromIterator`, `io::Write`/`fmt::Write`, and `take_append_buffer` for
 reusing a cord's spare capacity. Out-of-range indices and ranges panic, like
-`Vec` and `bytes::Bytes`; `get` and `try_slice` are the non-panicking forms.
+`Vec` and `bytes::Bytes`; `get` covers both.
 
 Cargo features:
 
@@ -104,7 +104,7 @@ Cordz sampling / profiling layer and the CRC checksum node are not ported.
 | `GetAppendBuffer`                     | `take_append_buffer`, `take_append_buffer_with` |
 | `RemovePrefix(n)`                     | `advance(n)`                                    |
 | `RemoveSuffix(n)`                     | `truncate(len - n)`                             |
-| `Subcord(pos, n)`                     | `slice(range)`, `try_slice`, `split_off`, `split_to` |
+| `Subcord(pos, n)`                     | `slice(range)`, `get(range)`, `split_off`, `split_to` |
 | `TryFlat` / `Flatten`                 | `as_contiguous` / `make_contiguous`             |
 | `Chunks()` / `Chars()`                | `chunks()` / `bytes()`                          |
 | `CharIterator` + `AdvanceAndRead`     | `cursor()` + `Cursor::read_cord`                |

@@ -16,7 +16,7 @@ use crate::rep::flat::{self, MAX_FLAT_LENGTH};
 use crate::rep::{
     self, CordRep, CordRepSubstring, MAX_BYTES_TO_COPY, MAX_INLINE, OwnedRep, RepPtr, RepRef, unref,
 };
-use crate::source::{CordLike, CordSource};
+use crate::source::{CordIndex, CordLike, CordSource};
 
 /// Memory accounting modes for [`Cord::estimated_memory_usage`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -70,8 +70,8 @@ pub enum MemoryAccounting {
 /// # Bounds checking
 ///
 /// Like `Vec` and `bytes::Bytes`, methods taking indices or ranges panic when
-/// out of bounds; non-panicking variants are provided where useful
-/// ([`get`](Self::get), [`try_slice`](Self::try_slice)).
+/// out of bounds; [`get`](Self::get) is the non-panicking variant, covering
+/// both indices and ranges.
 ///
 /// [`absl::Cord`]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
 #[repr(transparent)]
@@ -1101,6 +1101,8 @@ impl Cord {
     /// Returns a new cord holding the bytes in `range`, sharing memory with
     /// this cord where possible (small results are copied).
     ///
+    /// Non-panicking version: [`get`](Self::get).
+    ///
     /// # Panics
     ///
     /// Panics if the range is out of bounds or if `start > end`.
@@ -1119,17 +1121,9 @@ impl Cord {
         self.subcord(pos, new_size)
     }
 
-    /// Non-panicking version of [`slice`](Self::slice): returns `None` if the
-    /// range is out of bounds.
-    #[must_use]
-    pub fn try_slice(&self, range: impl RangeBounds<usize>) -> Option<Cord> {
-        let (pos, new_size) = try_resolve_range(range, self.len())?;
-        Some(self.subcord(pos, new_size))
-    }
-
     /// Returns the `new_size` bytes starting at `pos`. Requires bounds to be
     /// checked.
-    fn subcord(&self, pos: usize, new_size: usize) -> Cord {
+    pub(crate) fn subcord(&self, pos: usize, new_size: usize) -> Cord {
         debug_assert!(pos <= self.len() && new_size <= self.len() - pos);
         if new_size == 0 {
             return Cord::new();
@@ -1311,12 +1305,36 @@ impl Cord {
         Cursor::new(self)
     }
 
-    /// Returns the byte at `index`, or `None` if out of bounds.
+    /// Returns the byte at `index` (`usize`), or a sub-cord holding the
+    /// bytes in `index` that shares memory with this cord (a range), or
+    /// `None` if out of bounds.
     ///
-    /// Random access is O(log n) in the number of chunks; use iteration for
-    /// sequential access.
+    /// Byte access is O(log n) in the number of chunks; use iteration for
+    /// sequential access. Range access is likewise O(log n).
+    ///
+    /// [`slice`](Self::slice) is the panicking counterpart; indexing with
+    /// `cord[i]` (via [`Index`]) also panics on an out-of-range `i`.
+    ///
+    /// ```
+    /// use cord_rs::Cord;
+    /// let cord = Cord::from("hello");
+    /// assert_eq!(cord.get(1), Some(b'e'));
+    /// assert_eq!(cord.get(1..3), Some(Cord::from("el")));
+    /// assert_eq!(cord.get(..), Some(Cord::from("hello")));
+    /// assert_eq!(cord.get(5..), Some(Cord::from("")));
+    /// assert_eq!(cord.get(10), None);
+    /// assert_eq!(cord.get(10..12), None);
+    /// ```
+    #[inline]
     #[must_use]
-    pub fn get(&self, index: usize) -> Option<u8> {
+    pub fn get<I: CordIndex>(&self, index: I) -> Option<I::Output> {
+        index.get(self)
+    }
+
+    /// Returns the byte at `index`, or `None` if out of bounds. The `usize`
+    /// arm of [`Cord::get`], reached through [`CordIndex`](crate::source::CordIndex).
+    #[inline]
+    pub(crate) fn get_byte(&self, index: usize) -> Option<u8> {
         if index >= self.len() {
             return None;
         }
@@ -1709,7 +1727,10 @@ fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> (usize, usize) {
     (start, end - start)
 }
 
-fn try_resolve_range(range: impl RangeBounds<usize>, len: usize) -> Option<(usize, usize)> {
+/// Like [`resolve_range`], but returns `None` instead of panicking when the
+/// range is out of bounds. Used by [`CordIndex`](crate::source::CordIndex)'s
+/// range impls, which back [`Cord::get`].
+pub(crate) fn try_resolve_range(range: impl RangeBounds<usize>, len: usize) -> Option<(usize, usize)> {
     let start = match range.start_bound() {
         Bound::Included(&s) => s,
         Bound::Excluded(&s) => s.checked_add(1)?,

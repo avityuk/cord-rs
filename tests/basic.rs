@@ -185,12 +185,12 @@ fn advance_truncate_slice_split() {
     ] {
         let sub = cord.slice(start..end);
         check(&sub, &data[start..end]);
-        assert_eq!(cord.try_slice(start..end).unwrap(), sub);
+        assert_eq!(cord.get(start..end).unwrap(), sub);
     }
-    assert!(cord.try_slice(10..=n).is_none());
+    assert!(cord.get(10..=n).is_none());
     #[allow(clippy::reversed_empty_ranges)]
     let reversed = 11..10;
-    assert!(cord.try_slice(reversed).is_none());
+    assert!(cord.get(reversed).is_none());
     check(&cord.slice(..), &data);
     check(&cord.slice(100..=200), &data[100..=200]);
 
@@ -280,6 +280,106 @@ fn indexing_and_get() {
     for i in 0..100 {
         assert_eq!(sub[i], data[1000 + i]);
     }
+}
+
+/// Runs the same `get` battery against `cord`/`data`, covering every
+/// implemented [`cord_rs::CordIndex`] type: `usize` and each range type, in
+/// and out of bounds, checked against `[u8]::get` (or, for the `(Bound,
+/// Bound)` tuple form, against the equivalent `Range`).
+fn check_get_index_types(cord: &Cord, data: &[u8]) {
+    use core::ops::Bound;
+
+    let len = data.len();
+    assert_eq!(cord.len(), len);
+
+    // `usize`: in bounds (also cross-checked against sequential iteration)
+    // and out of bounds.
+    for &i in &[0, 1, len / 2, len - 1] {
+        assert_eq!(cord.get(i), Some(data[i]));
+        assert_eq!(cord.get(i), cord.bytes().nth(i));
+    }
+    assert_eq!(cord.get(len), None);
+    assert_eq!(cord.get(len + 1), None);
+    assert_eq!(cord.get(usize::MAX), None);
+
+    // `Range<usize>`: empty, whole, interior, `start == end == len`, `start
+    // > end`, `end > len`.
+    for (start, end) in [(0, 0), (0, len), (1, len - 1), (len, len), (2, 1), (0, len + 1)] {
+        assert_eq!(
+            cord.get(start..end).as_ref().map(Cord::to_vec),
+            data.get(start..end).map(<[u8]>::to_vec),
+            "Range {start}..{end}"
+        );
+    }
+
+    // `RangeInclusive<usize>`: valid up to the last index, one past the end
+    // (invalid), and `end == usize::MAX` (must not overflow, matching
+    // `[u8]::get`'s own overflow guard).
+    assert_eq!(cord.get(0..=len - 1).as_ref().map(Cord::to_vec), data.get(0..=len - 1).map(<[u8]>::to_vec));
+    assert_eq!(cord.get(0..=len).as_ref().map(Cord::to_vec), data.get(0..=len).map(<[u8]>::to_vec));
+    assert_eq!(
+        cord.get(0..=usize::MAX).as_ref().map(Cord::to_vec),
+        data.get(0..=usize::MAX).map(<[u8]>::to_vec)
+    );
+
+    // `RangeFrom<usize>`: `start == len` yields an empty result, `start >
+    // len` yields `None`.
+    assert_eq!(cord.get(0..).as_ref().map(Cord::to_vec), Some(data.to_vec()));
+    assert_eq!(cord.get(len..).as_ref().map(Cord::to_vec), Some(Vec::new()));
+    assert!(cord.get(len + 1..).is_none());
+
+    // `RangeTo<usize>`.
+    assert_eq!(cord.get(..len).as_ref().map(Cord::to_vec), Some(data.to_vec()));
+    assert_eq!(cord.get(..0).as_ref().map(Cord::to_vec), Some(Vec::new()));
+    assert!(cord.get(..len + 1).is_none());
+
+    // `RangeToInclusive<usize>`, at the boundary.
+    assert_eq!(cord.get(..=len - 1).as_ref().map(Cord::to_vec), Some(data.to_vec()));
+    assert!(cord.get(..=len).is_none());
+
+    // `RangeFull`.
+    assert_eq!(cord.get(..).as_ref().map(Cord::to_vec), Some(data.to_vec()));
+
+    // `(Bound<usize>, Bound<usize>)`, including an excluded start, and
+    // overflow safety at `usize::MAX`.
+    assert_eq!(
+        cord.get((Bound::Included(0), Bound::Excluded(len))).as_ref().map(Cord::to_vec),
+        Some(data.to_vec())
+    );
+    assert_eq!(
+        cord.get((Bound::Excluded(0), Bound::Included(len - 1))).as_ref().map(Cord::to_vec),
+        data.get(1..len).map(<[u8]>::to_vec)
+    );
+    assert_eq!(
+        cord.get((Bound::<usize>::Unbounded, Bound::<usize>::Unbounded)).as_ref().map(Cord::to_vec),
+        Some(data.to_vec())
+    );
+    assert!(cord.get((Bound::Excluded(usize::MAX), Bound::Unbounded)).is_none());
+}
+
+#[test]
+fn get_over_index_types() {
+    // Inline.
+    let inline_data = b"0123456789".to_vec();
+    let inline = Cord::from(inline_data.as_slice());
+    assert!(!internal::is_tree(&inline));
+    check_get_index_types(&inline, &inline_data);
+
+    // Single flat.
+    let flat_data: Vec<u8> = (0..200u32).map(|i| (i % 256) as u8).collect();
+    let flat = Cord::copy_from_slice(&flat_data);
+    assert!(internal::is_flat(&flat));
+    check_get_index_types(&flat, &flat_data);
+
+    // Multi-chunk btree.
+    let btree_len: u32 = if cfg!(miri) { 4_000 } else { 20 * 1024 };
+    let btree_data: Vec<u8> = (0..btree_len).map(|i| (i % 251) as u8).collect();
+    let mut btree = Cord::new();
+    for chunk in btree_data.chunks(1000) {
+        btree.append(chunk);
+    }
+    assert!(internal::is_btree(&btree));
+    check_get_index_types(&btree, &btree_data);
 }
 
 #[test]

@@ -88,7 +88,7 @@ mod serde_impl;
 
 pub use buffer::CordBuffer;
 pub use cord::{Cord, MemoryAccounting};
-pub use source::{CordLike, CordSource};
+pub use source::{CordIndex, CordLike, CordSource};
 
 #[cfg(feature = "bytes")]
 #[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]

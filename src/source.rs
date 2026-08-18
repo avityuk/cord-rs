@@ -1,6 +1,8 @@
 //! Input traits: [`CordSource`] for values that can be appended to a cord,
-//! and [`CordLike`] for values a cord can be compared with.
+//! [`CordLike`] for values a cord can be compared with, and [`CordIndex`]
+//! for the index types accepted by [`Cord::get`].
 
+use core::ops::{Bound, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::sync::Arc;
 
 use crate::buffer::CordBuffer;
@@ -10,6 +12,7 @@ use crate::iter::Chunks;
 mod sealed {
     pub trait SourceSealed {}
     pub trait LikeSealed {}
+    pub trait IndexSealed {}
 }
 
 /// Types that can be appended to or prepended to a [`Cord`] via
@@ -163,6 +166,48 @@ impl CordSource for bytes::Bytes {
         cord.prepend_owned(self, capacity);
     }
 }
+
+/// Types usable as an index in [`Cord::get`]: `usize` (yielding a byte) and
+/// the range types (yielding a sub-cord). Sealed.
+pub trait CordIndex: sealed::IndexSealed {
+    /// `u8` for `usize`, [`Cord`] for ranges.
+    type Output;
+    /// Returns the byte or sub-cord at `self`, or `None` if out of bounds.
+    fn get(self, cord: &Cord) -> Option<Self::Output>;
+}
+
+impl sealed::IndexSealed for usize {}
+impl CordIndex for usize {
+    type Output = u8;
+    #[inline]
+    fn get(self, cord: &Cord) -> Option<u8> {
+        cord.get_byte(self)
+    }
+}
+
+macro_rules! impl_range_index {
+    ($($t:ty),* $(,)?) => {$(
+        impl sealed::IndexSealed for $t {}
+        impl CordIndex for $t {
+            type Output = Cord;
+            #[inline]
+            fn get(self, cord: &Cord) -> Option<Cord> {
+                let (pos, new_size) = crate::cord::try_resolve_range(self, cord.len())?;
+                Some(cord.subcord(pos, new_size))
+            }
+        }
+    )*};
+}
+
+impl_range_index!(
+    Range<usize>,
+    RangeInclusive<usize>,
+    RangeFrom<usize>,
+    RangeTo<usize>,
+    RangeToInclusive<usize>,
+    RangeFull,
+    (Bound<usize>, Bound<usize>),
+);
 
 /// Byte sequences a [`Cord`] can be compared with and searched for:
 /// [`Cord`], `[u8]`, `str`, `Vec<u8>`, `String`, `[u8; N]`, [`CordBuffer`]
