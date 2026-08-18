@@ -24,8 +24,8 @@ fn fragmented(n: usize, chunk: usize) -> Cord {
 mod bytes_feature {
     use super::*;
     use bytes::{Buf, BufMut, Bytes};
+    use cord_rs::__internal as internal;
     use cord_rs::CordWriter;
-    use cord_rs::internal;
 
     #[test]
     fn buf_for_cord() {

@@ -13,7 +13,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use cord_rs::{Cord, CordBuffer, internal};
+use cord_rs::{__internal as internal, Cord, CordBuffer};
 use proptest::prelude::*;
 
 const SLOTS: usize = 4;

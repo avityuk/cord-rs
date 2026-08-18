@@ -15,7 +15,7 @@ needs nothing beyond stable ≥ 1.95.
 
 | Path | Contents |
 | --- | --- |
-| `src/lib.rs` | Crate docs, re-exports, hidden `internal` test hooks |
+| `src/lib.rs` | Crate docs, re-exports, hidden `__internal` test hooks |
 | `src/cord.rs`, `buffer.rs`, `iter.rs`, `source.rs`, `io.rs` | Public API (`Cord`, `CordBuffer`, iterators/cursor, input & comparison traits, std io/fmt) |
 | `src/inline_data.rs` | The 16-byte inline/tree union behind `Cord` |
 | `src/rep.rs`, `src/rep/*.rs` | The `unsafe` rep layer ported from abseil (`flat`, `external`, `btree`, `navigator`, `reader`, `analysis`) |

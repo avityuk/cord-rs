@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Write};
 use std::sync::Arc;
 
-use cord_rs::{Cord, CordBuffer, MemoryAccounting, internal};
+use cord_rs::{__internal as internal, Cord, CordBuffer, MemoryAccounting};
 
 fn check(cord: &Cord, expected: &[u8]) {
     internal::validate(cord).unwrap_or_else(|e| panic!("{e}\n{}", internal::dump(cord, true)));

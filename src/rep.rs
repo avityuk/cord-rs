@@ -542,7 +542,7 @@ impl CordRepSubstring {
             // Entry boundary: `child` has not been spliced into anything
             // yet (the substring node itself is only built by
             // `substring_impl` below), and this fn's sole caller
-            // (`internal::make_substring`) is a top-level entry point, not
+            // (`__internal::make_substring`) is a top-level entry point, not
             // mid-surgery — unwinding here only leaks the donated
             // reference, so it is safe to leave unwinding.
             assert!(

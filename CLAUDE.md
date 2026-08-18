@@ -33,7 +33,7 @@ and being usable on stable (MSRV 1.95).
 ## Conventions that matter here
 
 - Rep functions adopt/transfer references exactly like abseil; validate trees
-  in tests with `cord_rs::internal::validate` / `dump`.
+  in tests with `cord_rs::__internal::validate` / `dump`.
 - Derive data pointers from allocation pointers, not header references; derive
   pointers into owned buffers after the owner is at its final address.
 - Justify casts with `#[expect(clippy::..., reason = "...")]`, not `allow`.

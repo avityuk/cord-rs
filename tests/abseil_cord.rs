@@ -19,7 +19,7 @@ use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, LazyLock};
 
-use cord_rs::{Cord, CordBuffer, MemoryAccounting, internal};
+use cord_rs::{__internal as internal, Cord, CordBuffer, MemoryAccounting};
 
 const SIZEOF_CORD: usize = core::mem::size_of::<Cord>();
 const MAX_FLAT_LENGTH: usize = internal::MAX_FLAT_LENGTH;

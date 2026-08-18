@@ -1,7 +1,7 @@
 //! Port of abseil's `cord_buffer_test.cc`.
 #![allow(unused_assignments)]
 
-use cord_rs::{Cord, CordBuffer, internal};
+use cord_rs::{__internal as internal, Cord, CordBuffer};
 
 const INLINED_SIZE: usize = core::mem::size_of::<CordBuffer>() - 1;
 const DEFAULT_MAX_CAPACITY: usize = CordBuffer::DEFAULT_MAX_CAPACITY;

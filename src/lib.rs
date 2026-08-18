@@ -103,7 +103,10 @@ pub use bytes_impl::CordWriter;
 /// with no other signal anywhere. Calling `assert_send_sync::<T>()` from a
 /// `const` item forces the compiler to resolve `T: Send + Sync` for that
 /// exact `T` right here, at definition time — no value of the type, or any
-/// other call site, is needed.
+/// other call site, is needed. The same silent-loss argument applies to the
+/// unwind-safety auto traits: `Vec<u8>` and `bytes::Bytes` are both
+/// `UnwindSafe + RefUnwindSafe`, so a raw-pointer field change here could
+/// just as quietly drop `Cord` out of them with no other signal.
 const fn assert_send_sync<T: ?Sized + Send + Sync>() {}
 
 const _: () = {
@@ -117,10 +120,27 @@ const _: () = {
 #[cfg(feature = "bytes")]
 const _: () = assert_send_sync::<CordWriter<'_>>();
 
-/// Internal inspection hooks for tests and benchmarks. Not part of the
-/// public API; may change without notice.
+/// Compile-time guard against silently losing unwind-safety on the crate's
+/// public types (see [`assert_send_sync`] for why this needs a `const` call
+/// rather than relying on the auto trait alone). `CordWriter` is deliberately
+/// excluded: it holds a `&mut Cord`, so it is correctly `!UnwindSafe`, the
+/// same way `std::io::BufWriter<&mut W>` is.
+const fn assert_unwind_safe<T: ?Sized + std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+
+const _: () = {
+    assert_unwind_safe::<Cord>();
+    assert_unwind_safe::<CordBuffer>();
+    assert_unwind_safe::<crate::iter::Chunks<'_>>();
+    assert_unwind_safe::<crate::iter::Cursor<'_>>();
+    assert_unwind_safe::<crate::iter::Bytes<'_>>();
+};
+
+/// Internal inspection hooks for tests and benchmarks. Exempt from semver
+/// guarantees: this module exists solely for the crate's own tests and
+/// benchmarks and may change or disappear without notice, regardless of
+/// crate version.
 #[doc(hidden)]
-pub mod internal {
+pub mod __internal {
     use core::ptr::NonNull;
 
     use crate::Cord;

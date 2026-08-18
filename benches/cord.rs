@@ -14,7 +14,7 @@
 use std::hash::{Hash, Hasher};
 use std::hint::black_box;
 
-use cord_rs::{Cord, CordBuffer, internal};
+use cord_rs::{__internal as internal, Cord, CordBuffer};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 const SIZES: [usize; 5] = [8, 100, 4 << 10, 64 << 10, 1 << 20];
