@@ -49,9 +49,9 @@ their lifetime or cross API boundaries:
 - **Cheap sharing**: `clone` is a reference-count bump; sub-cords share the
   underlying memory.
 - **Zero-copy ingestion**: large `Vec<u8>`, `String`, `Box<[u8]>`,
-  `Arc<[u8]>`, `&'static [u8]` and `bytes::Bytes` values are adopted rather
-  than copied; `CordBuffer` lets I/O write into memory that becomes part of
-  the cord directly.
+  `Arc<[u8]>`, `&'static [u8]`, `Cow::Owned` and `bytes::Bytes` values are
+  adopted rather than copied; `CordBuffer` lets I/O write into memory that
+  becomes part of the cord directly.
 - **Small-data friendly**: values up to 15 bytes live inline in the 16-byte
   handle; small appends fill spare capacity in existing buffers.
 

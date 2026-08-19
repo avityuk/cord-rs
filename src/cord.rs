@@ -2038,10 +2038,51 @@ impl From<CordBuffer> for Cord {
     }
 }
 
+impl From<std::borrow::Cow<'_, [u8]>> for Cord {
+    /// Copies a borrowed slice (`From<&[u8]>`) or adopts an owned vector
+    /// (`From<Vec<u8>>`).
+    #[inline]
+    fn from(data: std::borrow::Cow<'_, [u8]>) -> Self {
+        match data {
+            std::borrow::Cow::Borrowed(s) => Self::from(s),
+            std::borrow::Cow::Owned(v) => Self::from(v),
+        }
+    }
+}
+
+impl From<std::borrow::Cow<'_, str>> for Cord {
+    /// Copies a borrowed `&str` (`From<&str>`) or adopts an owned `String`
+    /// (`From<String>`).
+    #[inline]
+    fn from(data: std::borrow::Cow<'_, str>) -> Self {
+        match data {
+            std::borrow::Cow::Borrowed(s) => Self::from(s),
+            std::borrow::Cow::Owned(v) => Self::from(v),
+        }
+    }
+}
+
+impl core::str::FromStr for Cord {
+    type Err = core::convert::Infallible;
+
+    /// Never fails; equivalent to `Cord::from(s)`.
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from(s))
+    }
+}
+
 impl From<Cord> for Vec<u8> {
     #[inline]
     fn from(cord: Cord) -> Self {
         cord.to_vec()
+    }
+}
+
+impl From<Cord> for Box<[u8]> {
+    #[inline]
+    fn from(cord: Cord) -> Self {
+        cord.to_vec().into_boxed_slice()
     }
 }
 

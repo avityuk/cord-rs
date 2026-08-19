@@ -7,6 +7,7 @@
     reason = "tests juggle small integers freely"
 )]
 
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Write};
@@ -97,6 +98,39 @@ fn construction_from_various_sources() {
     assert_eq!(Arc::strong_count(&arc), 2);
     drop(c);
     assert_eq!(Arc::strong_count(&arc), 1);
+
+    // `Cow<[u8]>`: `Borrowed` always copies (`From<&[u8]>`), `Owned` follows
+    // the `Vec<u8>` adopt-or-copy threshold (`From<Vec<u8>>`).
+    let small_bytes = b"cow borrowed".to_vec();
+    check(&Cord::from(Cow::Borrowed(&small_bytes[..])), &small_bytes);
+    let borrowed_big: Cow<'_, [u8]> = Cow::Borrowed(&big[..]);
+    let from_borrowed_big = Cord::from(borrowed_big);
+    check(&from_borrowed_big, &big);
+    assert!(!internal::is_external(&from_borrowed_big), "borrowed slice is always copied");
+    let owned_vec = vec![4u8; 10_000];
+    let owned_vec_ptr = owned_vec.as_ptr();
+    let owned_bytes: Cow<'_, [u8]> = Cow::Owned(owned_vec);
+    let from_owned_vec = Cord::from(owned_bytes);
+    assert!(internal::is_external(&from_owned_vec), "owned vec via Cow should be adopted");
+    assert_eq!(from_owned_vec.as_contiguous().unwrap().as_ptr(), owned_vec_ptr);
+
+    // `Cow<str>`: same, via `From<&str>` / `From<String>`.
+    let small_str = "cow borrowed str".to_string();
+    check(&Cord::from(Cow::Borrowed(small_str.as_str())), small_str.as_bytes());
+    let big_str = "z".repeat(10_000);
+    let borrowed_big_str: Cow<'_, str> = Cow::Borrowed(&big_str);
+    let from_borrowed_big_str = Cord::from(borrowed_big_str);
+    check(&from_borrowed_big_str, big_str.as_bytes());
+    assert!(!internal::is_external(&from_borrowed_big_str), "borrowed str is always copied");
+    let owned_string = "w".repeat(10_000);
+    let owned_string_ptr = owned_string.as_ptr();
+    let owned_str: Cow<'_, str> = Cow::Owned(owned_string);
+    let from_owned_string = Cord::from(owned_str);
+    assert!(internal::is_external(&from_owned_string), "owned string via Cow should be adopted");
+    assert_eq!(from_owned_string.as_contiguous().unwrap().as_ptr(), owned_string_ptr);
+
+    // `FromStr` never fails; it's equivalent to `Cord::from`.
+    assert_eq!("parsed text".parse::<Cord>().unwrap(), Cord::from("parsed text"));
 }
 
 #[test]
@@ -668,6 +702,27 @@ fn write_extend_and_formatting() {
     assert!(String::try_from(Cord::from(b"\xff")).is_err());
     let v: Vec<u8> = Cord::from("vec").into();
     assert_eq!(v, b"vec");
+
+    // `Box<[u8]>` copies, for every tree shape.
+    let inline = Cord::from("inline");
+    assert!(!internal::is_tree(&inline));
+    let boxed: Box<[u8]> = inline.clone().into();
+    assert_eq!(&*boxed, inline.to_vec().as_slice());
+
+    let flat_data: Vec<u8> = (0..200u32).map(|i| (i % 256) as u8).collect();
+    let flat = Cord::copy_from_slice(&flat_data);
+    assert!(internal::is_flat(&flat));
+    let boxed: Box<[u8]> = flat.clone().into();
+    assert_eq!(&*boxed, flat.to_vec().as_slice());
+
+    let multi_chunk_data: Vec<u8> = (0..5000u32).map(|i| (i % 256) as u8).collect();
+    let mut multi_chunk = Cord::new();
+    for chunk in multi_chunk_data.chunks(200) {
+        multi_chunk.append(chunk);
+    }
+    assert!(internal::is_btree(&multi_chunk));
+    let boxed: Box<[u8]> = multi_chunk.clone().into();
+    assert_eq!(&*boxed, multi_chunk.to_vec().as_slice());
 }
 
 #[test]
