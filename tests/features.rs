@@ -102,6 +102,25 @@ mod bytes_feature {
     }
 
     #[test]
+    fn bytes_comparison_symmetry() {
+        let cord = Cord::from("bbb");
+        for (raw, expected) in [
+            (*b"aaa", std::cmp::Ordering::Less),
+            (*b"bbb", std::cmp::Ordering::Equal),
+            (*b"ccc", std::cmp::Ordering::Greater),
+        ] {
+            let bytes = Bytes::copy_from_slice(&raw);
+            let slice_cmp = raw[..].partial_cmp(&cord.to_vec()[..]);
+            assert_eq!(slice_cmp, Some(expected));
+
+            assert_eq!(bytes == cord, expected == std::cmp::Ordering::Equal);
+            assert_eq!(cord == bytes, bytes == cord);
+            assert_eq!(bytes.partial_cmp(&cord), slice_cmp);
+            assert_eq!(cord.partial_cmp(&bytes), slice_cmp.map(std::cmp::Ordering::reverse));
+        }
+    }
+
+    #[test]
     fn append_bytes_source() {
         let mut cord = Cord::from("head-");
         cord.append(Bytes::from_static(b"static"));

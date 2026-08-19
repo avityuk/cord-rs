@@ -466,6 +466,48 @@ fn comparison_and_search() {
 }
 
 #[test]
+fn array_and_buffer_comparison_symmetry() {
+    let cord = Cord::from("bbb");
+    let cases = [
+        (*b"aaa", std::cmp::Ordering::Less),
+        (*b"bbb", std::cmp::Ordering::Equal),
+        (*b"ccc", std::cmp::Ordering::Greater),
+    ];
+    for (arr, expected) in cases {
+        let slice_cmp = arr[..].partial_cmp(&cord.to_vec()[..]);
+        assert_eq!(slice_cmp, Some(expected));
+
+        // [u8; N], both directions, both == and partial_cmp.
+        assert_eq!(arr == cord, expected == std::cmp::Ordering::Equal);
+        assert_eq!(cord == arr, arr == cord);
+        assert_eq!(arr.partial_cmp(&cord), slice_cmp);
+        assert_eq!(cord.partial_cmp(&arr), slice_cmp.map(std::cmp::Ordering::reverse));
+
+        // &[u8; N], both directions, both == and partial_cmp.
+        let r = &arr;
+        assert_eq!(r == cord, arr == cord);
+        assert_eq!(cord == r, r == cord);
+        assert_eq!(r.partial_cmp(&cord), arr.partial_cmp(&cord));
+    }
+
+    for (bytes, expected) in [
+        (*b"aaa", std::cmp::Ordering::Less),
+        (*b"bbb", std::cmp::Ordering::Equal),
+        (*b"ccc", std::cmp::Ordering::Greater),
+    ] {
+        let mut buffer = CordBuffer::with_capacity(bytes.len());
+        buffer.put_slice(&bytes);
+        let slice_cmp = buffer.as_slice().partial_cmp(&cord.to_vec()[..]);
+        assert_eq!(slice_cmp, Some(expected));
+
+        assert_eq!(buffer == cord, expected == std::cmp::Ordering::Equal);
+        assert_eq!(cord == buffer, buffer == cord);
+        assert_eq!(buffer.partial_cmp(&cord), slice_cmp);
+        assert_eq!(cord.partial_cmp(&buffer), slice_cmp.map(std::cmp::Ordering::reverse));
+    }
+}
+
+#[test]
 fn hash_is_structure_independent() {
     fn hash<H: Hash>(h: &H) -> u64 {
         let mut s = DefaultHasher::new();

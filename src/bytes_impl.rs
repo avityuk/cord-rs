@@ -1,5 +1,6 @@
 //! Integration with the [`bytes`] crate.
 
+use std::cmp::Ordering;
 use std::io;
 
 use bytes::buf::UninitSlice;
@@ -90,6 +91,20 @@ impl From<Cord> for Bytes {
             Some(_) => Bytes::from_owner(FlatCord(cord)),
             None => Bytes::from(cord.to_vec()),
         }
+    }
+}
+
+impl PartialEq<Cord> for Bytes {
+    #[inline]
+    fn eq(&self, other: &Cord) -> bool {
+        other.equals(self)
+    }
+}
+
+impl PartialOrd<Cord> for Bytes {
+    #[inline]
+    fn partial_cmp(&self, other: &Cord) -> Option<Ordering> {
+        Some(other.compare(self).reverse())
     }
 }
 

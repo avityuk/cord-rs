@@ -1883,7 +1883,7 @@ macro_rules! impl_reverse_eq {
         }
     )*};
 }
-impl_reverse_eq!([u8], &[u8], str, &str, Vec<u8>, String);
+impl_reverse_eq!([u8], &[u8], str, &str, Vec<u8>, String, CordBuffer);
 
 impl<const N: usize> PartialEq<Cord> for [u8; N] {
     #[inline]
@@ -1892,10 +1892,24 @@ impl<const N: usize> PartialEq<Cord> for [u8; N] {
     }
 }
 
+impl<const N: usize> PartialOrd<Cord> for [u8; N] {
+    #[inline]
+    fn partial_cmp(&self, other: &Cord) -> Option<Ordering> {
+        Some(other.compare(&self[..]).reverse())
+    }
+}
+
 impl<const N: usize> PartialEq<Cord> for &[u8; N] {
     #[inline]
     fn eq(&self, other: &Cord) -> bool {
         other.equals(&self[..])
+    }
+}
+
+impl<const N: usize> PartialOrd<Cord> for &[u8; N] {
+    #[inline]
+    fn partial_cmp(&self, other: &Cord) -> Option<Ordering> {
+        Some(other.compare(&self[..]).reverse())
     }
 }
 
