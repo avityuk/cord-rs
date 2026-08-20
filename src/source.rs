@@ -154,6 +154,7 @@ impl CordSource for Box<str> {
 #[cfg(feature = "bytes")]
 impl sealed::SourceSealed for bytes::Bytes {}
 #[cfg(feature = "bytes")]
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 impl CordSource for bytes::Bytes {
     #[inline]
     fn append_to(self, cord: &mut Cord) {
@@ -340,6 +341,7 @@ impl<T: CordLike + ?Sized> CordLike for &T {
 #[cfg(feature = "bytes")]
 impl sealed::LikeSealed for bytes::Bytes {}
 #[cfg(feature = "bytes")]
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 impl CordLike for bytes::Bytes {
     #[inline]
     fn len(&self) -> usize {

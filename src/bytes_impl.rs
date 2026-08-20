@@ -11,6 +11,7 @@ use crate::cord::Cord;
 use crate::iter::Cursor;
 use crate::rep::MAX_INLINE;
 
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 impl Buf for Cord {
     #[inline]
     fn remaining(&self) -> usize {
@@ -41,6 +42,7 @@ impl Buf for Cord {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 impl Buf for Cursor<'_> {
     #[inline]
     fn remaining(&self) -> usize {
@@ -62,6 +64,7 @@ impl Buf for Cursor<'_> {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 impl From<Bytes> for Cord {
     /// Shares the `Bytes` without copying if it is more than 511 bytes;
     /// copies it otherwise.
@@ -82,6 +85,7 @@ impl AsRef<[u8]> for FlatCord {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 impl From<Cord> for Bytes {
     /// Converts without copying if the cord's bytes are contiguous (and not
     /// inline); copies otherwise.
@@ -94,6 +98,7 @@ impl From<Cord> for Bytes {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 impl PartialEq<Cord> for Bytes {
     #[inline]
     fn eq(&self, other: &Cord) -> bool {
@@ -101,6 +106,7 @@ impl PartialEq<Cord> for Bytes {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 impl PartialOrd<Cord> for Bytes {
     #[inline]
     fn partial_cmp(&self, other: &Cord) -> Option<Ordering> {
@@ -129,6 +135,7 @@ impl PartialOrd<Cord> for Bytes {
 /// assert_eq!(cord.len(), 4 + 4 + 5);
 /// assert!(cord.ends_with(" tail"));
 /// ```
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 pub struct CordWriter<'a> {
     /// `None` only after [`into_inner`](Self::into_inner) has taken it.
     cord: Option<&'a mut Cord>,
@@ -137,6 +144,7 @@ pub struct CordWriter<'a> {
     buffer: Option<CordBuffer>,
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
 impl<'a> CordWriter<'a> {
     /// Creates a writer appending to `cord`.
     pub fn new(cord: &'a mut Cord) -> Self {

@@ -63,7 +63,7 @@
 //! # Features
 //!
 //! * `bytes` — `bytes::Buf` for [`Cord`] and [`Cursor`](crate::iter::Cursor),
-//!   `bytes::BufMut` for [`CordWriter`], and zero-copy conversions with
+//!   `bytes::BufMut` for `CordWriter`, and zero-copy conversions with
 //!   `bytes::Bytes`.
 //! * `serde` — `Serialize` / `Deserialize` for [`Cord`] as a byte sequence.
 //!

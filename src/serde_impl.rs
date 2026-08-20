@@ -7,6 +7,7 @@ use serde::ser::{Serialize, Serializer};
 
 use crate::cord::Cord;
 
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 impl Serialize for Cord {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self.as_contiguous() {
@@ -50,6 +51,7 @@ impl<'de> Visitor<'de> for CordVisitor {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 impl<'de> Deserialize<'de> for Cord {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Cord, D::Error> {
         deserializer.deserialize_byte_buf(CordVisitor)
