@@ -135,8 +135,9 @@ The core is a reference-counted tree in the abseil tradition and uses
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). `scripts/check.sh` is the pre-commit
-gate (rustfmt, pedantic clippy with warnings as errors, tests and docs in
-both feature configurations, and a 32-bit compile of the crate and tests);
+gate (rustfmt; pedantic clippy, checks and docs with warnings as errors
+across all four feature combinations; tests in both feature configurations;
+and a 32-bit compile of the crate and tests);
 `scripts/miri.sh` and `scripts/sanitize.sh` are the required pre-push
 soundness checks (nightly — a development-only requirement); `cargo bench`
 runs the Criterion benchmarks.

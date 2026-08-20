@@ -50,6 +50,31 @@ jobs:
       - run: cargo publish --dry-run --locked
       - uses: dtolnay/rust-toolchain@1.95
       - run: cargo check --all-features --locked
+      - run: cargo check --no-default-features --locked
+
+  features:
+    name: feature powerset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-hack
+      # `--no-dev-deps` on the check leg: `serde` is both an optional feature
+      # and a dev-dependency here, so a plain powerset check could pass with
+      # lib code that only compiles because the dev-dependency happens to be
+      # present. clippy/doc pull in dev-deps as usual (they need the test
+      # targets), matching how `lint` and `scripts/check.sh` already run
+      # those.
+      - run: cargo hack --feature-powerset --no-dev-deps check
+      # See the `lint` job above for why `-D warnings` is scoped to these
+      # invocations rather than set workflow-wide.
+      - run: cargo hack --feature-powerset clippy --all-targets -- -D warnings
+      - run: cargo hack --feature-powerset doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   cross:
     name: 32-bit and big-endian

@@ -35,11 +35,17 @@ scripts/check.sh
 ```
 
 It runs, in order: `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings`
-with all features and with no features (the crate enables `clippy::pedantic`,
-so **zero warnings** is the bar); `cargo test` with all features and with no
-features; `cargo doc` with `-D warnings`; and, for `wasm32`, a compile of the
+(the crate enables `clippy::pedantic`, so **zero warnings** is the bar) and
+`cargo check`/`cargo doc` with `-D warnings`, each across all four
+combinations of the two optional features (`bytes`, `serde`); `cargo test`
+with all features and with no features; and, for `wasm32`, a compile of the
 crate plus every test binary and a clippy run, so 32-bit-only errors (such as
-constants that only fit in 64 bits) are caught before CI's `i686` job.
+constants that only fit in 64 bits) are caught before CI's `i686` job. CI's
+`features` job goes further still, running `cargo hack --feature-powerset`
+(with `--no-dev-deps` for the `check` leg, since `serde` here is both an
+optional feature and a dev-dependency and could otherwise mask lib code that
+only compiles because the dev-dependency happens to be present) across the
+full feature powerset, not just the two features in isolation.
 
 To make this automatic, install the hook once per clone:
 
@@ -96,7 +102,8 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
 `.github/workflows/ci.yml` runs on every push and pull request:
 
 - `test`: `cargo test` with and without features on Linux, macOS and Windows, plus a 2000-case model run in release.
-- `lint`: `cargo fmt --check`, pedantic clippy (both feature configurations), docs with `-D warnings`, and an MSRV (1.95) check.
+- `lint`: `cargo fmt --check`, pedantic clippy (both feature configurations), docs with `-D warnings`, and an MSRV (1.95) check (with and without features).
+- `features`: `cargo hack --feature-powerset` for `check` (`--no-dev-deps`), `clippy -- -D warnings` and `doc` (`RUSTDOCFLAGS=-D warnings`), covering every combination of the optional features rather than just none/all.
 - `cross`: the full test suite on `i686` (32-bit), plus `powerpc64` (big-endian) and `wasm32` builds.
 - `miri` and `sanitizers`: `scripts/miri.sh` and `scripts/sanitize.sh` on nightly. Required, like every other job.
 
@@ -225,6 +232,23 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
   where useful, a doctest.
 - **Portability.** Keep 32-bit and big-endian targets working: no assumptions
   about pointer width beyond what `InlineData`/`CordBuffer` encode explicitly.
+
+## Before a release
+
+Manual, occasional checks — not part of day-to-day `scripts/check.sh`, and
+the tools aren't installed by default:
+
+- `cargo semver-checks check-release` — diff the public API against the
+  previous published version for accidental breakage.
+- `cargo public-api diff` — review the public surface for anything that
+  shouldn't have changed.
+- `cargo +nightly minimal-versions check --all-features` (or
+  `cargo +nightly -Zminimal-versions check --all-features` if
+  `cargo-minimal-versions` isn't installed) — verify the declared dependency
+  floors actually build.
+- `cargo package --list` — compare the packaged file list against the
+  `include` allowlist in `Cargo.toml`.
+- `cargo publish --dry-run` — a final packaging sanity check.
 
 ## Releasing
 
