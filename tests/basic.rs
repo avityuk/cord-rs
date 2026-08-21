@@ -8,6 +8,8 @@
 )]
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Write};
@@ -874,6 +876,86 @@ fn cordlike_for_cord_buffer() {
     let haystack = Cord::from("a needle in a haystack");
     assert_eq!(haystack.find(&buffer), Some(2));
     assert!(haystack.contains(&buffer));
+}
+
+#[test]
+fn cord_buffer_clone_preserves_contents_and_capacity() {
+    let buffers = vec![
+        CordBuffer::new(),
+        CordBuffer::with_capacity(100),
+        CordBuffer::with_capacity(4000),
+        CordBuffer::with_capacity_and_block_size(20_000, 64 << 10),
+        CordBuffer::with_capacity_and_block_size(2000, 512),
+    ];
+    for mut original in buffers {
+        original.put_slice(b"hello");
+        let mut clone = original.clone();
+        assert_eq!(clone.capacity(), original.capacity(), "clone must preserve capacity");
+        assert_eq!(clone.as_slice(), b"hello");
+        assert_eq!(clone, original);
+
+        // Independence: mutating the clone must not affect the original.
+        clone.put_slice(b"!");
+        assert_eq!(clone.as_slice(), b"hello!");
+        assert_eq!(original.as_slice(), b"hello");
+    }
+}
+
+fn hash_with_default_hasher<T: Hash + ?Sized>(value: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[test]
+fn cord_buffer_ord_hash_borrow_and_cross_type_eq() {
+    let mut low = CordBuffer::with_capacity(16);
+    low.put_slice(b"abc");
+    let mut mid = CordBuffer::with_capacity(16);
+    mid.put_slice(b"abd");
+    let mut high = CordBuffer::with_capacity(16);
+    high.put_slice(b"abe");
+
+    // `==`, `cmp` and `partial_cmp` all agree with the equivalent slice
+    // comparison for a Less/Equal/Greater triple.
+    for (a, b) in [(&low, &mid), (&mid, &mid), (&high, &mid)] {
+        assert_eq!(a.cmp(b), a.as_slice().cmp(b.as_slice()));
+        assert_eq!(a.partial_cmp(b), Some(a.cmp(b)));
+        assert_eq!(*a == *b, a.as_slice() == b.as_slice());
+    }
+    assert_eq!(low.cmp(&mid), Ordering::Less);
+    assert_eq!(mid.cmp(&mid), Ordering::Equal);
+    assert_eq!(high.cmp(&mid), Ordering::Greater);
+
+    // `Borrow<[u8]>` + `Hash` agreement with `<[u8]>::hash`, exercised
+    // through a `HashSet<CordBuffer>` looked up by `&[u8]`.
+    let mut set = HashSet::new();
+    set.insert(low.clone());
+    set.insert(mid.clone());
+    assert!(set.contains(b"abc".as_slice()));
+    assert!(set.contains(b"abd".as_slice()));
+    assert!(!set.contains(b"xyz".as_slice()));
+    assert_eq!(hash_with_default_hasher(&low), hash_with_default_hasher(low.as_slice()));
+    assert_eq!(hash_with_default_hasher(&mid), hash_with_default_hasher(mid.as_slice()));
+
+    // Cross-type equality, both directions.
+    let v: Vec<u8> = b"abc".to_vec();
+    assert_eq!(low, v);
+    assert_eq!(v, low);
+    assert_eq!(low, b"abc".as_slice());
+    assert_eq!(b"abc".as_slice(), low);
+    assert_eq!(low, *b"abc");
+    assert_eq!(*b"abc", low);
+    let arr: [u8; 3] = *b"abc";
+    assert_eq!(low, &arr);
+    assert_eq!(&arr, low);
+
+    let mut text = CordBuffer::with_capacity(16);
+    text.put_slice(b"hi");
+    assert_eq!(text, "hi");
+    assert_eq!("hi", text);
+    assert_eq!(text, "hi".to_string());
+    assert_eq!("hi".to_string(), text);
 }
 
 #[test]

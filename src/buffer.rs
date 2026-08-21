@@ -1,7 +1,10 @@
 //! [`CordBuffer`]: a writable buffer that can be appended to a [`Cord`]
 //! without copying.
 
+use core::borrow::{Borrow, BorrowMut};
+use core::cmp::Ordering;
 use core::fmt;
+use core::hash::{Hash, Hasher};
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 
@@ -584,6 +587,26 @@ impl Default for CordBuffer {
     }
 }
 
+impl Clone for CordBuffer {
+    /// Returns an independent buffer with the same contents and the same
+    /// [`capacity`](Self::capacity) as `self`.
+    fn clone(&self) -> Self {
+        match self.rep.view() {
+            BufRepr::Short(s) => Self { rep: Rep { short: *s } },
+            BufRepr::Flat(f) => {
+                let rep = flat::new_large(f.capacity());
+                // SAFETY: `rep` is a freshly allocated flat rep with a
+                // refcount of one (see `flat::new_impl`'s ownership
+                // obligation), matching `from_flat`'s contract; that sole
+                // reference transfers to the new `CordBuffer`.
+                let mut buf = unsafe { Self::from_flat(rep) };
+                buf.put_slice(f.data());
+                buf
+            }
+        }
+    }
+}
+
 impl Drop for CordBuffer {
     #[inline]
     fn drop(&mut self) {
@@ -631,6 +654,108 @@ impl fmt::Debug for CordBuffer {
             .field("capacity", &self.capacity())
             .field("data", &format_args!("b\"{}\"", self.as_slice().escape_ascii()))
             .finish()
+    }
+}
+
+impl PartialEq for CordBuffer {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for CordBuffer {}
+
+impl PartialOrd for CordBuffer {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CordBuffer {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_slice().cmp(other.as_slice())
+    }
+}
+
+impl Hash for CordBuffer {
+    /// Hashes exactly like `<[u8]>::hash`, so `Borrow<[u8]>` is sound for
+    /// `HashMap`/`HashSet` lookups keyed by `&[u8]`.
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        <[u8] as Hash>::hash(self.as_slice(), state);
+    }
+}
+
+impl Borrow<[u8]> for CordBuffer {
+    #[inline]
+    fn borrow(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl BorrowMut<[u8]> for CordBuffer {
+    #[inline]
+    fn borrow_mut(&mut self) -> &mut [u8] {
+        self.as_mut_slice()
+    }
+}
+
+macro_rules! impl_partial_eq_cord_buffer {
+    ($($t:ty => |$v:ident| $slice:expr),* $(,)?) => {$(
+        impl PartialEq<$t> for CordBuffer {
+            #[inline]
+            fn eq(&self, other: &$t) -> bool {
+                let $v = other;
+                self.as_slice() == $slice
+            }
+        }
+        impl PartialEq<CordBuffer> for $t {
+            #[inline]
+            fn eq(&self, other: &CordBuffer) -> bool {
+                let $v = self;
+                $slice == other.as_slice()
+            }
+        }
+    )*};
+}
+
+impl_partial_eq_cord_buffer! {
+    [u8] => |v| v,
+    &[u8] => |v| *v,
+    Vec<u8> => |v| v.as_slice(),
+    str => |v| v.as_bytes(),
+    &str => |v| v.as_bytes(),
+    String => |v| v.as_bytes(),
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for CordBuffer {
+    #[inline]
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.as_slice() == &other[..]
+    }
+}
+
+impl<const N: usize> PartialEq<CordBuffer> for [u8; N] {
+    #[inline]
+    fn eq(&self, other: &CordBuffer) -> bool {
+        &self[..] == other.as_slice()
+    }
+}
+
+impl<const N: usize> PartialEq<&[u8; N]> for CordBuffer {
+    #[inline]
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.as_slice() == &other[..]
+    }
+}
+
+impl<const N: usize> PartialEq<CordBuffer> for &[u8; N] {
+    #[inline]
+    fn eq(&self, other: &CordBuffer) -> bool {
+        &self[..] == other.as_slice()
     }
 }
 
