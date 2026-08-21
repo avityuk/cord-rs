@@ -254,3 +254,49 @@ impl io::Write for CordWriter<'_> {
         Ok(())
     }
 }
+
+/// A bounded [`BufMut`], mirroring the `bytes` crate's impl for `&mut
+/// [u8]`: writes that would exceed the buffer's capacity panic rather than
+/// growing it. For a `BufMut` that grows a [`Cord`] instead, use
+/// [`CordWriter`].
+// SAFETY: `chunk_mut` returns the buffer's own spare capacity, and
+// `advance_mut` only marks bytes within that capacity as initialized.
+#[cfg_attr(docsrs, doc(cfg(feature = "bytes")))]
+unsafe impl BufMut for CordBuffer {
+    #[inline]
+    fn remaining_mut(&self) -> usize {
+        self.available()
+    }
+
+    /// # Safety
+    ///
+    /// Per [`BufMut::advance_mut`]'s contract, the caller must have
+    /// initialized the first `cnt` bytes of the spare capacity most
+    /// recently returned by [`chunk_mut`](BufMut::chunk_mut).
+    #[inline]
+    unsafe fn advance_mut(&mut self, cnt: usize) {
+        let available = self.available();
+        assert!(
+            cnt <= available,
+            "CordBuffer::advance_mut: {cnt} bytes exceed the available capacity of {available}"
+        );
+        // SAFETY: the caller initialized the first `cnt` bytes of the spare
+        // capacity, per this fn's own `# Safety` section above.
+        unsafe { self.set_len(self.len() + cnt) };
+    }
+
+    #[inline]
+    fn chunk_mut(&mut self) -> &mut UninitSlice {
+        UninitSlice::uninit(self.spare_capacity_mut())
+    }
+
+    /// Appends `src`, like [`CordBuffer::put_slice`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `src.len() > self.remaining_mut()`.
+    #[inline]
+    fn put_slice(&mut self, src: &[u8]) {
+        CordBuffer::put_slice(self, src);
+    }
+}

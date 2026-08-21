@@ -25,7 +25,7 @@ mod bytes_feature {
     use super::*;
     use bytes::{Buf, BufMut, Bytes};
     use cord_rs::__internal as internal;
-    use cord_rs::CordWriter;
+    use cord_rs::{CordBuffer, CordWriter};
 
     #[test]
     fn buf_for_cord() {
@@ -256,6 +256,47 @@ mod bytes_feature {
         }
         assert_eq!(cord.len(), 4103);
         assert_eq!(cord.estimated_memory_usage(cord_rs::MemoryAccounting::Total), usage_before);
+    }
+
+    #[test]
+    fn buf_mut_for_cord_buffer() {
+        let mut buffer = CordBuffer::with_capacity(64);
+        assert_eq!(buffer.remaining_mut(), buffer.available());
+
+        // `put_u32`/`put_slice` round-trip against `as_slice()`.
+        buffer.put_u32(0xDEAD_BEEF);
+        BufMut::put_slice(&mut buffer, b" tail");
+        let mut expected = 0xDEAD_BEEFu32.to_be_bytes().to_vec();
+        expected.extend_from_slice(b" tail");
+        assert_eq!(buffer.as_slice(), expected.as_slice());
+        assert_eq!(buffer.remaining_mut(), buffer.available());
+
+        // `chunk_mut`'s length always matches the remaining spare capacity.
+        assert_eq!(buffer.chunk_mut().len(), buffer.available());
+
+        // A manual `chunk_mut` write followed by `advance_mut`.
+        let available_before = buffer.available();
+        let chunk = buffer.chunk_mut();
+        chunk.write_byte(0, b'!');
+        // SAFETY: the byte just written above via `write_byte` is now
+        // initialized.
+        unsafe { buffer.advance_mut(1) };
+        expected.push(b'!');
+        assert_eq!(buffer.as_slice(), expected.as_slice());
+        assert_eq!(buffer.available(), available_before - 1);
+
+        // The written bytes flow into a `Cord` intact.
+        let cord = Cord::from(buffer);
+        assert_eq!(cord, expected);
+        internal::validate(&cord).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "exceed the available capacity")]
+    fn buf_mut_put_slice_for_cord_buffer_past_capacity_panics() {
+        let mut buffer = CordBuffer::new();
+        let overflow = vec![0u8; buffer.capacity() + 1];
+        BufMut::put_slice(&mut buffer, &overflow);
     }
 }
 

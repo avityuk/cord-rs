@@ -221,7 +221,8 @@ impl Rep {
 /// The uninitialized part of a buffer is exposed as
 /// [`spare_capacity_mut`](Self::spare_capacity_mut) plus the `unsafe`
 /// [`set_len`](Self::set_len), mirroring `Vec`; the safe
-/// [`put_slice`](Self::put_slice) and `std::io::Write` cover most uses.
+/// [`put_slice`](Self::put_slice), [`Extend`] and `std::io::Write` (and
+/// `bytes::BufMut` with the `bytes` feature) cover most uses.
 pub struct CordBuffer {
     rep: Rep,
 }
@@ -700,6 +701,45 @@ impl BorrowMut<[u8]> for CordBuffer {
     #[inline]
     fn borrow_mut(&mut self) -> &mut [u8] {
         self.as_mut_slice()
+    }
+}
+
+impl Extend<u8> for CordBuffer {
+    /// Writes the yielded bytes into the buffer's spare capacity, like
+    /// `Vec`'s `Extend` — but bounded, like `arrayvec::ArrayVec`'s: the
+    /// buffer never grows to make room.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `iter` yields more bytes than [`available`](Self::available).
+    /// Bytes yielded before the overflow are kept (`len()` becomes
+    /// `capacity()`).
+    #[track_caller]
+    fn extend<I: IntoIterator<Item = u8>>(&mut self, iter: I) {
+        let len = self.len();
+        let available = self.available();
+        let mut iter = iter.into_iter();
+        let mut written = 0;
+        for slot in self.spare_capacity_mut() {
+            let Some(byte) = iter.next() else { break };
+            slot.write(byte);
+            written += 1;
+        }
+        let overflowed = written == available && iter.next().is_some();
+        // SAFETY: the loop above wrote exactly the first `written` bytes of
+        // the spare capacity, and nothing else, before this call.
+        unsafe { self.set_len(len + written) };
+        assert!(
+            !overflowed,
+            "CordBuffer::extend: iterator yields bytes that exceed the available capacity of {available}"
+        );
+    }
+}
+
+/// Delegates to [`Extend<u8>`](Extend), like `Vec`'s impl.
+impl<'a> Extend<&'a u8> for CordBuffer {
+    fn extend<I: IntoIterator<Item = &'a u8>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().copied());
     }
 }
 

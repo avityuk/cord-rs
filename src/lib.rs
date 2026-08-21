@@ -63,8 +63,8 @@
 //! # Features
 //!
 //! * `bytes` — `bytes::Buf` for [`Cord`] and [`Cursor`](crate::iter::Cursor),
-//!   `bytes::BufMut` for `CordWriter`, and zero-copy conversions with
-//!   `bytes::Bytes`.
+//!   `bytes::BufMut` for `CordWriter` and `CordBuffer`, and zero-copy
+//!   conversions with `bytes::Bytes`.
 //! * `serde` — `Serialize` / `Deserialize` for [`Cord`] as a byte sequence.
 //!
 //! [`absl::Cord`]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h

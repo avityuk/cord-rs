@@ -56,6 +56,29 @@ fn put_slice_overflow_panics_on_heap_buffer() {
     buffer.put_slice(&overflow);
 }
 
+#[test]
+#[should_panic(expected = "exceed the available capacity")]
+fn cord_buffer_extend_overflow_panics_on_inline_buffer() {
+    let mut buffer = CordBuffer::new();
+    let overflow = vec![0u8; buffer.capacity() + 1];
+    buffer.extend(overflow);
+}
+
+#[test]
+fn cord_buffer_extend_overflow_keeps_bytes_written_before_it() {
+    // Heap (`Flat`) buffer, to exercise the other representation than the
+    // panicking test above.
+    let mut buffer = CordBuffer::with_capacity(64);
+    let cap = buffer.capacity();
+    let overflow: Vec<u8> = std::iter::repeat(0..=u8::MAX).flatten().take(cap + 5).collect();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        buffer.extend(overflow.iter().copied());
+    }));
+    assert!(result.is_err(), "extend should propagate the capacity overflow as a panic");
+    assert_eq!(buffer.as_slice(), &overflow[..cap], "bytes written before the overflow must be kept");
+    assert_eq!(buffer.available(), 0);
+}
+
 #[cfg(feature = "bytes")]
 #[test]
 #[should_panic(expected = "cannot advance past the end of a Cord")]

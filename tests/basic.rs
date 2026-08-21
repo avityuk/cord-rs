@@ -901,6 +901,29 @@ fn cord_buffer_clone_preserves_contents_and_capacity() {
     }
 }
 
+#[test]
+fn cord_buffer_extend_fills_partial_and_exact_capacity() {
+    // Both the inline (`Short`) and heap (`Flat`) representations.
+    for mut buffer in [CordBuffer::new(), CordBuffer::with_capacity(100)] {
+        let cap = buffer.capacity();
+        let half = cap / 2;
+
+        // Partial fill via `Extend<u8>`.
+        let first: Vec<u8> = (0..half as u32).map(|i| (i % 256) as u8).collect();
+        buffer.extend(first.iter().copied());
+        assert_eq!(buffer.as_slice(), first.as_slice());
+        assert_eq!(buffer.available(), cap - half);
+
+        // Exactly fill the rest via `Extend<&u8>`.
+        let rest: Vec<u8> = (0..(cap - half) as u32).map(|i| ((i + 100) % 256) as u8).collect();
+        buffer.extend(rest.iter());
+        assert_eq!(buffer.available(), 0);
+        let mut expected = first;
+        expected.extend_from_slice(&rest);
+        assert_eq!(buffer.as_slice(), expected.as_slice());
+    }
+}
+
 fn hash_with_default_hasher<T: Hash + ?Sized>(value: &T) -> u64 {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);

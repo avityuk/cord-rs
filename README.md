@@ -75,7 +75,8 @@ reusing a cord's spare capacity. Out-of-range indices and ranges panic, like
 Cargo features:
 
 - `bytes`: `bytes::Buf` for `Cord` and `Cursor`, `bytes::BufMut` for
-  `CordWriter`, and zero-copy conversions with `bytes::Bytes`.
+  `CordWriter` and `CordBuffer`, and zero-copy conversions with
+  `bytes::Bytes`.
 - `serde`: `Serialize` / `Deserialize` for `Cord` as a byte sequence.
 
 The crate has one required dependency, [`memchr`], used for substring search
