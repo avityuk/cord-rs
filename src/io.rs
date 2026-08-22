@@ -89,3 +89,52 @@ impl io::BufRead for Cursor<'_> {
         self.advance(amt);
     }
 }
+
+impl io::Seek for Cursor<'_> {
+    /// Seeks to a byte offset within the cord.
+    ///
+    /// Unlike [`std::io::Cursor`], whose position may run past the end of
+    /// its data, a `Cursor` maintains `position() + remaining() == len` at
+    /// all times: a target beyond the cord's length is
+    /// [`io::ErrorKind::InvalidInput`], same as a target that would resolve
+    /// to a negative position (an out-of-range `SeekFrom::End`/`Current`
+    /// delta). A failed seek leaves the cursor's position unchanged.
+    ///
+    /// Seeking to or past the current position advances in place; seeking
+    /// backward rebuilds the cursor from the start of the cord and advances
+    /// from there. Either way the cost is O(log n) in the number of chunks.
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        let current = self.position();
+        let len = current + self.remaining();
+
+        let target = match pos {
+            io::SeekFrom::Start(n) => Some(n),
+            io::SeekFrom::End(delta) => {
+                u64::try_from(len).ok().and_then(|len_u64| len_u64.checked_add_signed(delta))
+            }
+            io::SeekFrom::Current(delta) => {
+                u64::try_from(current).ok().and_then(|current_u64| current_u64.checked_add_signed(delta))
+            }
+        };
+        let invalid = || {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid seek to a negative or out-of-range position")
+        };
+        let target = target.ok_or_else(invalid)?;
+        let target_len = usize::try_from(target).ok().filter(|&t| t <= len).ok_or_else(invalid)?;
+
+        if target_len >= current {
+            self.advance(target_len - current);
+        } else {
+            *self = Cursor::new(self.cord());
+            self.advance(target_len);
+        }
+        Ok(target)
+    }
+
+    /// Cheaper than the default (`seek(SeekFrom::Current(0))`): returns the
+    /// current position directly.
+    #[inline]
+    fn stream_position(&mut self) -> io::Result<u64> {
+        Ok(u64::try_from(self.position()).unwrap_or(u64::MAX))
+    }
+}

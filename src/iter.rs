@@ -1,10 +1,10 @@
 //! Iterators over the contents of a [`Cord`]: [`Chunks`] yields contiguous
 //! byte slices, [`Bytes`] yields individual bytes, and [`Cursor`] is a
-//! positioned reader supporting skipping, `std::io::Read`, and cheap
-//! sub-cord extraction. Not re-exported at the crate root — `Bytes` and
-//! `Cursor` would collide with `bytes::Bytes` and `std::io::Cursor`, so
-//! (like `str::Bytes`, `slice::Chunks` and `io::Cursor` in `std`) they stay
-//! reachable through this module.
+//! positioned reader supporting skipping and seeking, `std::io::Read`/
+//! `Seek`, and cheap sub-cord extraction. Not re-exported at the crate root
+//! — `Bytes` and `Cursor` would collide with `bytes::Bytes` and
+//! `std::io::Cursor`, so (like `str::Bytes`, `slice::Chunks` and
+//! `io::Cursor` in `std`) they stay reachable through this module.
 
 use core::marker::PhantomData;
 
@@ -402,10 +402,13 @@ impl ExactSizeIterator for Bytes<'_> {}
 impl core::iter::FusedIterator for Bytes<'_> {}
 
 /// A position inside a [`Cord`] supporting byte-wise and chunk-wise reads,
-/// skipping, and sub-cord extraction. Created by [`Cord::cursor`].
+/// skipping, seeking, and sub-cord extraction. Created by [`Cord::cursor`].
 ///
-/// A cursor is cheap to clone. It also implements [`std::io::Read`] and
-/// [`std::io::BufRead`] (and `bytes::Buf` with the `bytes` feature).
+/// A cursor is cheap to clone. It also implements [`std::io::Read`],
+/// [`std::io::BufRead`] and [`std::io::Seek`] (and `bytes::Buf` with the
+/// `bytes` feature) — seeking forward advances in place, seeking backward
+/// rebuilds the cursor from the start of the cord; either way the cost is
+/// O(log n) in the number of chunks.
 ///
 /// `Cursor` does not implement [`Iterator`]: `take`/`by_ref` would be
 /// ambiguous with the `bytes::Buf` and `std::io::Read` methods of the same
@@ -426,12 +429,23 @@ impl core::iter::FusedIterator for Bytes<'_> {}
 pub struct Cursor<'a> {
     chunks: Chunks<'a>,
     len: usize,
+    /// The cord the cursor was built over. Unused by any forward-only
+    /// operation; kept so a backward [`std::io::Seek`] can rebuild `chunks`
+    /// from the start.
+    cord: &'a Cord,
 }
 
 impl<'a> Cursor<'a> {
     #[inline]
     pub(crate) fn new(cord: &'a Cord) -> Self {
-        Self { chunks: Chunks::new(cord), len: cord.len() }
+        Self { chunks: Chunks::new(cord), len: cord.len(), cord }
+    }
+
+    /// The cord this cursor was built over, for `io::Seek`'s backward-seek
+    /// rebuild (`src/io.rs`).
+    #[inline]
+    pub(crate) fn cord(&self) -> &'a Cord {
+        self.cord
     }
 
     /// Number of bytes remaining after the cursor.

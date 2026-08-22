@@ -12,7 +12,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use cord_rs::{__internal as internal, Cord, CordBuffer, MemoryAccounting};
@@ -586,6 +586,161 @@ fn iteration_and_cursor() {
     c.advance(data.len() - 1);
     assert_eq!(c.next_byte(), Some(data[data.len() - 1]));
     assert_eq!(c.next_byte(), None);
+}
+
+#[test]
+fn cursor_seek() {
+    // Inline (<= 15 bytes).
+    let inline_data = b"inline-cord-15!".to_vec();
+    let inline = Cord::from(inline_data.as_slice());
+    assert!(!internal::is_tree(&inline));
+    check_cursor_seek(&inline, &inline_data);
+
+    // Single flat (~1000 bytes).
+    let flat_data: Vec<u8> = (0..1000u32).map(|i| (i % 256) as u8).collect();
+    let flat = Cord::copy_from_slice(&flat_data);
+    assert!(internal::is_flat(&flat));
+    check_cursor_seek(&flat, &flat_data);
+
+    // Multi-chunk btree (20 x 1000-byte appends).
+    let btree_data: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+    let mut btree = Cord::new();
+    for chunk in btree_data.chunks(1000) {
+        btree.append(chunk);
+    }
+    assert!(internal::is_btree(&btree));
+    check_cursor_seek(&btree, &btree_data);
+}
+
+/// Exercises the `io::Seek` contract of a cursor over `cord`, checking every
+/// resulting position and read against `expected`.
+#[expect(
+    clippy::seek_from_current,
+    reason = "deliberately exercises seek(Current(0)) as a no-op, not just stream_position"
+)]
+fn check_cursor_seek(cord: &Cord, expected: &[u8]) {
+    let len = expected.len();
+    let mut cursor = cord.cursor();
+
+    // `Start`: forward seek, verified with `read_exact`.
+    let pos = len / 3;
+    assert_eq!(cursor.seek(SeekFrom::Start(pos as u64)).unwrap(), pos as u64);
+    assert_eq!(cursor.position(), pos);
+    assert_eq!(cursor.stream_position().unwrap(), pos as u64);
+    let mut buf = vec![0u8; len - pos];
+    cursor.read_exact(&mut buf).unwrap();
+    assert_eq!(buf, expected[pos..]);
+    assert_eq!(cursor.position(), len);
+
+    // `Start`: backward seek from the end just reached, verified with
+    // `read_to_end`.
+    let pos = len / 5;
+    assert_eq!(cursor.seek(SeekFrom::Start(pos as u64)).unwrap(), pos as u64);
+    assert_eq!(cursor.position(), pos);
+    let mut rest = Vec::new();
+    cursor.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, expected[pos..]);
+    assert_eq!(cursor.position(), len);
+
+    // `End` with a negative delta.
+    let back = len / 4;
+    let pos = len - back;
+    assert_eq!(cursor.seek(SeekFrom::End(-(back as i64))).unwrap(), pos as u64);
+    assert_eq!(cursor.position(), pos);
+    assert_eq!(cursor.stream_position().unwrap(), pos as u64);
+    let mut rest = Vec::new();
+    cursor.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, expected[pos..]);
+    assert_eq!(cursor.position(), len);
+
+    // `Current` with a negative delta (jump back to the middle from the end).
+    let pos = len / 2;
+    let delta = pos as i64 - len as i64;
+    assert_eq!(cursor.seek(SeekFrom::Current(delta)).unwrap(), pos as u64);
+    assert_eq!(cursor.position(), pos);
+    let mut rest = Vec::new();
+    cursor.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, expected[pos..]);
+    assert_eq!(cursor.position(), len);
+
+    // `Current` with a positive delta.
+    let base = len / 6;
+    assert_eq!(cursor.seek(SeekFrom::Start(base as u64)).unwrap(), base as u64);
+    let step = len / 8;
+    let pos = base + step;
+    assert_eq!(cursor.seek(SeekFrom::Current(step as i64)).unwrap(), pos as u64);
+    assert_eq!(cursor.position(), pos);
+    let mut rest = Vec::new();
+    cursor.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, expected[pos..]);
+    assert_eq!(cursor.position(), len);
+
+    // `seek(Current(0))` is a no-op, both from a mid-cord position and from
+    // the end.
+    let mid = len / 6;
+    cursor.seek(SeekFrom::Start(mid as u64)).unwrap();
+    let chunk_before = cursor.chunk().to_vec();
+    let remaining_before = cursor.remaining();
+    assert_eq!(cursor.seek(SeekFrom::Current(0)).unwrap(), mid as u64);
+    assert_eq!(cursor.position(), mid);
+    assert_eq!(cursor.remaining(), remaining_before);
+    assert_eq!(cursor.chunk(), &chunk_before[..]);
+
+    cursor.seek(SeekFrom::Start(len as u64)).unwrap();
+    assert_eq!(cursor.seek(SeekFrom::Current(0)).unwrap(), len as u64);
+    assert_eq!(cursor.position(), len);
+    assert_eq!(cursor.remaining(), 0);
+
+    // `rewind`.
+    cursor.rewind().unwrap();
+    assert_eq!(cursor.position(), 0);
+    assert_eq!(cursor.stream_position().unwrap(), 0);
+    let mut all = Vec::new();
+    cursor.read_to_end(&mut all).unwrap();
+    assert_eq!(all, expected);
+
+    // `Start(len)` succeeds and leaves nothing remaining.
+    assert_eq!(cursor.seek(SeekFrom::Start(len as u64)).unwrap(), len as u64);
+    assert_eq!(cursor.position(), len);
+    assert_eq!(cursor.remaining(), 0);
+    assert!(!cursor.has_remaining());
+
+    // Errors: each leaves `position()` unchanged.
+    cursor.seek(SeekFrom::Start(mid as u64)).unwrap();
+    let before = cursor.position();
+
+    let err = cursor.seek(SeekFrom::Start(len as u64 + 1)).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(cursor.position(), before);
+
+    let err = cursor.seek(SeekFrom::End(1)).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(cursor.position(), before);
+
+    let err = cursor.seek(SeekFrom::End(-(len as i64 + 1))).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(cursor.position(), before);
+
+    let err = cursor.seek(SeekFrom::Current(-(before as i64 + 1))).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(cursor.position(), before);
+
+    // `Seek` composes with `io::Read::read_exact` and
+    // `BufRead::fill_buf`/`consume` after a backward seek: force the cursor
+    // to the end first so the next seek is a genuine backward rebuild.
+    cursor.seek(SeekFrom::Start(len as u64)).unwrap();
+    let target = len / 3;
+    cursor.seek(SeekFrom::Start(target as u64)).unwrap();
+    let head_len = (len - target).min(7);
+    let mut head = vec![0u8; head_len];
+    cursor.read_exact(&mut head).unwrap();
+    assert_eq!(head, expected[target..target + head_len]);
+    let filled = cursor.fill_buf().unwrap().to_vec();
+    assert_eq!(&filled[..], &expected[target + head_len..target + head_len + filled.len()]);
+    cursor.consume(filled.len());
+    let mut tail = Vec::new();
+    cursor.read_to_end(&mut tail).unwrap();
+    assert_eq!(tail, expected[target + head_len + filled.len()..]);
 }
 
 #[test]
