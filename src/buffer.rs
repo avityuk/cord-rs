@@ -8,6 +8,9 @@ use core::hash::{Hash, Hasher};
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::rep::flat::{self, FLAT_OVERHEAD, FlatRef, MAX_FLAT_LENGTH, MAX_LARGE_FLAT_SIZE, MIN_FLAT_LENGTH};
 use crate::rep::{CordRep, UniqueRep, small_u8};
 

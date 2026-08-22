@@ -35,6 +35,8 @@ use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicI32, Ordering};
 
+use alloc::boxed::Box;
+
 pub(crate) mod analysis;
 pub(crate) mod btree;
 #[cfg(test)]
@@ -156,7 +158,37 @@ impl Refcount {
 fn increment_overflow() -> ! {
     // Mirrors `Arc`: a refcount this large can only be the result of a leak
     // loop and continuing risks a use-after-free on wrap around.
-    std::process::abort()
+    abort()
+}
+
+/// Aborts the process immediately, with no chance of the caller observing an
+/// unwind.
+///
+/// With the `std` feature this is exactly `std::process::abort`. Without
+/// it — `no_std` has no portable abort — this uses the double-panic idiom
+/// instead: a local guard whose `Drop` panics, then a `panic!`, so that the
+/// panic already in flight while the guard unwinds triggers a second panic
+/// during unwinding, which the runtime turns into an abort; on targets built
+/// with `panic = "abort"` the first `panic!` already aborts, so the guard
+/// never actually runs.
+#[cold]
+#[inline(never)]
+fn abort() -> ! {
+    #[cfg(feature = "std")]
+    {
+        std::process::abort()
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        struct AbortOnDrop;
+        impl Drop for AbortOnDrop {
+            fn drop(&mut self) {
+                panic!("cord-rs: aborting (double panic)");
+            }
+        }
+        let _guard = AbortOnDrop;
+        panic!("cord-rs: aborting");
+    }
 }
 
 /// Narrows a small value to a `u8`, as stored in the `storage` bytes of reps
@@ -1246,6 +1278,8 @@ pub(crate) unsafe fn small_memmove<const NULLIFY_TAIL: bool>(dst: *mut u8, src: 
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
 
     #[test]

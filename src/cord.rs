@@ -7,6 +7,12 @@ use core::mem::MaybeUninit;
 use core::ops::{Bound, Index, RangeBounds};
 use core::ptr::NonNull;
 
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::string::{FromUtf8Error, String};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
 use crate::buffer::{ConsumedBuffer, CordBuffer};
 use crate::inline_data::{InlineData, Repr};
 use crate::iter::{Bytes, Chunks, Cursor};
@@ -1986,6 +1992,22 @@ impl fmt::Debug for Cord {
     }
 }
 
+impl fmt::Write for Cord {
+    /// Appends `s` to the cord.
+    ///
+    /// This makes `write!(cord, ...)` work, but only when `fmt::Write` is
+    /// the only `Write` trait in scope for `Cord` — with the `std` feature,
+    /// `Cord` also implements `std::io::Write`, and with that trait imported
+    /// too the macro's method lookup becomes ambiguous and fails to compile.
+    /// Disambiguate with
+    /// `fmt::Write::write_fmt(&mut cord, format_args!(...))`.
+    #[inline]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.append_slice(s.as_bytes());
+        Ok(())
+    }
+}
+
 // --- Conversions -----------------------------------------------------------------
 
 impl From<&[u8]> for Cord {
@@ -2064,37 +2086,37 @@ impl From<Box<str>> for Cord {
     }
 }
 
-impl From<std::sync::Arc<[u8]>> for Cord {
+impl From<Arc<[u8]>> for Cord {
     /// Shares the `Arc` without copying if it is more than 511 bytes.
     #[inline]
-    fn from(data: std::sync::Arc<[u8]>) -> Self {
+    fn from(data: Arc<[u8]>) -> Self {
         let capacity = data.len();
         Self::from_owned(data, capacity)
     }
 }
 
-impl From<std::sync::Arc<str>> for Cord {
+impl From<Arc<str>> for Cord {
     /// See `From<Arc<[u8]>>`.
     #[inline]
-    fn from(data: std::sync::Arc<str>) -> Self {
+    fn from(data: Arc<str>) -> Self {
         let capacity = data.len();
         Self::from_owned(data, capacity)
     }
 }
 
-impl From<std::sync::Arc<Vec<u8>>> for Cord {
+impl From<Arc<Vec<u8>>> for Cord {
     /// See `From<Arc<[u8]>>`.
     #[inline]
-    fn from(data: std::sync::Arc<Vec<u8>>) -> Self {
+    fn from(data: Arc<Vec<u8>>) -> Self {
         let capacity = data.len();
         Self::from_owned(data, capacity)
     }
 }
 
-impl From<std::sync::Arc<String>> for Cord {
+impl From<Arc<String>> for Cord {
     /// See `From<Arc<[u8]>>`.
     #[inline]
-    fn from(data: std::sync::Arc<String>) -> Self {
+    fn from(data: Arc<String>) -> Self {
         let capacity = data.len();
         Self::from_owned(data, capacity)
     }
@@ -2109,26 +2131,26 @@ impl From<CordBuffer> for Cord {
     }
 }
 
-impl From<std::borrow::Cow<'_, [u8]>> for Cord {
+impl From<Cow<'_, [u8]>> for Cord {
     /// Copies a borrowed slice (`From<&[u8]>`) or adopts an owned vector
     /// (`From<Vec<u8>>`).
     #[inline]
-    fn from(data: std::borrow::Cow<'_, [u8]>) -> Self {
+    fn from(data: Cow<'_, [u8]>) -> Self {
         match data {
-            std::borrow::Cow::Borrowed(s) => Self::from(s),
-            std::borrow::Cow::Owned(v) => Self::from(v),
+            Cow::Borrowed(s) => Self::from(s),
+            Cow::Owned(v) => Self::from(v),
         }
     }
 }
 
-impl From<std::borrow::Cow<'_, str>> for Cord {
+impl From<Cow<'_, str>> for Cord {
     /// Copies a borrowed `&str` (`From<&str>`) or adopts an owned `String`
     /// (`From<String>`).
     #[inline]
-    fn from(data: std::borrow::Cow<'_, str>) -> Self {
+    fn from(data: Cow<'_, str>) -> Self {
         match data {
-            std::borrow::Cow::Borrowed(s) => Self::from(s),
-            std::borrow::Cow::Owned(v) => Self::from(v),
+            Cow::Borrowed(s) => Self::from(s),
+            Cow::Owned(v) => Self::from(v),
         }
     }
 }
@@ -2158,7 +2180,7 @@ impl From<Cord> for Box<[u8]> {
 }
 
 impl TryFrom<Cord> for String {
-    type Error = std::string::FromUtf8Error;
+    type Error = FromUtf8Error;
 
     /// Copies the bytes into a `String`, failing if they are not valid UTF-8.
     /// For a lossy conversion use `String::from_utf8_lossy(&cord.to_vec())`.

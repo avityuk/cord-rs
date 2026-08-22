@@ -1,12 +1,16 @@
-//! `std::io` / `core::fmt` integration.
+//! `std::io` integration. Gated behind the `std` feature as a whole by
+//! `lib.rs`'s `#[cfg(feature = "std")] mod io;`; `core::fmt::Write for Cord`
+//! is not `std`-only, so it lives in `cord.rs` instead, next to `Debug`.
 
-use core::fmt;
 use std::io;
+
+use alloc::vec::Vec;
 
 use crate::buffer::CordBuffer;
 use crate::cord::Cord;
 use crate::iter::Cursor;
 
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl io::Write for Cord {
     /// Appends `buf` to the cord. Never fails and never writes partially.
     #[inline]
@@ -27,21 +31,7 @@ impl io::Write for Cord {
     }
 }
 
-impl fmt::Write for Cord {
-    /// Appends `s` to the cord.
-    ///
-    /// This makes `write!(cord, ...)` work, but only when `fmt::Write` is
-    /// the only `Write` trait in scope for `Cord` — `Cord` also implements
-    /// [`std::io::Write`], and with that trait imported too the macro's
-    /// method lookup becomes ambiguous and fails to compile. Disambiguate
-    /// with `fmt::Write::write_fmt(&mut cord, format_args!(...))`.
-    #[inline]
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.append_slice(s.as_bytes());
-        Ok(())
-    }
-}
-
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl io::Write for CordBuffer {
     /// Writes as many bytes as fit in the available capacity. Returns
     /// `Ok(0)` when the buffer is full (so `write_all` fails with
@@ -57,6 +47,7 @@ impl io::Write for CordBuffer {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl io::Read for Cursor<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut written = 0;
@@ -84,6 +75,7 @@ impl io::Read for Cursor<'_> {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl io::BufRead for Cursor<'_> {
     #[inline]
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
@@ -96,6 +88,7 @@ impl io::BufRead for Cursor<'_> {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl io::Seek for Cursor<'_> {
     /// Seeks to a byte offset within the cord.
     ///

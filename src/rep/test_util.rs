@@ -7,6 +7,10 @@
 //! All builders follow the rep reference counting conventions: they adopt
 //! the reps they are given and return a new reference to the caller.
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::vec::Vec;
+
 use super::btree::{BtreePtr, CordRepBtree, MAX_CAPACITY, as_btree};
 use super::external::CordRepExternal;
 use super::{BTREE, CordRep, CordRepSubstring, EXTERNAL, FLAT, RepPtr, SUBSTRING, flat, ref_rep, unref};

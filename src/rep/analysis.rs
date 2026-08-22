@@ -1,7 +1,7 @@
 //! Memory usage estimation for cord trees. Port of abseil's
 //! `cord_analysis.{h,cc}`.
 
-use std::collections::HashSet;
+use alloc::collections::BTreeSet;
 
 use super::{CordRep, CordRepSubstring, RepRef, RepView};
 
@@ -18,7 +18,11 @@ enum Mode {
 struct Analysis {
     mode: Mode,
     total: f64,
-    counted: HashSet<*const CordRep>,
+    // Keyed by pointer address rather than `*const CordRep` itself: this is
+    // a cold memory-accounting path, so a `BTreeSet<usize>` (no `HashSet` is
+    // available under `alloc`) is a fine trade for the simplicity of an
+    // address key over a raw-pointer `Ord` impl.
+    counted: BTreeSet<usize>,
 }
 
 /// A rep handle carrying the cumulative inverse refcount weight ("fair
@@ -55,7 +59,7 @@ impl Analysis {
             Mode::Total => self.total += size as f64,
             Mode::FairShare => self.total += size as f64 * node.fraction,
             Mode::TotalMorePrecise => {
-                if self.counted.insert(node.rep.as_ptr().cast_const()) {
+                if self.counted.insert(node.rep.as_ptr().addr()) {
                     self.total += size as f64;
                 }
             }
@@ -107,7 +111,7 @@ impl Analysis {
         reason = "the total is a non-negative approximation of a byte count"
     )]
     fn run(mode: Mode, rep: RepRef<'_>) -> usize {
-        let mut analysis = Analysis { mode, total: 0.0, counted: HashSet::new() };
+        let mut analysis = Analysis { mode, total: 0.0, counted: BTreeSet::new() };
         let node = Node::new(mode, rep, 1.0);
         if rep.is_data_edge() {
             analysis.analyze_data_edge(node);

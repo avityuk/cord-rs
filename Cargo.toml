@@ -9,8 +9,8 @@ license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/avityuk/cord-rs"
 documentation = "https://docs.rs/cord-rs"
-keywords = ["cord", "rope", "bytes", "abseil", "buffer"]
-categories = ["data-structures", "memory-management"]
+keywords = ["cord", "rope", "bytes", "abseil", "no_std"]
+categories = ["data-structures", "memory-management", "no-std"]
 # Explicit allowlist (cleaner than exclude here): ships the crate itself,
 # its tests/benches, and the scripts CONTRIBUTING.md documents in detail;
 # excludes dev-only files (CLAUDE.md, rustfmt.toml) and CI config (.github).
@@ -26,7 +26,12 @@ include = [
 ]
 
 [features]
-default = []
+default = ["std"]
+# `std::io` integration (`Read`/`BufRead`/`Seek` on `Cursor`, `Write` on
+# `Cord`, `CordBuffer` and `CordWriter`), plus each optional dependency's own
+# `std` feature. Without it the crate is `no_std` and needs only `alloc` (a
+# global allocator).
+std = ["memchr/std", "bytes?/std", "serde?/std"]
 # `bytes::Buf` for `Cord` and `Cursor`, `bytes::BufMut` for `CordWriter` and
 # `CordBuffer`, and zero-copy conversions between `Cord` and `bytes::Bytes`.
 bytes = ["dep:bytes"]
@@ -34,9 +39,9 @@ bytes = ["dep:bytes"]
 serde = ["dep:serde"]
 
 [dependencies]
-memchr = { version = "2.7", default-features = false, features = ["std"] }
+memchr = { version = "2.7", default-features = false }
 bytes = { version = "1.10.1", optional = true, default-features = false }
-serde = { version = "1.0", optional = true, default-features = false, features = ["std"] }
+serde = { version = "1.0", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

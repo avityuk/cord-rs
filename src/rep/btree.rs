@@ -18,8 +18,12 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+
 use super::{
-    BTREE, CordRep, CordRepSubstring, EXTERNAL, FLAT, RepPtr, SUBSTRING, edge_data, external, flat,
+    BTREE, CordRep, CordRepSubstring, EXTERNAL, FLAT, RepPtr, SUBSTRING, abort, edge_data, external, flat,
     is_data_edge, ref_rep, small_u8, substring_impl, unref,
 };
 
@@ -909,7 +913,7 @@ impl<const IS_BACK: bool> StackOperations<IS_BACK> {
                             // an escaping panic (if caught) would expose a
                             // torn tree; a `rebuild` that fails to fold back
                             // to `MAX_HEIGHT` is unrecoverable.
-                            std::process::abort();
+                            abort();
                         }
                         return tree;
                     }
@@ -1033,7 +1037,7 @@ impl CordRepBtree {
             // Never unwind out of tree surgery (callers hold split
             // ownership mid-operation); a lying height corrupts navigation,
             // so this is unrecoverable.
-            std::process::abort();
+            abort();
         }
         let mut rep = CordRep::new(length, BTREE);
         rep.storage = [small_u8(height), small_u8(begin), small_u8(end)];
@@ -2476,7 +2480,7 @@ impl CordRepBtree {
                             // panic (if caught) would expose a torn rebuild;
                             // needing more than `MAX_DEPTH` levels here is
                             // unrecoverable.
-                            std::process::abort();
+                            abort();
                         }
                         match stack[height] {
                             None => {

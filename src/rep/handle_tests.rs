@@ -2,6 +2,9 @@
 //! `rep/btree.rs`: `RepRef`, `OwnedRep`, `RepView`, `FlatRef`, `ExternalRef`
 //! and `BtreeRef`.
 
+use alloc::format;
+use alloc::vec::Vec;
+
 use crate::inline_data::InlineData;
 
 use super::btree::{BtreePtr, CordRepBtree};

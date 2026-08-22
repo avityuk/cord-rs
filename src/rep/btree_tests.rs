@@ -5,8 +5,13 @@
 //! over all parameter values inside one test.
 #![allow(clippy::cast_possible_truncation, reason = "tests pack small known values into bytes")]
 
-use std::collections::VecDeque;
-use std::ptr::NonNull;
+use core::ptr::NonNull;
+
+use alloc::collections::VecDeque;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use super::btree::{BtreePtr, CordRepBtree, ExtractResult, MAX_CAPACITY, MAX_HEIGHT, as_btree};
 use super::test_util::*;
@@ -28,9 +33,17 @@ unsafe fn is_node(rep: *mut CordRep, height: usize) -> bool {
         }
         let tree = as_btree(rep);
         if let Err(e) = CordRepBtree::check_valid(tree, false) {
-            let mut dump = String::new();
-            let _ = CordRepBtree::dump(NonNull::new(rep), "Expected valid NODE, got:", false, &mut dump);
-            eprintln!("{e}\n{dump}");
+            // `eprintln!` is diagnostic-only test output with no `alloc`
+            // equivalent, so it's only available with the `std` feature;
+            // the failure itself is still reported via the `false` return.
+            #[cfg(feature = "std")]
+            {
+                let mut dump = String::new();
+                let _ = CordRepBtree::dump(NonNull::new(rep), "Expected valid NODE, got:", false, &mut dump);
+                std::eprintln!("{e}\n{dump}");
+            }
+            #[cfg(not(feature = "std"))]
+            let _ = e;
             return false;
         }
         tree.height() == height

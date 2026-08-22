@@ -3,7 +3,11 @@
 //! for the index types accepted by [`Cord::get`].
 
 use core::ops::{Bound, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
-use std::sync::Arc;
+
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::buffer::CordBuffer;
 use crate::cord::Cord;

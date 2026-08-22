@@ -1,6 +1,8 @@
 //! Port of abseil's `cord_rep_btree_navigator_test.cc`.
 
-use std::ptr::NonNull;
+use core::ptr::NonNull;
+
+use alloc::vec::Vec;
 
 use super::btree::{BtreePtr, CordRepBtree, MAX_CAPACITY, MAX_HEIGHT, as_btree};
 use super::navigator::CordRepBtreeNavigator;

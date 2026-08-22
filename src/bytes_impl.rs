@@ -1,7 +1,6 @@
 //! Integration with the [`bytes`] crate.
 
-use std::cmp::Ordering;
-use std::io;
+use core::cmp::Ordering;
 
 use bytes::buf::UninitSlice;
 use bytes::{Buf, BufMut, Bytes};
@@ -114,9 +113,10 @@ impl PartialOrd<Cord> for Bytes {
     }
 }
 
-/// A [`BufMut`] / [`io::Write`] adapter that appends to a [`Cord`] through
-/// [`CordBuffer`]s, so that data can be written into uninitialized memory
-/// that becomes part of the cord without copying.
+/// A [`BufMut`] (and, with the `std` feature, `std::io::Write`) adapter that
+/// appends to a [`Cord`] through [`CordBuffer`]s, so that data can be
+/// written into uninitialized memory that becomes part of the cord without
+/// copying.
 ///
 /// Buffered data is appended to the cord when the writer is dropped, when
 /// [`flush`](Self::flush) is called, or whenever a buffer fills up. Large
@@ -241,15 +241,17 @@ unsafe impl BufMut for CordWriter<'_> {
     }
 }
 
-impl io::Write for CordWriter<'_> {
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+impl std::io::Write for CordWriter<'_> {
     #[inline]
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         BufMut::put_slice(self, buf);
         Ok(buf.len())
     }
 
     #[inline]
-    fn flush(&mut self) -> io::Result<()> {
+    fn flush(&mut self) -> std::io::Result<()> {
         CordWriter::flush(self);
         Ok(())
     }

@@ -1,5 +1,8 @@
 //! Port of abseil's `cord_rep_btree_reader_test.cc`.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use super::btree::{BtreePtr, BtreeRef, CordRepBtree, MAX_CAPACITY};
 use super::reader::CordRepBtreeReader;
 use super::test_util::*;

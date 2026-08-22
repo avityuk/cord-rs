@@ -14,6 +14,8 @@ use core::marker::PhantomData;
 use core::mem::{align_of, offset_of};
 use core::ptr::NonNull;
 
+use alloc::alloc::{alloc, dealloc, handle_alloc_error};
+
 use super::{CordRep, FLAT, MAX_FLAT_TAG, RepPtr, small_u8};
 
 /// Size of the header preceding the payload of a flat.
@@ -143,8 +145,8 @@ fn new_impl<const MAX_SIZE: usize>(mut len: usize) -> *mut CordRep {
     // returned block (once checked non-null) is immediately initialized
     // with a full `CordRep` header before any other code can observe it.
     unsafe {
-        let raw = std::alloc::alloc(layout);
-        let raw = NonNull::new(raw).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+        let raw = alloc(layout);
+        let raw = NonNull::new(raw).unwrap_or_else(|| handle_alloc_error(layout));
         let rep = raw.as_ptr().cast::<CordRep>();
         rep.write(CordRep::new(0, allocated_size_to_tag(size)));
         rep
@@ -188,7 +190,7 @@ pub(crate) unsafe fn delete(rep: *mut CordRep) {
     unsafe {
         let tag = rep.tag();
         debug_assert!((FLAT..=MAX_FLAT_TAG).contains(&tag));
-        std::alloc::dealloc(rep.cast(), layout_for(tag_to_allocated_size(tag)));
+        dealloc(rep.cast(), layout_for(tag_to_allocated_size(tag)));
     }
 }
 

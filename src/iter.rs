@@ -408,15 +408,16 @@ impl core::iter::FusedIterator for Bytes<'_> {}
 /// [`bytes`](Cord::bytes) to iterate byte by byte; use a `Cursor` when the
 /// position itself matters — parsing a wire format, reading a header and
 /// then the payload it describes, or handing a cord to code that wants
-/// [`std::io::Read`]. A cursor is cheap to clone; advancing, seeking and
+/// `std::io::Read`. A cursor is cheap to clone; advancing, seeking and
 /// [`read_cord`](Self::read_cord) are all O(log n) in the number of chunks,
 /// and `read_cord` shares memory with the source cord rather than copying it
 /// (see its own docs for the exact rule).
 ///
-/// It also implements [`std::io::Read`], [`std::io::BufRead`] and
-/// [`std::io::Seek`] (and `bytes::Buf` with the `bytes` feature) — seeking
-/// forward advances in place, seeking backward rebuilds the cursor from the
-/// start of the cord. `Cursor` does not implement [`Iterator`]:
+/// With the `std` feature it also implements `std::io::Read`,
+/// `std::io::BufRead` and `std::io::Seek` (and `bytes::Buf` with the `bytes`
+/// feature) — seeking forward advances in place, seeking backward rebuilds
+/// the cursor from the start of the cord. `Cursor` does not implement
+/// [`Iterator`]:
 /// `take`/`by_ref` would be ambiguous with the `bytes::Buf` and
 /// `std::io::Read` methods of the same name, and per-byte iteration belongs
 /// to [`Cord::bytes`] instead. Use [`next_byte`](Self::next_byte),
@@ -442,19 +443,27 @@ pub struct Cursor<'a> {
     chunks: Chunks<'a>,
     len: usize,
     /// The cord the cursor was built over. Unused by any forward-only
-    /// operation; kept so a backward [`std::io::Seek`] can rebuild `chunks`
-    /// from the start.
+    /// operation; kept so a backward `std::io::Seek` can rebuild `chunks`
+    /// from the start. Only `io::Seek` (`src/io.rs`) reads it, so it (and
+    /// its accessor below) only exist with the `std` feature.
+    #[cfg(feature = "std")]
     cord: &'a Cord,
 }
 
 impl<'a> Cursor<'a> {
     #[inline]
     pub(crate) fn new(cord: &'a Cord) -> Self {
-        Self { chunks: Chunks::new(cord), len: cord.len(), cord }
+        Self {
+            chunks: Chunks::new(cord),
+            len: cord.len(),
+            #[cfg(feature = "std")]
+            cord,
+        }
     }
 
     /// The cord this cursor was built over, for `io::Seek`'s backward-seek
     /// rebuild (`src/io.rs`).
+    #[cfg(feature = "std")]
     #[inline]
     pub(crate) fn cord(&self) -> &'a Cord {
         self.cord
@@ -489,8 +498,7 @@ impl<'a> Cursor<'a> {
     /// the end).
     ///
     /// Empty exactly when [`has_remaining`](Self::has_remaining) is
-    /// `false` — this is [`BufRead::fill_buf`](std::io::BufRead::fill_buf)
-    /// without the `Result`.
+    /// `false` — this is `std::io::BufRead::fill_buf` without the `Result`.
     #[inline]
     #[must_use]
     pub fn chunk(&self) -> &'a [u8] {
@@ -537,8 +545,9 @@ impl<'a> Cursor<'a> {
     /// alive. Everything else references the source's buffers, which stay
     /// alive for as long as the returned cord does.
     ///
-    /// Named `read_cord` rather than `read` because `Cursor` also implements
-    /// [`std::io::Read`], whose `read` fills a caller-provided buffer.
+    /// Named `read_cord` rather than `read` because, with the `std` feature,
+    /// `Cursor` also implements `std::io::Read`, whose `read` fills a
+    /// caller-provided buffer.
     ///
     /// ```
     /// use cord_rs::Cord;

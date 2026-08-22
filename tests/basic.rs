@@ -1,15 +1,16 @@
 //! Deterministic end-to-end tests of the public API.
-#![expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "tests juggle small integers freely"
-)]
+// `clippy::cast_possible_wrap` casts only occur in `check_cursor_seek`
+// (`std`-only: it exercises `io::Seek`), so its expectation is scoped there
+// instead of at file level — otherwise it goes unfulfilled and errors under
+// `--no-default-features`.
+#![expect(clippy::cast_possible_truncation, reason = "tests juggle small integers freely")]
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+#[cfg(feature = "std")]
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
@@ -565,16 +566,19 @@ fn iteration_and_cursor() {
     assert_eq!(cursor.next_byte(), None);
 
     // io::Read / BufRead.
-    let mut cursor = cord.cursor();
-    let mut buf = [0u8; 1000];
-    cursor.read_exact(&mut buf).unwrap();
-    assert_eq!(&buf[..], &data[..1000]);
-    let first_chunk = cursor.fill_buf().unwrap().to_vec();
-    assert!(!first_chunk.is_empty());
-    cursor.consume(first_chunk.len());
-    let mut rest = Vec::new();
-    cursor.read_to_end(&mut rest).unwrap();
-    assert_eq!(rest, &data[1000 + first_chunk.len()..]);
+    #[cfg(feature = "std")]
+    {
+        let mut cursor = cord.cursor();
+        let mut buf = [0u8; 1000];
+        cursor.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf[..], &data[..1000]);
+        let first_chunk = cursor.fill_buf().unwrap().to_vec();
+        assert!(!first_chunk.is_empty());
+        cursor.consume(first_chunk.len());
+        let mut rest = Vec::new();
+        cursor.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, &data[1000 + first_chunk.len()..]);
+    }
 
     // Iterator helpers.
     assert_eq!(cord.bytes().nth(4567), Some(data[4567]));
@@ -589,6 +593,7 @@ fn iteration_and_cursor() {
     assert_eq!(c.next_byte(), None);
 }
 
+#[cfg(feature = "std")]
 #[test]
 fn cursor_seek() {
     // Inline (<= 15 bytes).
@@ -615,10 +620,12 @@ fn cursor_seek() {
 
 /// Exercises the `io::Seek` contract of a cursor over `cord`, checking every
 /// resulting position and read against `expected`.
+#[cfg(feature = "std")]
 #[expect(
     clippy::seek_from_current,
     reason = "deliberately exercises seek(Current(0)) as a no-op, not just stream_position"
 )]
+#[expect(clippy::cast_possible_wrap, reason = "tests juggle small integers freely")]
 fn check_cursor_seek(cord: &Cord, expected: &[u8]) {
     let len = expected.len();
     let mut cursor = cord.cursor();
@@ -887,7 +894,10 @@ fn cord_buffer_roundtrip() {
 fn write_extend_and_formatting() {
     let mut cord = Cord::new();
     std::fmt::Write::write_fmt(&mut cord, format_args!("{}-{}", 1, "two")).unwrap();
+    #[cfg(feature = "std")]
     cord.write_all(b"|bytes").unwrap();
+    #[cfg(not(feature = "std"))]
+    cord.append(&b"|bytes"[..]);
     cord.extend(*b"!?");
     cord.extend(["a", "b"]);
     cord.extend(vec![vec![b'c'; 1000]]);
@@ -1195,6 +1205,7 @@ fn chunks_and_bytes_iterator_exhaustion() {
     assert_eq!(bytes.size_hint(), (0, Some(0)));
 }
 
+#[cfg(feature = "std")]
 #[test]
 fn io_write_for_cord() {
     let mut cord = Cord::from("a");
@@ -1204,6 +1215,7 @@ fn io_write_for_cord() {
     check(&cord, b"abc");
 }
 
+#[cfg(feature = "std")]
 #[test]
 fn io_write_for_cord_buffer_write_zero_on_full() {
     let mut buffer = CordBuffer::with_capacity(4);

@@ -164,7 +164,10 @@ mod bytes_feature {
         // io::Write through the writer and into_inner.
         let mut cord = Cord::new();
         let mut writer = CordWriter::new(&mut cord);
+        #[cfg(feature = "std")]
         std::io::Write::write_all(&mut writer, b"io write").unwrap();
+        #[cfg(not(feature = "std"))]
+        writer.put_slice(b"io write");
         let inner = writer.into_inner();
         assert_eq!(*inner, "io write");
         inner.append("!");

@@ -2,6 +2,9 @@
 
 use core::fmt;
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use serde::de::{Deserialize, Deserializer, Error, SeqAccess, Visitor};
 use serde::ser::{Serialize, Serializer};
 

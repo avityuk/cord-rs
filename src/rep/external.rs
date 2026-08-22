@@ -11,6 +11,12 @@ use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 
+use alloc::alloc::dealloc;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
 use super::{CordRep, EXTERNAL, RepPtr};
 
 /// Function that releases the referenced storage and frees its external node.
@@ -59,25 +65,25 @@ pub(crate) unsafe trait StableBytes: Send + Sync + 'static {
     fn as_bytes(&self) -> &[u8];
 }
 
-unsafe impl StableBytes for std::sync::Arc<[u8]> {
+unsafe impl StableBytes for Arc<[u8]> {
     #[inline]
     fn as_bytes(&self) -> &[u8] {
         self
     }
 }
-unsafe impl StableBytes for std::sync::Arc<Vec<u8>> {
+unsafe impl StableBytes for Arc<Vec<u8>> {
     #[inline]
     fn as_bytes(&self) -> &[u8] {
         self
     }
 }
-unsafe impl StableBytes for std::sync::Arc<str> {
+unsafe impl StableBytes for Arc<str> {
     #[inline]
     fn as_bytes(&self) -> &[u8] {
         str::as_bytes(self)
     }
 }
-unsafe impl StableBytes for std::sync::Arc<String> {
+unsafe impl StableBytes for Arc<String> {
     #[inline]
     fn as_bytes(&self) -> &[u8] {
         String::as_bytes(self)
@@ -332,7 +338,7 @@ unsafe fn release_global(ext: *mut CordRepExternal) {
     // payload references remain. Deallocate the payload before the metadata,
     // matching normal owner-field drop order.
     unsafe {
-        std::alloc::dealloc(base, Layout::from_size_align_unchecked(allocation_size, 1));
+        dealloc(base, Layout::from_size_align_unchecked(allocation_size, 1));
         drop(Box::from_raw(node));
     }
 }
@@ -433,9 +439,11 @@ impl<'a> ExternalRef<'a> {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use alloc::vec;
+
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct DropCounter(Vec<u8>, Arc<AtomicUsize>);
     unsafe impl StableBytes for DropCounter {

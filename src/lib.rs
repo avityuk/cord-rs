@@ -61,17 +61,29 @@
 //!
 //! # Features
 //!
+//! * `std` (default) — `std::io` integration: `Read`/`BufRead`/`Seek` on
+//!   [`Cursor`](crate::iter::Cursor), and `Write` on [`Cord`], `CordBuffer`
+//!   and `CordWriter`. Building with `default-features = false` gives a
+//!   `no_std` + `alloc` crate (any global allocator); everything else —
+//!   including `core::fmt::Write` for [`Cord`] — stays available.
 //! * `bytes` — `bytes::Buf` for [`Cord`] and [`Cursor`](crate::iter::Cursor),
 //!   `bytes::BufMut` for `CordWriter` and `CordBuffer`, and zero-copy
 //!   conversions with `bytes::Bytes`.
 //! * `serde` — `Serialize` / `Deserialize` for [`Cord`] as a byte sequence.
 //!
 //! [`absl::Cord`]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
+#![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 mod buffer;
 mod cord;
 mod inline_data;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 mod io;
 pub mod iter;
 mod rep;
@@ -85,8 +97,10 @@ mod bytes_impl;
 mod serde_impl;
 
 /// Compiles and runs every code block in `README.md` as a doctest, so the
-/// README cannot drift from the API.
-#[cfg(doctest)]
+/// README cannot drift from the API. The README's examples are std-flavoured
+/// (`read_into_cord` and `parse_frame` use `std::io::Read`), so this only
+/// runs with the `std` feature enabled.
+#[cfg(all(doctest, feature = "std"))]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
@@ -129,7 +143,7 @@ const _: () = assert_send_sync::<CordWriter<'_>>();
 /// rather than relying on the auto trait alone). `CordWriter` is deliberately
 /// excluded: it holds a `&mut Cord`, so it is correctly `!UnwindSafe`, the
 /// same way `std::io::BufWriter<&mut W>` is.
-const fn assert_unwind_safe<T: ?Sized + std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+const fn assert_unwind_safe<T: ?Sized + core::panic::UnwindSafe + core::panic::RefUnwindSafe>() {}
 
 const _: () = {
     assert_unwind_safe::<Cord>();
@@ -146,6 +160,9 @@ const _: () = {
 #[doc(hidden)]
 pub mod __internal {
     use core::ptr::NonNull;
+
+    use alloc::format;
+    use alloc::string::String;
 
     use crate::Cord;
     use crate::rep::btree::{CordRepBtree, as_btree};
