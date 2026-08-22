@@ -85,6 +85,12 @@ mod bytes_impl;
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 mod serde_impl;
 
+/// Compiles and runs every code block in `README.md` as a doctest, so the
+/// README cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 pub use buffer::CordBuffer;
 pub use cord::{Cord, MemoryAccounting};
 pub use source::{CordIndex, CordLike, CordSource};

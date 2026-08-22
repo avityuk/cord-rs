@@ -27,8 +27,8 @@ include = [
 
 [features]
 default = []
-# `bytes::Buf` for `Cord`, `bytes::BufMut` for `CordWriter`, and zero-copy
-# conversions between `Cord` and `bytes::Bytes`.
+# `bytes::Buf` for `Cord` and `Cursor`, `bytes::BufMut` for `CordWriter` and
+# `CordBuffer`, and zero-copy conversions between `Cord` and `bytes::Bytes`.
 bytes = ["dep:bytes"]
 # `serde::Serialize` / `serde::Deserialize` for `Cord` (as a byte sequence).
 serde = ["dep:serde"]
