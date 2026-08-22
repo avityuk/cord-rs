@@ -29,8 +29,12 @@ pub enum MemoryAccounting {
     #[default]
     Total,
     /// Like [`Total`](Self::Total), except that memory referenced more than
-    /// once by this cord is only counted once. More expensive to compute as
-    /// it requires deduplicating all memory references.
+    /// once by this cord is only counted once — e.g. appending the same
+    /// cord to a cord twice counts the shared data twice under `Total` but
+    /// once here. More expensive to compute, since it requires
+    /// deduplicating all memory references; prefer [`Total`](Self::Total)
+    /// or [`FairShare`](Self::FairShare) unless an estimate this precise is
+    /// actually needed.
     TotalMorePrecise,
     /// Counts the *approximate* number of bytes held by this cord weighted by
     /// the sharing ratio of that data: memory shared by four cords is charged
@@ -64,8 +68,15 @@ pub enum MemoryAccounting {
 ///
 /// # Thread safety
 ///
-/// `Cord` is `Send + Sync`. Buffers shared between cords are immutable; a
-/// buffer is only mutated in place while a single cord references it.
+/// `Cord` is `Send + Sync`, with the thread safety of an ordinary Rust
+/// value: any number of threads may hold `&Cord` at once, including clones
+/// of the same cord, while mutating one requires `&mut Cord`. This holds
+/// together with cheap cloning because a clone is a reference-count bump —
+/// clones share the underlying buffers but behave as independent values,
+/// since a buffer is only ever written in place while exactly one cord
+/// references it, reference counts are atomic, and buffers shared between
+/// cords are never modified. See the README's "Sharing and mutation"
+/// section for the full picture.
 ///
 /// # Bounds checking
 ///
@@ -790,7 +801,11 @@ impl Cord {
 
     /// Creates a cord referencing static data without copying it.
     ///
-    /// Values of 15 bytes or less are stored inline instead.
+    /// Values of 15 bytes or less are stored inline instead. Unlike
+    /// abseil's `MakeCordFromExternal`, which takes a releaser callback and
+    /// warns that passing one which does nothing is likely a bug, this
+    /// takes an owning `&'static` reference directly, so that particular
+    /// mistake isn't expressible here.
     ///
     /// ```
     /// use cord_rs::Cord;
@@ -888,20 +903,27 @@ impl Cord {
     /// Returns a [`CordBuffer`] for appending, reusing spare capacity in the
     /// cord's last buffer if possible.
     ///
-    /// If the cord's last buffer is privately owned and has at least 16 bytes
-    /// of spare capacity, that buffer is *removed* from the cord and returned
-    /// together with its existing contents (so the returned buffer has a
-    /// non-zero length and a capacity of at least `len + 16`). Otherwise a
-    /// new buffer of the requested `capacity` (capped at
-    /// [`CordBuffer::DEFAULT_MAX_CAPACITY`]) is returned. Either way the
-    /// caller must [`append`](Self::append) the buffer back to restore the
-    /// data.
+    /// Cords keep spare capacity in their last buffer to amortize repeated
+    /// appends; this hands that spare capacity to the caller directly
+    /// instead of requiring a copy into it. If the cord's last buffer is
+    /// privately owned and has at least 16 bytes of spare capacity, that
+    /// buffer is *removed* from the cord and returned together with its
+    /// existing contents (so the returned buffer has a non-zero length and
+    /// a capacity of at least `len + 16`). Otherwise — including when the
+    /// cord's data is shared with another cord, since a shared buffer is
+    /// never written to — a fresh, empty buffer of the requested `capacity`
+    /// (capped at [`CordBuffer::DEFAULT_MAX_CAPACITY`]) is returned instead
+    /// of stealing the shared tail. Either way the caller must
+    /// [`append`](Self::append) the buffer back to restore the data.
     ///
     /// ```
     /// use cord_rs::Cord;
     /// fn append_random(cord: &mut Cord, mut n: usize) {
     ///     let mut first = true;
     ///     while n > 0 {
+    ///         // Reuse the cord's own spare tail capacity on the first
+    ///         // buffer only; after that the tail is whatever was just
+    ///         // filled, so a plain allocation is just as good.
     ///         let mut buffer = if first {
     ///             cord.take_append_buffer(n)
     ///         } else {
@@ -990,6 +1012,10 @@ impl Cord {
 
     /// Removes the first `n` bytes.
     ///
+    /// O(log n). Mutates the affected chunk in place when this cord
+    /// uniquely owns it, otherwise builds a new substring node over the
+    /// remainder instead.
+    ///
     /// # Panics
     ///
     /// Panics if `n > self.len()`.
@@ -1050,6 +1076,10 @@ impl Cord {
     /// Shortens the cord to `len` bytes, keeping the first `len`. Has no
     /// effect if `len >= self.len()`.
     ///
+    /// O(log n). Mutates the affected chunk in place when this cord
+    /// uniquely owns it, otherwise builds a new substring node over the
+    /// kept prefix instead.
+    ///
     /// ```
     /// use cord_rs::Cord;
     /// let mut cord = Cord::from("hello world");
@@ -1099,7 +1129,11 @@ impl Cord {
     }
 
     /// Returns a new cord holding the bytes in `range`, sharing memory with
-    /// this cord where possible (small results are copied).
+    /// this cord where possible.
+    ///
+    /// O(log n). The result references this cord's buffers and keeps them
+    /// alive, except results of 15 bytes or fewer, which are copied into the
+    /// returned cord's inline storage instead.
     ///
     /// Non-panicking version: [`get`](Self::get).
     ///
@@ -1199,6 +1233,12 @@ impl Cord {
     /// Returns the cord's bytes as a single slice if they are stored
     /// contiguously, `None` otherwise.
     ///
+    /// A sub-cord of a single buffer — e.g. the result of
+    /// [`slice`](Self::slice) on a cord backed by one flat — counts as
+    /// contiguous too, so `Some` does not mean this cord's memory holds
+    /// *only* these bytes: the rest of the source buffer can still be kept
+    /// alive behind it.
+    ///
     /// ```
     /// use cord_rs::Cord;
     /// let cord = Cord::from("contiguous");
@@ -1214,7 +1254,15 @@ impl Cord {
     }
 
     /// Flattens the cord into a single contiguous buffer and returns it.
-    /// If the cord is already contiguous its contents are not modified.
+    ///
+    /// A cord that is already contiguous — including a sub-cord of a single
+    /// buffer, see [`as_contiguous`](Self::as_contiguous) — is returned
+    /// untouched, so this does not shrink the memory such a sub-cord keeps
+    /// alive; to force a compact copy instead, use
+    /// `Cord::from(cord.to_vec())`. Flattening a non-contiguous cord copies
+    /// every byte, and for cords above the largest chunk size backs the
+    /// result with one large buffer; prefer [`chunks`](Self::chunks) when
+    /// reading is all that's needed.
     ///
     /// ```
     /// use cord_rs::Cord;
@@ -1232,6 +1280,10 @@ impl Cord {
     }
 
     /// Copies the cord's bytes into a new `Vec<u8>`.
+    ///
+    /// To append into an existing `Vec` instead of allocating a new one,
+    /// iterate [`chunks`](Self::chunks) and call `extend_from_slice` on
+    /// each.
     #[must_use]
     pub fn to_vec(&self) -> Vec<u8> {
         let mut vec = Vec::with_capacity(self.len());
@@ -1299,6 +1351,8 @@ impl Cord {
 
     /// Returns a [`Cursor`] positioned at the start of the cord, supporting
     /// byte-wise and chunk-wise reading, skipping and sub-cord extraction.
+    /// See [`chunks`](Self::chunks) for bulk processing and
+    /// [`bytes`](Self::bytes) for byte iteration.
     #[inline]
     #[must_use]
     pub fn cursor(&self) -> Cursor<'_> {
@@ -1452,6 +1506,9 @@ impl Cord {
     }
 
     /// Returns `true` if the cord starts with `prefix`.
+    ///
+    /// Like [`ends_with`](Self::ends_with), this compares through chunk
+    /// cursors without flattening or allocating.
     ///
     /// ```
     /// use cord_rs::Cord;

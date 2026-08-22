@@ -28,7 +28,13 @@ impl io::Write for Cord {
 }
 
 impl fmt::Write for Cord {
-    /// Appends `s` to the cord, so `write!(cord, ...)` works.
+    /// Appends `s` to the cord.
+    ///
+    /// This makes `write!(cord, ...)` work, but only when `fmt::Write` is
+    /// the only `Write` trait in scope for `Cord` — `Cord` also implements
+    /// [`std::io::Write`], and with that trait imported too the macro's
+    /// method lookup becomes ambiguous and fails to compile. Disambiguate
+    /// with `fmt::Write::write_fmt(&mut cord, format_args!(...))`.
     #[inline]
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.append_slice(s.as_bytes());

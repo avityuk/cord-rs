@@ -186,10 +186,14 @@ impl Rep {
 /// A buffer of bytes that can be appended to (or prepended to) a [`Cord`](crate::Cord)
 /// without copying.
 ///
-/// `CordBuffer` is useful for zero-copy APIs (e.g. reading from a socket
-/// directly into memory that becomes part of a cord) and for building large
-/// cords with control over allocation sizes. A buffer has a `capacity` and a
-/// `len`; the first `len` bytes are initialized data.
+/// `CordBuffer` exists for zero-copy ingestion — reading from a socket, a
+/// file or a decoder directly into memory that becomes part of a cord,
+/// instead of filling a `Vec` and copying it in — and for control over
+/// allocation size when building large cords (see the README's "Zero-copy
+/// ingestion" section for the fuller picture). A buffer has a `capacity` and
+/// a `len`; the first `len` bytes are initialized data. Appending a buffer
+/// to a cord adds exactly one chunk and one tree edge, whatever the
+/// buffer's size.
 ///
 /// ```
 /// use cord_rs::{Cord, CordBuffer};
@@ -209,14 +213,21 @@ impl Rep {
 /// assert_eq!(read_all(&[7u8; 10_000]).len(), 10_000);
 /// ```
 ///
-/// Buffers of up to [`DEFAULT_MAX_CAPACITY`](Self::DEFAULT_MAX_CAPACITY)
-/// bytes (just under 4 KiB) are created with
-/// [`with_capacity`](Self::with_capacity); larger buffers need
-/// [`with_capacity_and_block_size`](Self::with_capacity_and_block_size). The
-/// default limit balances CPU efficiency (larger buffers) against memory
-/// overhead and fragmentation (smaller buffers). A buffer's capacity may
-/// exceed the requested one due to allocation size rounding; use
-/// [`capacity`](Self::capacity) / [`available`](Self::available).
+/// # Sizing
+///
+/// [`with_capacity`](Self::with_capacity) caps the buffer at
+/// [`DEFAULT_MAX_CAPACITY`](Self::DEFAULT_MAX_CAPACITY) (just under 4 KiB) —
+/// silently: a request for more is not an error, it is capped, so check
+/// [`capacity`](Self::capacity) rather than assuming the request was
+/// honored in full. That default balances CPU efficiency (larger buffers)
+/// against memory overhead and fragmentation (smaller buffers), and is the
+/// right choice unless measurements say otherwise;
+/// [`with_capacity_and_block_size`](Self::with_capacity_and_block_size) goes
+/// up to [`MAX_BLOCK_SIZE`](Self::MAX_BLOCK_SIZE) for data known to be many
+/// times that size. Either way, a buffer's capacity may exceed the
+/// requested one because allocations are rounded to a size class; always
+/// drive loops off [`capacity`](Self::capacity) / [`available`](Self::available)
+/// rather than the requested number.
 ///
 /// The uninitialized part of a buffer is exposed as
 /// [`spare_capacity_mut`](Self::spare_capacity_mut) plus the `unsafe`
@@ -269,6 +280,10 @@ impl CordBuffer {
     /// [`with_capacity_and_block_size`](Self::with_capacity_and_block_size)
     /// (64 KiB). The buffer's capacity is slightly less because of the
     /// internal header.
+    ///
+    /// The underlying allocation-size tag can address blocks up to 256 KiB;
+    /// this limit is simply where the crate stops asking the allocator for
+    /// more, not a hard ceiling of the format.
     pub const MAX_BLOCK_SIZE: usize = 64 << 10;
 
     const _CHECK: () =
@@ -336,7 +351,33 @@ impl CordBuffer {
     /// [`MAX_BLOCK_SIZE`](Self::MAX_BLOCK_SIZE).
     ///
     /// Only use a custom block size when the data is expected to be many
-    /// times the chosen block size, based on measurements.
+    /// times the chosen block size, and base the choice on measurements: a
+    /// larger block means fewer chunks and less per-chunk overhead, but
+    /// pins more memory per chunk and raises the risk of fragmentation.
+    /// Rounding down (rather than up to the next block) keeps the
+    /// distribution of allocation sizes narrow, which is what makes this a
+    /// good trade for the allocator: a stream of requests produces a
+    /// handful of distinct sizes instead of a spread of block-rounded ones
+    /// with unused tails. For example, on 64-bit, a 1 MiB request against a
+    /// 64 KiB block rounds up to the full block (capacity 65,523, the block
+    /// minus its 13-byte header), while a 19,586-byte request against the
+    /// same block size rounds *down* to a 16 KiB block (capacity 16,371)
+    /// rather than up to 32 KiB, because rounding up there would waste more
+    /// than it saves.
+    ///
+    /// ```
+    /// use cord_rs::CordBuffer;
+    /// // A request at or above the block size gets the full block.
+    /// let big = CordBuffer::with_capacity_and_block_size(1 << 20, 64 << 10);
+    /// assert_eq!(big.capacity(), CordBuffer::max_capacity_for(64 << 10));
+    /// // A request that falls well short of the block size rounds *down*
+    /// // to a smaller power-of-two block rather than up to the full one.
+    /// let odd = CordBuffer::with_capacity_and_block_size(19_586, 64 << 10);
+    /// assert!(odd.capacity() < CordBuffer::max_capacity_for(64 << 10));
+    /// // Small requests are still satisfied precisely.
+    /// let small = CordBuffer::with_capacity_and_block_size(3_215, 64 << 10);
+    /// assert!(small.capacity() >= 3_215);
+    /// ```
     ///
     /// # Panics
     ///
@@ -456,7 +497,10 @@ impl CordBuffer {
     /// The uninitialized spare capacity (`capacity() - len()` bytes).
     ///
     /// Write data into it, then call [`set_len`](Self::set_len) to mark it
-    /// initialized.
+    /// initialized. `std::io::Read::read` needs an already-initialized `&mut
+    /// [u8]`, so to fill a buffer from a `Read` either zero this region
+    /// first (e.g. `extend(core::iter::repeat_n(0, n))`) or write through
+    /// this method and commit with `set_len`, as below.
     ///
     /// ```
     /// use cord_rs::CordBuffer;

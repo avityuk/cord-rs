@@ -404,17 +404,29 @@ impl core::iter::FusedIterator for Bytes<'_> {}
 /// A position inside a [`Cord`] supporting byte-wise and chunk-wise reads,
 /// skipping, seeking, and sub-cord extraction. Created by [`Cord::cursor`].
 ///
-/// A cursor is cheap to clone. It also implements [`std::io::Read`],
-/// [`std::io::BufRead`] and [`std::io::Seek`] (and `bytes::Buf` with the
-/// `bytes` feature) — seeking forward advances in place, seeking backward
-/// rebuilds the cursor from the start of the cord; either way the cost is
-/// O(log n) in the number of chunks.
+/// Reach for [`chunks`](Cord::chunks) to process every byte of a cord and
+/// [`bytes`](Cord::bytes) to iterate byte by byte; use a `Cursor` when the
+/// position itself matters — parsing a wire format, reading a header and
+/// then the payload it describes, or handing a cord to code that wants
+/// [`std::io::Read`]. A cursor is cheap to clone; advancing, seeking and
+/// [`read_cord`](Self::read_cord) are all O(log n) in the number of chunks,
+/// and `read_cord` shares memory with the source cord rather than copying it
+/// (see its own docs for the exact rule).
 ///
-/// `Cursor` does not implement [`Iterator`]: `take`/`by_ref` would be
-/// ambiguous with the `bytes::Buf` and `std::io::Read` methods of the same
-/// name, and per-byte iteration belongs to [`Cord::bytes`] instead. Use
-/// [`next_byte`](Self::next_byte), [`read_cord`](Self::read_cord),
-/// [`advance`](Self::advance) or [`peek`](Self::peek) here.
+/// It also implements [`std::io::Read`], [`std::io::BufRead`] and
+/// [`std::io::Seek`] (and `bytes::Buf` with the `bytes` feature) — seeking
+/// forward advances in place, seeking backward rebuilds the cursor from the
+/// start of the cord. `Cursor` does not implement [`Iterator`]:
+/// `take`/`by_ref` would be ambiguous with the `bytes::Buf` and
+/// `std::io::Read` methods of the same name, and per-byte iteration belongs
+/// to [`Cord::bytes`] instead. Use [`next_byte`](Self::next_byte),
+/// [`read_cord`](Self::read_cord), [`advance`](Self::advance) or
+/// [`peek`](Self::peek) here.
+///
+/// A cursor borrows its cord, so unlike abseil's `CharIterator` — whose docs
+/// have to warn that it is invalidated by any mutation of the cord while
+/// it's alive — the borrow checker rules that out at compile time: a cord
+/// simply cannot be mutated while a cursor over it exists.
 ///
 /// ```
 /// use cord_rs::Cord;
@@ -475,6 +487,10 @@ impl<'a> Cursor<'a> {
 
     /// The longest contiguous run of bytes starting at the cursor (empty at
     /// the end).
+    ///
+    /// Empty exactly when [`has_remaining`](Self::has_remaining) is
+    /// `false` — this is [`BufRead::fill_buf`](std::io::BufRead::fill_buf)
+    /// without the `Result`.
     #[inline]
     #[must_use]
     pub fn chunk(&self) -> &'a [u8] {
@@ -482,6 +498,9 @@ impl<'a> Cursor<'a> {
     }
 
     /// The byte at the cursor, if any, without advancing.
+    ///
+    /// Amortized O(1): it reads from the current chunk and only touches the
+    /// tree when crossing into the next one.
     #[inline]
     #[must_use]
     pub fn peek(&self) -> Option<u8> {
@@ -489,6 +508,9 @@ impl<'a> Cursor<'a> {
     }
 
     /// Advances the cursor by `n` bytes.
+    ///
+    /// O(log n) in the number of chunks — it re-seeks the underlying btree
+    /// rather than walking bytes one at a time.
     ///
     /// # Panics
     ///
@@ -505,10 +527,28 @@ impl<'a> Cursor<'a> {
     }
 
     /// Reads the next `n` bytes into a new cord and advances past them.
-    /// The returned cord shares memory with the source where possible.
+    ///
+    /// The result shares memory with the source cord rather than copying
+    /// it, except when copying is cheaper: results of 15 bytes or fewer are
+    /// copied into the returned cord's inline storage, and — when this
+    /// cursor is over a multi-chunk cord — reads of up to 511 bytes that
+    /// land entirely inside the cursor's current chunk are copied too, so a
+    /// small read out of a large cord does not keep the whole source buffer
+    /// alive. Everything else references the source's buffers, which stay
+    /// alive for as long as the returned cord does.
     ///
     /// Named `read_cord` rather than `read` because `Cursor` also implements
     /// [`std::io::Read`], whose `read` fills a caller-provided buffer.
+    ///
+    /// ```
+    /// use cord_rs::Cord;
+    /// let cord = Cord::from("header:payload");
+    /// let mut cursor = cord.cursor();
+    /// let header = cursor.read_cord(7);
+    /// assert_eq!(header, "header:");
+    /// assert_eq!(cursor.position(), 7);
+    /// assert_eq!(cursor.chunk(), b"payload");
+    /// ```
     ///
     /// # Panics
     ///
@@ -524,6 +564,8 @@ impl<'a> Cursor<'a> {
     }
 
     /// Returns the next byte and advances, or `None` at the end.
+    ///
+    /// Amortized O(1), for the same reason as [`peek`](Self::peek).
     #[inline]
     pub fn next_byte(&mut self) -> Option<u8> {
         let byte = self.peek()?;
