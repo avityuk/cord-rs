@@ -1,9 +1,7 @@
 //! Deterministic end-to-end tests of the public API.
-#![allow(
+#![expect(
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
     reason = "tests juggle small integers freely"
 )]
 
@@ -224,7 +222,10 @@ fn advance_truncate_slice_split() {
         assert_eq!(cord.get(start..end).unwrap(), sub);
     }
     assert!(cord.get(10..=n).is_none());
-    #[allow(clippy::reversed_empty_ranges)]
+    #[expect(
+        clippy::reversed_empty_ranges,
+        reason = "exercising the out-of-range result of a deliberately reversed range"
+    )]
     let reversed = 11..10;
     assert!(cord.get(reversed).is_none());
     check(&cord.slice(..), &data);

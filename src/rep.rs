@@ -99,20 +99,6 @@ impl Refcount {
         Self(AtomicI32::new(REF_INCREMENT))
     }
 
-    /// An immortal refcount: `decrement` never reports zero.
-    #[inline]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "abseil parity: the immortal-flag mechanism has no production caller yet, \
-                      exercised only by this module's own tests"
-        )
-    )]
-    pub(crate) const fn immortal() -> Self {
-        Self(AtomicI32::new(IMMORTAL_FLAG))
-    }
-
     /// Increments the reference count. Imposes no memory ordering.
     #[inline]
     pub(crate) fn increment(&self) {
@@ -1282,12 +1268,6 @@ mod tests {
         assert!(rc.decrement());
         assert!(rc.is_one());
         assert!(!rc.decrement());
-        let im = Refcount::immortal();
-        assert!(im.is_immortal());
-        assert!(!im.is_one());
-        assert!(im.decrement());
-        assert!(im.decrement_expect_high_refcount());
-        assert!(im.is_immortal());
     }
 
     #[test]

@@ -5,12 +5,14 @@
 //! exercise C++ releaser plumbing, `absl::Format`, Cordz or CRC semantics are
 //! omitted or reduced to their observable Rust equivalents (noted inline).
 //! Names mirror the C++ tests in `snake_case`.
-#![allow(unused_assignments)]
-#![allow(
+#![expect(
+    unused_assignments,
+    reason = "port of cord_test.cc; mirrors its assign-then-reassign structure across branches"
+)]
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
     reason = "tests juggle small integers freely"
 )]
 
@@ -1376,7 +1378,10 @@ fn compare_random_comparisons() {
 }
 
 #[test]
-#[allow(clippy::neg_cmp_op_on_partial_ord)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "deliberately exercises the negated forms, mirroring cord_test.cc's ComparisonOperators"
+)]
 fn comparison_operators() {
     fn check<L, R>(a: &L, b: &R, a2: &L)
     where

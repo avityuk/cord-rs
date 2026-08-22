@@ -3,13 +3,7 @@
 //! Run with `cargo bench`. Groups cover construction, cloning, append /
 //! prepend growth, slicing, iteration, comparison, search, flattening and
 //! hashing, with `Vec<u8>` baselines where a comparison is meaningful.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    reason = "benchmarks juggle small integers freely"
-)]
+#![expect(clippy::cast_possible_truncation, reason = "benchmarks juggle small integers freely")]
 
 use std::hash::{Hash, Hasher};
 use std::hint::black_box;

@@ -1,10 +1,7 @@
 //! Tests for the optional `bytes` and `serde` integrations.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    reason = "tests juggle small integers freely"
+#![cfg_attr(
+    any(feature = "bytes", feature = "serde"),
+    expect(clippy::cast_possible_truncation, reason = "tests juggle small integers freely")
 )]
 
 #[cfg(any(feature = "bytes", feature = "serde"))]

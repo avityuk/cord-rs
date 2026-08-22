@@ -19,7 +19,7 @@ fn split_to_out_of_range_panics() {
 
 #[test]
 #[should_panic(expected = "slice index starts at 5 but ends at 3")]
-#[allow(clippy::reversed_empty_ranges, reason = "exercising the panic on a deliberately reversed range")]
+#[expect(clippy::reversed_empty_ranges, reason = "exercising the panic on a deliberately reversed range")]
 fn slice_reversed_range_panics() {
     let c = Cord::from("hello world");
     let _ = c.slice(5..3);

@@ -152,7 +152,8 @@ impl CordRepBtreeNavigator {
         not(test),
         expect(
             dead_code,
-            reason = "backward navigation kept for API completeness, no production caller yet"
+            reason = "navigator API completeness (mirrors abseil's Reset()), no production \
+                      caller yet; exercised by the ported navigator tests"
         )
     )]
     pub(crate) fn reset(&mut self) {
@@ -239,7 +240,8 @@ impl CordRepBtreeNavigator {
         not(test),
         expect(
             dead_code,
-            reason = "backward navigation kept for API completeness, no production caller yet"
+            reason = "navigator API completeness (mirrors abseil's InitOffset()), no production \
+                      caller yet; exercised by the ported navigator tests"
         )
     )]
     pub(crate) unsafe fn init_offset(&mut self, tree: *mut CordRepBtree, offset: usize) -> NavPosition {

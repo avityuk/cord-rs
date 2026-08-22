@@ -1,5 +1,8 @@
 //! Port of abseil's `cord_buffer_test.cc`.
-#![allow(unused_assignments)]
+#![expect(
+    unused_assignments,
+    reason = "port of cord_buffer_test.cc; mirrors its assign-then-reassign structure across branches"
+)]
 
 use cord_rs::{__internal as internal, Cord, CordBuffer};
 

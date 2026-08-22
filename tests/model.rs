@@ -2,10 +2,9 @@
 //! checked against `Vec<u8>` oracles, with tree validation after every step.
 // proptest is not available on wasm targets (see Cargo.toml).
 #![cfg(not(target_family = "wasm"))]
-#![allow(
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
     reason = "tests juggle small integers freely"
 )]
