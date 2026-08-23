@@ -5,6 +5,8 @@
 - Stable Rust ≥ 1.95 (edition 2024): `rustup update stable`.
 - `rustup target add wasm32-unknown-unknown`, so the pre-commit gate can
   compile the crate and the tests for a 32-bit target.
+- `rustup target add aarch64-unknown-none`, so the pre-commit gate can check
+  the `no_std` build against a target with no `std` at all.
 - A nightly toolchain with Miri and `rust-src`, for the required pre-push
   soundness checks: `rustup toolchain install nightly --component miri rust-src`.
 
@@ -36,16 +38,23 @@ scripts/check.sh
 
 It runs, in order: `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings`
 (the crate enables `clippy::pedantic`, so **zero warnings** is the bar) and
-`cargo check`/`cargo doc` with `-D warnings`, each across all four
-combinations of the two optional features (`bytes`, `serde`); `cargo test`
-with all features and with no features; and, for `wasm32`, a compile of the
-crate plus every test binary and a clippy run, so 32-bit-only errors (such as
-constants that only fit in 64 bits) are caught before CI's `i686` job. CI's
-`features` job goes further still, running `cargo hack --feature-powerset`
-(with `--no-dev-deps` for the `check` leg, since `serde` here is both an
-optional feature and a dev-dependency and could otherwise mask lib code that
-only compiles because the dev-dependency happens to be present) across the
-full feature powerset, not just the two features in isolation.
+`cargo check`/`cargo doc` with `-D warnings`, each across all five
+combinations of the `std` default feature and the two optional features
+(`bytes`, `serde`): none, `bytes` alone, `serde` alone, default features
+(`std` alone — what most users build), and all features; `cargo test` with
+all features, default features, and no features; and, for `wasm32`, a
+compile of the crate plus every test binary and a clippy run, so 32-bit-only
+errors (such as constants that only fit in 64 bits) are caught before CI's
+`i686` job. `wasm32` still links `std`, though, so it proves nothing about
+`no_std`; a further step checks the lib — across the four feature
+combinations with `std` off — and runs clippy against
+`aarch64-unknown-none`, a target with no `std` at all, so a `no_std`
+regression is caught locally before CI's `no_std` job. CI's `features` job
+goes further still, running `cargo hack --feature-powerset` (with
+`--no-dev-deps` for the `check` leg, since `serde` here is both an optional
+feature and a dev-dependency and could otherwise mask lib code that only
+compiles because the dev-dependency happens to be present) across the full
+feature powerset, not just the two features in isolation.
 
 To make this automatic, install the hook once per clone:
 
@@ -101,10 +110,11 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
 
 `.github/workflows/ci.yml` runs on every push and pull request:
 
-- `test`: `cargo test` with and without features on Linux, macOS and Windows, plus a 2000-case model run in release.
-- `lint`: `cargo fmt --check`, pedantic clippy (both feature configurations), docs with `-D warnings`, and an MSRV (1.95) check (with and without features).
+- `test`: `cargo test` with all features, default features, and no features on Linux, macOS and Windows, plus a 2000-case model run in release.
+- `lint`: `cargo fmt --check`, pedantic clippy (both feature configurations), docs with `-D warnings`, and an MSRV (1.95) check (all features, no features, and no-default-features with `bytes,serde`).
 - `features`: `cargo hack --feature-powerset` for `check` (`--no-dev-deps`), `clippy -- -D warnings` and `doc` (`RUSTDOCFLAGS=-D warnings`), covering every combination of the optional features rather than just none/all.
 - `cross`: the full test suite on `i686` (32-bit), plus `powerpc64` (big-endian) and `wasm32` builds.
+- `no_std`: `cargo check --lib --no-default-features` across the four combinations of `bytes`/`serde` with `std` off, plus a clippy run with both — all on `aarch64-unknown-none`, a target with no `std` at all (unlike the `wasm32` build above, which still links it).
 - `miri` and `sanitizers`: `scripts/miri.sh` and `scripts/sanitize.sh` on nightly. Required, like every other job.
 
 ## Conventions
@@ -232,6 +242,17 @@ workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
   where useful, a doctest.
 - **Portability.** Keep 32-bit and big-endian targets working: no assumptions
   about pointer width beyond what `InlineData`/`CordBuffer` encode explicitly.
+- **`no_std`.** `std` is a default feature, but library code must compile
+  without it — the crate is `#![no_std]` plus `alloc`. Use `core::`/`alloc::`
+  paths, not `std::`, in code that isn't itself behind
+  `#[cfg(feature = "std")]`. Gate any `std::io` (or other `std`-only)
+  integration with `#[cfg(feature = "std")]`, paired with the
+  `#[cfg_attr(docsrs, doc(cfg(feature = "std")))]` badge so docs.rs shows the
+  requirement. Keep intra-doc links to `std` items out of docs that aren't
+  themselves feature-gated on `std` — they dangle when the crate is
+  documented without it. Integration tests that need `std` (`tests/*.rs`)
+  must gate that code with `#[cfg(feature = "std")]` too, so the suite still
+  builds with `--no-default-features`.
 
 ## Before a release
 

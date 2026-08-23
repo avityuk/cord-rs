@@ -21,6 +21,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features
+      - run: cargo test
       - run: cargo test --no-default-features
       - run: cargo test --all-features --release --test model
         env:
@@ -51,6 +52,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95
       - run: cargo check --all-features --locked
       - run: cargo check --no-default-features --locked
+      - run: cargo check --no-default-features --features bytes,serde --locked
 
   features:
     name: feature powerset
@@ -94,6 +96,33 @@ jobs:
         run: cargo build --all-features --target powerpc64-unknown-linux-gnu
       - name: build for wasm32
         run: cargo build --all-features --target wasm32-unknown-unknown
+
+  no_std:
+    name: no_std (aarch64-unknown-none)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+      # See the `lint` job above for why `-D warnings` is scoped to these
+      # invocations rather than set workflow-wide. `cargo check` has no
+      # trailing `-- <rustc args>` (unlike clippy below), so it goes through
+      # RUSTFLAGS here instead.
+      - run: cargo check --lib --no-default-features --target aarch64-unknown-none
+        env:
+          RUSTFLAGS: -D warnings
+      - run: cargo check --lib --no-default-features --features bytes --target aarch64-unknown-none
+        env:
+          RUSTFLAGS: -D warnings
+      - run: cargo check --lib --no-default-features --features serde --target aarch64-unknown-none
+        env:
+          RUSTFLAGS: -D warnings
+      - run: cargo check --lib --no-default-features --features bytes,serde --target aarch64-unknown-none
+        env:
+          RUSTFLAGS: -D warnings
+      - run: cargo clippy --lib --no-default-features --features bytes,serde --target aarch64-unknown-none -- -D warnings
 
   miri:
     name: miri

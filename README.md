@@ -2,7 +2,8 @@
 
 A rope-like byte sequence for building, slicing and sharing large binary
 data: O(log n) append, prepend and slicing, O(1) cloning, and a 16-byte
-handle that stores up to 15 bytes inline without allocating.
+handle that stores up to 15 bytes inline without allocating. Works in
+`no_std` environments with `alloc`.
 
 ```toml
 [dependencies]
@@ -242,6 +243,12 @@ and `bytes::Bytes`; `get` is the non-panicking form for both.
 
 Cargo features:
 
+- `std` (default): `std::io` integration: `Read`/`BufRead`/`Seek` on `Cursor`,
+  `Write` on `Cord`, `CordBuffer` and `CordWriter`, plus the dependencies' own
+  `std` features (`memchr`'s runtime SIMD detection). Disable it for a
+  `no_std` + `alloc` build: `cord-rs = { version = "0.1", default-features =
+  false }`; everything else, including `core::fmt::Write` for `Cord`, stays
+  available.
 - `bytes`: `bytes::Buf` for `Cord` and `Cursor`, `bytes::BufMut` for
   `CordWriter` and `CordBuffer`, and zero-copy conversions with
   `bytes::Bytes`.
@@ -314,14 +321,17 @@ The core is a reference-counted tree in the abseil tradition and uses
 - The test suite runs under [Miri] with strict provenance and under
   AddressSanitizer / ThreadSanitizer; both are required CI jobs.
 - 64-bit and 32-bit targets, little and big endian, are supported (CI covers
-  `i686`, `wasm32` and a `powerpc64` build).
+  `i686`, `wasm32` and a `powerpc64` build). CI also builds the `no_std`
+  configuration for a bare-metal target (`aarch64-unknown-none`).
 
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). `scripts/check.sh` is the pre-commit
 gate (rustfmt; pedantic clippy, checks and docs with warnings as errors
-across all four feature combinations; tests in both feature configurations;
-and a 32-bit compile of the crate and tests);
+across all five feature combinations; tests in three feature configurations;
+a 32-bit compile of the crate and tests; and a bare-metal `no_std` check on
+`aarch64-unknown-none`, skipped with a message when the target isn't
+installed — `rustup target add aarch64-unknown-none`);
 `scripts/miri.sh` and `scripts/sanitize.sh` are the required pre-push
 soundness checks (nightly — a development-only requirement); `cargo bench`
 runs the Criterion benchmarks.

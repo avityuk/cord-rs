@@ -13,7 +13,7 @@ layout, conventions and the full command reference.
 ## Before every commit
 
 ```sh
-scripts/check.sh   # fmt, pedantic clippy (both feature configs), tests (both), docs, wasm32 build
+scripts/check.sh   # fmt, pedantic clippy (both feature configs), tests (both), docs, wasm32 build, no_std check
 ```
 
 Zero clippy warnings is the bar (`clippy::pedantic` is enabled crate-wide).
