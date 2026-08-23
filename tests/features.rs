@@ -331,4 +331,38 @@ mod serde_feature {
         let back: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(back, msg);
     }
+
+    /// An iterator that reports an absurd, constant `size_hint` no matter how
+    /// many elements are actually left — standing in for a self-describing
+    /// format's attacker-controlled sequence-length prefix (a handful of
+    /// bytes can claim billions of elements).
+    struct LyingSizeHint<I>(I);
+
+    impl<I: Iterator> Iterator for LyingSizeHint<I> {
+        type Item = I::Item;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.0.next()
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (usize::MAX / 2, Some(usize::MAX / 2))
+        }
+    }
+
+    #[test]
+    fn visit_seq_caps_a_lying_size_hint() {
+        // `serde::de::value::SeqDeserializer::size_hint` reports the wrapped
+        // iterator's bound verbatim (as `Some` whenever its lower and upper
+        // bounds agree, which they do here), so this drives `Cord`'s
+        // `visit_seq` through `deserialize_byte_buf` with exactly the
+        // shape a lying self-describing-format hint would have. Before
+        // capping the hint, `Vec::with_capacity` was handed `usize::MAX / 2`
+        // directly and the process aborted on that allocation; capped, this
+        // completes immediately and yields the 3 real bytes.
+        let iter = LyingSizeHint([1u8, 2, 3].into_iter());
+        let deserializer = serde::de::value::SeqDeserializer::<_, serde::de::value::Error>::new(iter);
+        let cord: Cord = serde::Deserialize::deserialize(deserializer).unwrap();
+        assert_eq!(cord, Cord::from(vec![1u8, 2, 3]));
+    }
 }

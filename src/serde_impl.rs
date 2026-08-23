@@ -20,6 +20,14 @@ impl Serialize for Cord {
     }
 }
 
+/// Upper bound on how much a `size_hint` is trusted to pre-allocate. In
+/// self-describing formats the hint comes straight from untrusted input, so
+/// (mirroring serde's own `Vec<u8>` deserializer) it is capped rather than
+/// passed to `Vec::with_capacity` as-is — otherwise a few bytes of encoded
+/// input claiming a huge sequence length would abort the process on
+/// allocation.
+const MAX_PREALLOCATED: usize = 1 << 20;
+
 struct CordVisitor;
 
 impl<'de> Visitor<'de> for CordVisitor {
@@ -46,7 +54,7 @@ impl<'de> Visitor<'de> for CordVisitor {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Cord, A::Error> {
-        let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(MAX_PREALLOCATED));
         while let Some(byte) = seq.next_element::<u8>()? {
             bytes.push(byte);
         }

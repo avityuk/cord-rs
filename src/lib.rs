@@ -289,16 +289,40 @@ pub mod __internal {
     /// Creates a cord holding a substring node over the flat or external node
     /// of `src` (mirrors abseil's `CordTestPeer::MakeSubstring`). Requires
     /// `src` to hold a single flat or external node and `0 < len < src.len()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `src` is inline, if `src`'s tree is not a single flat or
+    /// external node, if `offset > src.len()`, if `len == 0`, if
+    /// `offset + len > src.len()`, or if `len >= src.len()` — i.e. unless
+    /// `offset`/`len` describe a non-empty, strict sub-range of `src`. The
+    /// checks are unconditional: this is the safe boundary over a rep-layer
+    /// constructor that only `debug_assert!`s its preconditions.
     #[must_use]
     pub fn make_substring(src: &Cord, offset: usize, len: usize) -> Cord {
         let tree = src.tree().expect("make_substring: src must not be inline");
-        // SAFETY: `create` adopts the added reference; preconditions checked
-        // by `create`.
-        let owned = unsafe {
+        // SAFETY: `tree` is `src`'s live tree pointer for as long as `src` is
+        // borrowed, so reading its tag and length is sound.
+        let tree_len = unsafe {
             assert!(
                 tree.is_flat() || tree.is_external(),
                 "make_substring: src must be a flat or external node"
             );
+            tree.length()
+        };
+        assert!(
+            offset <= tree_len,
+            "make_substring: offset {offset} out of range for src of length {tree_len}"
+        );
+        assert!(len > 0, "make_substring: len must be non-zero");
+        assert!(
+            len <= tree_len - offset,
+            "make_substring: len {len} out of range for src of length {tree_len} at offset {offset}"
+        );
+        assert!(len < tree_len, "make_substring: len {len} must be less than src's length {tree_len}");
+        // SAFETY: `create` adopts the added reference; preconditions checked
+        // above.
+        let owned = unsafe {
             let rep = rep::CordRepSubstring::create(rep::ref_rep(tree), offset, len);
             OwnedRep::from_raw(rep.cast())
         };

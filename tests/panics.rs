@@ -1,7 +1,7 @@
 //! `should_panic` coverage for out-of-range / capacity-exceeded misuse that
 //! isn't already covered by the panic tests in `tests/basic.rs`.
 
-use cord_rs::{Cord, CordBuffer};
+use cord_rs::{__internal as internal, Cord, CordBuffer};
 
 #[test]
 #[should_panic(expected = "split_off index out of bounds")]
@@ -87,4 +87,22 @@ fn copy_to_bytes_over_read_panics() {
     let mut cord = Cord::from("short");
     let len = cord.len() + 1;
     let _ = cord.copy_to_bytes(len);
+}
+
+#[test]
+#[should_panic(expected = "make_substring: len 21 out of range for src of length 20 at offset 0")]
+fn make_substring_out_of_range_len_panics() {
+    // Long enough to force a real tree node (`make_substring` requires
+    // `src` to hold a flat/external node, not inline data); a release build
+    // must reject this the same as debug, since the callee's own range
+    // checks are `debug_assert!`s only.
+    let c = Cord::from("longer than 15 bytes");
+    let _ = internal::make_substring(&c, 0, c.len() + 1);
+}
+
+#[test]
+fn make_substring_in_range_sanity() {
+    let c = Cord::from("longer than 15 bytes");
+    let sub = internal::make_substring(&c, 1, c.len() - 1);
+    assert_eq!(sub, "onger than 15 bytes");
 }
