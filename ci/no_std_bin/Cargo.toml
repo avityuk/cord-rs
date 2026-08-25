@@ -1,0 +1,47 @@
+[package]
+name = "no_std_bin"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Proves F14: `cargo check --lib` (the `no_std` CI job's only check today)
+# neither links nor monomorphizes generics nothing instantiates, and never
+# involves an allocator. This crate is a real `#![no_std] #![no_main]`
+# executable for a target with no `std` at all, with its own bump
+# `#[global_allocator]` and `#[panic_handler]`, so building it exercises the
+# full path: linking, allocation, and every generic `cord-rs` entry point the
+# exercise below actually calls. See CONTRIBUTING.md for what it proves and
+# how to build it.
+#
+# `[workspace]` below makes this its own workspace root, so the parent
+# workspace does not pull it in (and its `cargo package`/`clippy --all-targets`
+# runs do not descend into it).
+[[bin]]
+name = "no_std_bin"
+path = "src/main.rs"
+
+[dependencies]
+cord-rs = { path = "../..", default-features = false }
+# Only pulled in by the `bytes`/`serde` features below, mirroring cord-rs's
+# own optional dependencies (same version floors) so the second build below
+# exercises the real integration, not a mock of it.
+bytes = { version = "1.10.1", optional = true, default-features = false }
+serde = { version = "1.0.100", optional = true, default-features = false, features = [
+    "alloc",
+] }
+
+[features]
+default = []
+bytes = ["dep:bytes", "cord-rs/bytes"]
+serde = ["dep:serde", "cord-rs/serde"]
+
+# A `no_std` bare-metal binary can only unwind if it provides its own
+# personality routine (nightly-only), so `panic = "abort"` is the only
+# option on stable -- matching how any real `no_std` consumer would build.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[workspace]

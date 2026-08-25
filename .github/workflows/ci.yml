@@ -53,6 +53,15 @@ jobs:
       - run: cargo check --all-features --locked
       - run: cargo check --no-default-features --locked
       - run: cargo check --no-default-features --features bytes,serde --locked
+      # `[package.metadata.docs.rs]` passes `--cfg docsrs` (enabling the
+      # nightly-only `doc_cfg` feature); the plain `cargo doc` step above runs
+      # on stable and so can't reproduce a docs.rs-only failure. Nightly here
+      # is for this check only -- it doesn't change what the crate needs to
+      # build or be used.
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
 
   features:
     name: feature powerset
@@ -123,6 +132,16 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
       - run: cargo clippy --lib --no-default-features --features bytes,serde --target aarch64-unknown-none -- -D warnings
+      # `cargo check --lib` above never links, so it proves nothing about an
+      # allocator or a panic handler, and never monomorphizes generic code
+      # nothing instantiates. ci/no_std_bin is a standalone crate (its own
+      # `[workspace]`) that links a real `#![no_std] #![no_main]` binary
+      # against a bump allocator and exercises the public API -- see its
+      # Cargo.toml and CONTRIBUTING.md.
+      - run: cargo build --manifest-path ci/no_std_bin/Cargo.toml --target aarch64-unknown-none
+      - run: cargo build --manifest-path ci/no_std_bin/Cargo.toml --target aarch64-unknown-none --release
+      - run: cargo build --manifest-path ci/no_std_bin/Cargo.toml --features bytes,serde --target aarch64-unknown-none
+      - run: cargo build --manifest-path ci/no_std_bin/Cargo.toml --features bytes,serde --target aarch64-unknown-none --release
 
   miri:
     name: miri
@@ -135,6 +154,28 @@ jobs:
           components: miri
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/miri.sh
+      # src/buffer.rs's cfg(target_endian) layout is the crate's only one and
+      # is otherwise never executed (the `cross` job only builds powerpc64);
+      # Miri can interpret a foreign target without that target's toolchain
+      # component installed, so run the lib and public-API legs for real on a
+      # big-endian target. Not part of scripts/miri.sh's required set (see
+      # its MIRI_TARGET option) since it would double every local pre-push
+      # run; cheap enough to always run in CI.
+      #
+      # `criterion` (a dev-dependency, only used by benches/cord.rs) pulls in
+      # `alloca`, which has a real C source file and so needs an actual
+      # s390x cross compiler at build time even though nothing here ever
+      # runs benches -- `cargo test`/`miri test` build the package's whole
+      # dev-dependency graph regardless of which target (`--lib`, in this
+      # case) is requested. Same idea as `gcc-multilib` in the `cross` job
+      # above, for a different architecture.
+      - run: sudo apt-get update && sudo apt-get install -y gcc-s390x-linux-gnu
+      - name: miri (s390x-unknown-linux-gnu, big-endian)
+        run: |
+          cargo +nightly miri test --all-features --lib --target s390x-unknown-linux-gnu
+          cargo +nightly miri test --all-features --test basic --target s390x-unknown-linux-gnu
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
 
   sanitizers:
     name: sanitizers

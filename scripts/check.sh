@@ -100,6 +100,19 @@ if rustup target list --installed | grep -q '^aarch64-unknown-none$'; then
     RUSTFLAGS="${RUSTFLAGS:--D warnings}" cargo check --lib $flags --target aarch64-unknown-none
   done
   cargo clippy --lib --no-default-features --features bytes,serde --target aarch64-unknown-none -- -D warnings
+
+  # `cargo check --lib` above proves the crate compiles `no_std` -- it never
+  # links, so it can't prove an allocator, a panic handler and every
+  # generic instantiation the API needs actually resolve. ci/no_std_bin is
+  # a standalone crate (its own `[workspace]`, so it's not a member of this
+  # one) that links a real `#![no_std] #![no_main]` binary against a bump
+  # allocator and exercises the public API; see its Cargo.toml and
+  # CONTRIBUTING.md for what it proves.
+  step "bare metal (aarch64-unknown-none): linked no_std binary (ci/no_std_bin)"
+  cargo build --manifest-path ci/no_std_bin/Cargo.toml --target aarch64-unknown-none
+  cargo build --manifest-path ci/no_std_bin/Cargo.toml --target aarch64-unknown-none --release
+  cargo build --manifest-path ci/no_std_bin/Cargo.toml --features bytes,serde --target aarch64-unknown-none
+  cargo build --manifest-path ci/no_std_bin/Cargo.toml --features bytes,serde --target aarch64-unknown-none --release
 else
   echo "skipped: install with 'rustup target add aarch64-unknown-none'"
 fi

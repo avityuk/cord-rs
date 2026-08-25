@@ -321,8 +321,9 @@ The core is a reference-counted tree in the abseil tradition and uses
 - The test suite runs under [Miri] with strict provenance and under
   AddressSanitizer / ThreadSanitizer; both are required CI jobs.
 - 64-bit and 32-bit targets, little and big endian, are supported (CI covers
-  `i686`, `wasm32` and a `powerpc64` build). CI also builds the `no_std`
-  configuration for a bare-metal target (`aarch64-unknown-none`).
+  `i686`, `wasm32` and a `powerpc64` build). CI also links a real `no_std`
+  binary — allocator, panic handler and all — for a bare-metal target
+  (`aarch64-unknown-none`).
 
 ## Development
 

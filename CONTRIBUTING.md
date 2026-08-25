@@ -26,6 +26,7 @@ needs nothing beyond stable ≥ 1.95.
 | `tests/` | Public-API suites: `abseil_cord.rs` / `abseil_cord_buffer.rs` (ports of `cord_test.cc` / `cord_buffer_test.cc`), `basic.rs`, `model.rs` (proptest vs `Vec<u8>` oracle), `features.rs` |
 | `benches/cord.rs` | Criterion benchmarks |
 | `scripts/` | `check.sh` (fast gate), `miri.sh`, `sanitize.sh`, `hooks/pre-commit` |
+| `ci/no_std_bin/` | A standalone crate (own `[workspace]`, not a member of this one): a real linked bare-metal `no_std` binary, see "The `no_std` binary" below |
 
 ## Before every commit
 
@@ -91,6 +92,21 @@ MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test --all-features --tes
 # pattern when adding heavy tests.
 ```
 
+`src/buffer.rs` has the crate's only `cfg(target_endian)`-conditional layout,
+and CI's `cross` job only *builds* big-endian (`powerpc64`), never runs it.
+Miri can interpret a foreign target without that target's toolchain
+component installed (it never compiles for the target, only interprets), so
+`scripts/miri.sh` takes an optional `MIRI_TARGET` environment variable that
+additionally runs the lib and `tests/basic.rs` legs for a second target:
+
+```sh
+MIRI_TARGET=s390x-unknown-linux-gnu scripts/miri.sh   # + big-endian lib/basic legs (~5 min more)
+```
+
+This is not part of the required set above (it would roughly double every
+local pre-push run); CI runs it unconditionally instead, as a dedicated step
+in the `miri` job.
+
 ## Benchmarks
 
 ```sh
@@ -106,16 +122,58 @@ Criterion-based and exercise construction, clone, append/prepend, slicing,
 iteration, comparison, search, flattening, hashing and two "diabolical"
 workloads, each with a `Vec<u8>` baseline where a comparison is meaningful.
 
+## The `no_std` binary (`ci/no_std_bin/`)
+
+`cargo check --lib --target aarch64-unknown-none` (what the `no_std` CI job
+and `scripts/check.sh`'s bare-metal step otherwise run) proves the crate
+*compiles* against `core` + `alloc` alone, but `check` never links, never
+monomorphizes generic code that nothing instantiates, and never involves an
+allocator — so it can't prove the crate actually *works* with no `std`.
+
+`ci/no_std_bin/` closes that gap: a small standalone crate (its own
+`[workspace]` table, so it is not a member of this repository's workspace,
+is excluded from `cargo package`'s output, and is invisible to a plain
+`cargo clippy --all-targets`/`cargo test` run at the root) that builds a real
+`#![no_std] #![no_main]` executable for `aarch64-unknown-none`, a target with
+no operating system at all. It supplies its own `#[panic_handler]` (loops)
+and `#[global_allocator]` (a bump allocator over a static byte array — the
+simplest allocator that is still a real one), then its entry point
+(`src/exercise.rs`) exercises a broad slice of the public API — construction
+from a slice and an owned `Vec`, `append`/`prepend` large enough to force the
+inline → flat → btree transitions, `slice`/`get`, `chunks()`/`bytes()` sums,
+comparison, `find`, `CordBuffer` `put_slice`/`append`,
+`estimated_memory_usage`, `Hash`, and (behind the crate's own `bytes`/`serde`
+features) `Buf`/`Bytes` and a hand-rolled `no_std` serializer — and writes a
+checksum plus a failure count into a `static` the linker cannot strip, so
+the optimizer cannot delete the work.
+
+Build it (from the repository root):
+
+```sh
+cargo build --manifest-path ci/no_std_bin/Cargo.toml --target aarch64-unknown-none            # debug
+cargo build --manifest-path ci/no_std_bin/Cargo.toml --target aarch64-unknown-none --release   # release
+cargo build --manifest-path ci/no_std_bin/Cargo.toml --features bytes,serde --target aarch64-unknown-none            # + bytes/serde
+cargo build --manifest-path ci/no_std_bin/Cargo.toml --features bytes,serde --target aarch64-unknown-none --release
+```
+
+A successful build already proves the interesting part: rustc had to
+resolve every symbol `cord-rs` references (allocation, panicking, atomics)
+against this crate's own `no_std` shims, with zero undefined symbols in the
+linked ELF (`nm -u target/aarch64-unknown-none/release/no_std_bin`). Actually
+*running* the image (e.g. under QEMU) is not part of this gate.
+
+Its `Cargo.lock` is committed, like the crate's own.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request:
 
 - `test`: `cargo test` with all features, default features, and no features on Linux, macOS and Windows, plus a 2000-case model run in release.
-- `lint`: `cargo fmt --check`, pedantic clippy (both feature configurations), docs with `-D warnings`, and an MSRV (1.95) check (all features, no features, and no-default-features with `bytes,serde`).
+- `lint`: `cargo fmt --check`, pedantic clippy (both feature configurations), docs with `-D warnings`, an MSRV (1.95) check (all features, no features, and no-default-features with `bytes,serde`), and, on nightly, `cargo doc` with `--cfg docsrs` (what `[package.metadata.docs.rs]` passes) so a docs.rs-only failure — the nightly-only `doc_cfg` feature that badges `#[cfg(feature = "std")]` items, say — is caught in CI instead of after publishing; the plain stable `cargo doc` step above can't reproduce it.
 - `features`: `cargo hack --feature-powerset` for `check` (`--no-dev-deps`), `clippy -- -D warnings` and `doc` (`RUSTDOCFLAGS=-D warnings`), covering every combination of the optional features rather than just none/all.
 - `cross`: the full test suite on `i686` (32-bit), plus `powerpc64` (big-endian) and `wasm32` builds.
-- `no_std`: `cargo check --lib --no-default-features` across the four combinations of `bytes`/`serde` with `std` off, plus a clippy run with both — all on `aarch64-unknown-none`, a target with no `std` at all (unlike the `wasm32` build above, which still links it).
-- `miri` and `sanitizers`: `scripts/miri.sh` and `scripts/sanitize.sh` on nightly. Required, like every other job.
+- `no_std`: `cargo check --lib --no-default-features` across the four combinations of `bytes`/`serde` with `std` off, plus a clippy run with both, on `aarch64-unknown-none`, a target with no `std` at all (unlike the `wasm32` build above, which still links it) — then, on top of that, four real linked builds of `ci/no_std_bin/` (debug/release × default/`bytes,serde`; see "The `no_std` binary" above).
+- `miri` and `sanitizers`: `scripts/miri.sh` and `scripts/sanitize.sh` on nightly, plus a step running the lib and `tests/basic.rs` legs under Miri for `s390x-unknown-linux-gnu` (big-endian) — see `scripts/miri.sh`'s `MIRI_TARGET` option above. Required, like every other job.
 
 ## Conventions
 
