@@ -50,9 +50,9 @@ their lifetime or cross API boundaries:
 - **Cheap sharing**: `clone` is a reference-count bump; sub-cords share the
   underlying memory.
 - **Zero-copy ingestion**: large `Vec<u8>`, `String`, `Box<[u8]>`,
-  `Arc<[u8]>`, `&'static [u8]`, `Cow::Owned` and `bytes::Bytes` values are
-  adopted rather than copied; `CordBuffer` lets I/O write into memory that
-  becomes part of the cord directly.
+  `Arc<[u8]>`, `Cow::Owned` and `bytes::Bytes` values are adopted rather than
+  copied, as is `&'static [u8]` via `Cord::from_static`; `CordBuffer` lets I/O
+  write into memory that becomes part of the cord directly.
 - **Small-data friendly**: values up to 15 bytes live inline in the 16-byte
   handle; small appends fill spare capacity in existing buffers.
 - **Allocator-friendly**: chunks are allocated in size classes — 8-byte steps
@@ -248,7 +248,7 @@ Cargo features:
   `std` features (`memchr`'s runtime SIMD detection). Disable it for a
   `no_std` + `alloc` build: `cord-rs = { version = "0.1", default-features =
   false }`; everything else, including `core::fmt::Write` for `Cord`, stays
-  available.
+  available. `no_std` targets need 32-bit and pointer-width atomics.
 - `bytes`: `bytes::Buf` for `Cord` and `Cursor`, `bytes::BufMut` for
   `CordWriter` and `CordBuffer`, and zero-copy conversions with
   `bytes::Bytes`.

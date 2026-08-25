@@ -90,6 +90,14 @@ pub enum MemoryAccounting {
 /// out of bounds; [`get`](Self::get) is the non-panicking variant, covering
 /// both indices and ranges.
 ///
+/// # Limits
+///
+/// A buffer or tree node can be referenced at most ~2^30 times (an `i32`
+/// count, as in abseil): exceeding it aborts the process rather than risking
+/// a use-after-free on overflow, exactly like `Arc`. This is not reachable
+/// with ordinary use — only pathological self-sharing (repeatedly appending
+/// a cord to itself) drives a single node's count that high.
+///
 /// [`absl::Cord`]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
 #[repr(transparent)]
 pub struct Cord {
@@ -874,6 +882,13 @@ impl Cord {
     /// hundred bytes are adopted without copying; appending an owned `Cord`
     /// is a pointer move.
     ///
+    /// # Panics
+    ///
+    /// Panics if the combined length would exceed `usize::MAX`. This is only
+    /// reachable by appending a `Cord`/`&Cord`, and only through structural
+    /// sharing (e.g. repeatedly appending a cord to itself) — in practice the
+    /// [reference-count limit](Self#limits) aborts the process first.
+    ///
     /// ```
     /// use cord_rs::Cord;
     /// let mut cord = Cord::from("hello");
@@ -894,6 +909,13 @@ impl Cord {
     /// front capacity across calls: each call allocates its own buffer for
     /// `src`, so repeated prepending is not O(1) amortized the way repeated
     /// appending is.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the combined length would exceed `usize::MAX`. This is only
+    /// reachable by prepending a `Cord`/`&Cord`, and only through structural
+    /// sharing (e.g. repeatedly prepending a cord to itself) — in practice
+    /// the [reference-count limit](Self#limits) aborts the process first.
     ///
     /// ```
     /// use cord_rs::Cord;
@@ -1662,6 +1684,10 @@ impl Cord {
 
     /// Returns the *approximate* number of bytes held by this cord, including
     /// the cord itself. See [`MemoryAccounting`].
+    ///
+    /// This is not a cached field: every mode walks every node in the tree
+    /// (O(nodes)), and [`TotalMorePrecise`](MemoryAccounting::TotalMorePrecise)
+    /// additionally deduplicates references, costing O(nodes · log nodes).
     #[must_use]
     pub fn estimated_memory_usage(&self, accounting: MemoryAccounting) -> usize {
         let mut result = core::mem::size_of::<Cord>();

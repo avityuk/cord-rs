@@ -156,8 +156,17 @@ impl Refcount {
 #[cold]
 #[inline(never)]
 fn increment_overflow() -> ! {
-    // Mirrors `Arc`: a refcount this large can only be the result of a leak
-    // loop and continuing risks a use-after-free on wrap around.
+    // This abort is the guard that prevents a use-after-free on overflow:
+    // without it, wrapping the count back through zero would let a live
+    // reference outlive the node. `Arc` aborts the same way at the same kind
+    // of threshold. Unlike `Arc`, though, a cord can drive the count here
+    // quickly through self-sharing alone — structural sharing doubles a
+    // node's refcount per operation, so `loop { let d = c.clone();
+    // c.append(d); }` reaches this threshold after ~31 iterations of
+    // O(log n) work each, not billions of individual clones. The length
+    // would need to reach roughly 2^42 bytes of shared structure first, so
+    // this is not reachable by accident with real data — but it is
+    // reachable, unlike a comparable `Arc` leak loop.
     abort()
 }
 
@@ -166,11 +175,15 @@ fn increment_overflow() -> ! {
 ///
 /// With the `std` feature this is exactly `std::process::abort`. Without
 /// it — `no_std` has no portable abort — this uses the double-panic idiom
-/// instead: a local guard whose `Drop` panics, then a `panic!`, so that the
-/// panic already in flight while the guard unwinds triggers a second panic
-/// during unwinding, which the runtime turns into an abort; on targets built
-/// with `panic = "abort"` the first `panic!` already aborts, so the guard
-/// never actually runs.
+/// instead: a local guard whose `Drop` panics, then a `panic!`. On targets
+/// built with `panic = "abort"` that first `panic!` already aborts and the
+/// guard never runs. Otherwise the first `panic!` unwinds and invokes the
+/// application's own `#[panic_handler]` — there is no runtime to turn it
+/// into an abort in `no_std`, and that handler is expected not to return (it
+/// typically halts or resets the device). The guard only matters if that
+/// handler instead lets the unwind continue: the panic already in flight
+/// while it unwinds then triggers the guard's own `panic!`, a double panic,
+/// which is what actually aborts.
 #[cold]
 #[inline(never)]
 fn abort() -> ! {

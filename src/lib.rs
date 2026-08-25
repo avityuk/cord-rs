@@ -65,7 +65,9 @@
 //!   [`Cursor`](crate::iter::Cursor), and `Write` on [`Cord`], `CordBuffer`
 //!   and `CordWriter`. Building with `default-features = false` gives a
 //!   `no_std` + `alloc` crate (any global allocator); everything else —
-//!   including `core::fmt::Write` for [`Cord`] — stays available.
+//!   including `core::fmt::Write` for [`Cord`] — stays available. `no_std`
+//!   targets need 32-bit and pointer-width atomics (`target_has_atomic =
+//!   "32"` and `"ptr"`).
 //! * `bytes` — `bytes::Buf` for [`Cord`] and [`Cursor`](crate::iter::Cursor),
 //!   `bytes::BufMut` for `CordWriter` and `CordBuffer`, and zero-copy
 //!   conversions with `bytes::Bytes`.
@@ -74,6 +76,11 @@
 //! [`absl::Cord`]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+#[cfg(not(all(target_has_atomic = "32", target_has_atomic = "ptr")))]
+compile_error!(
+    "cord-rs requires 32-bit and pointer-width atomics (`target_has_atomic = \"32\"` and \"ptr\")"
+);
 
 extern crate alloc;
 #[cfg(feature = "std")]
