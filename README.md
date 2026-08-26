@@ -311,9 +311,13 @@ lifetime is carried by the type and that mistake cannot be made.
 The core is a reference-counted tree in the abseil tradition and uses
 `unsafe` internally; the public API is safe. Verification:
 
-- abseil's own test suites are ported: `cord_test.cc`, `cord_buffer_test.cc`,
-  `cord_rep_btree_test.cc`, `cord_rep_btree_navigator_test.cc`,
-  `cord_rep_btree_reader_test.cc` and `cord_data_edge_test.cc`.
+- The suite is organized by area — construction, editing, slicing,
+  comparison, iteration, buffers, accounting and a set of stress workloads —
+  and includes the cases from abseil's own suites (`cord_test.cc`,
+  `cord_buffer_test.cc`, `cord_rep_btree_test.cc`,
+  `cord_rep_btree_navigator_test.cc`, `cord_rep_btree_reader_test.cc`,
+  `cord_data_edge_test.cc`), rewritten against the Rust API; like the rest of
+  the crate they derive from Apache-2.0 licensed Abseil code (see `NOTICE`).
 - A [proptest] model test runs random operation sequences (append, prepend,
   slice, split, advance, truncate, clone, make_contiguous, cursor reads, ...) on
   several cords sharing structure, against `Vec<u8>` oracles, validating the

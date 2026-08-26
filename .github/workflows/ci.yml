@@ -173,7 +173,8 @@ jobs:
       - name: miri (s390x-unknown-linux-gnu, big-endian)
         run: |
           cargo +nightly miri test --all-features --lib --target s390x-unknown-linux-gnu
-          cargo +nightly miri test --all-features --test basic --target s390x-unknown-linux-gnu
+          cargo +nightly miri test --all-features --test cord --target s390x-unknown-linux-gnu
+          cargo +nightly miri test --all-features --test cord_buffer --target s390x-unknown-linux-gnu
         env:
           MIRIFLAGS: -Zmiri-strict-provenance
 

@@ -1,7 +1,36 @@
-//! `should_panic` coverage for out-of-range / capacity-exceeded misuse that
-//! isn't already covered by the panic tests in `tests/basic.rs`.
+//! `should_panic` coverage for the documented panic paths: out-of-range
+//! indices and ranges, cursor over-reads, and capacity overflows.
 
 use cord_rs::{__internal as internal, Cord, CordBuffer};
+
+#[test]
+#[should_panic(expected = "cannot advance past end")]
+fn advance_out_of_bounds_panics() {
+    let mut c = Cord::from("abc");
+    c.advance(4);
+}
+
+#[test]
+#[should_panic(expected = "range end index 4 out of range for slice of length 3")]
+fn slice_out_of_bounds_panics() {
+    let c = Cord::from("abc");
+    let _ = c.slice(2..4);
+}
+
+#[test]
+#[should_panic(expected = "index out of bounds")]
+fn index_out_of_bounds_panics() {
+    let c = Cord::from("abc");
+    let _ = c[3];
+}
+
+#[test]
+#[should_panic(expected = "cannot read past the end")]
+fn cursor_read_cord_past_end_panics() {
+    let cord = Cord::from(vec![b'x'; 2000]);
+    let mut it = cord.cursor();
+    let _ = it.read_cord(2001);
+}
 
 #[test]
 #[should_panic(expected = "split_off index out of bounds")]

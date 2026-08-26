@@ -23,7 +23,7 @@ needs nothing beyond stable ≥ 1.95.
 | `src/rep.rs`, `src/rep/*.rs` | The `unsafe` rep layer ported from abseil (`flat`, `external`, `btree`, `navigator`, `reader`, `analysis`) |
 | `src/rep/*_tests.rs`, `src/rep/test_util.rs` | Ports of abseil's internal test suites (unit tests: they need `pub(crate)` access) |
 | `src/bytes_impl.rs`, `src/serde_impl.rs` | Feature-gated integrations |
-| `tests/` | Public-API suites: `abseil_cord.rs` / `abseil_cord_buffer.rs` (ports of `cord_test.cc` / `cord_buffer_test.cc`), `basic.rs`, `model.rs` (proptest vs `Vec<u8>` oracle), `features.rs` |
+| `tests/` | Public-API suites, by area: `cord/` (one binary — `construct.rs`, `edit.rs`, `slice.rs`, `compare.rs`, `iterate.rs`, `memory.rs`, `stress.rs` for heavy structural workloads), `cord_buffer.rs` (the `CordBuffer` API), `panics.rs` (documented panic paths), plus `model.rs` (proptest vs `Vec<u8>` oracle), `features.rs` (the optional integrations) and `common/mod.rs` (helpers shared by the test binaries) |
 | `benches/cord.rs` | Criterion benchmarks |
 | `scripts/` | `check.sh` (fast gate), `miri.sh`, `sanitize.sh`, `hooks/pre-commit` |
 | `ci/no_std_bin/` | A standalone crate (own `[workspace]`, not a member of this one): a real linked bare-metal `no_std` binary, see "The `no_std` binary" below |
@@ -76,7 +76,7 @@ addition to the gate (CI enforces all of them; they are faster to iterate on
 locally):
 
 ```sh
-scripts/miri.sh        # Miri with strict provenance: unit, API, model and feature tests (~15-20 min)
+scripts/miri.sh        # Miri with strict provenance: the unit tests and every integration suite (~30-40 min)
 scripts/sanitize.sh    # AddressSanitizer + ThreadSanitizer builds of the whole suite (~5 min)
 PROPTEST_CASES=3000 cargo test --all-features --release --test model   # longer model run (~10 s)
 ```
@@ -86,8 +86,8 @@ Useful narrowing while iterating:
 ```sh
 # One test under Miri (name filters work as with cargo test):
 MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test --all-features --lib -- navigator
-# Miri on the public API tests only:
-MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test --all-features --test basic
+# Miri on one public-API area only (the `cord` binary's `edit` module):
+MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test --all-features --test cord -- edit::
 # Loops in the internal suites are scaled down under `cfg(miri)`; keep that
 # pattern when adding heavy tests.
 ```
@@ -97,10 +97,11 @@ and CI's `cross` job only *builds* big-endian (`powerpc64`), never runs it.
 Miri can interpret a foreign target without that target's toolchain
 component installed (it never compiles for the target, only interprets), so
 `scripts/miri.sh` takes an optional `MIRI_TARGET` environment variable that
-additionally runs the lib and `tests/basic.rs` legs for a second target:
+additionally runs the lib and public-API (`tests/cord/`, `tests/cord_buffer.rs`)
+legs for a second target:
 
 ```sh
-MIRI_TARGET=s390x-unknown-linux-gnu scripts/miri.sh   # + big-endian lib/basic legs (~5 min more)
+MIRI_TARGET=s390x-unknown-linux-gnu scripts/miri.sh   # + big-endian lib/API legs (~5 min more)
 ```
 
 This is not part of the required set above (it would roughly double every
@@ -173,7 +174,7 @@ Its `Cargo.lock` is committed, like the crate's own.
 - `features`: `cargo hack --feature-powerset` for `check` (`--no-dev-deps`), `clippy -- -D warnings` and `doc` (`RUSTDOCFLAGS=-D warnings`), covering every combination of the optional features rather than just none/all.
 - `cross`: the full test suite on `i686` (32-bit), plus `powerpc64` (big-endian) and `wasm32` builds.
 - `no_std`: `cargo check --lib --no-default-features` across the four combinations of `bytes`/`serde` with `std` off, plus a clippy run with both, on `aarch64-unknown-none`, a target with no `std` at all (unlike the `wasm32` build above, which still links it) — then, on top of that, four real linked builds of `ci/no_std_bin/` (debug/release × default/`bytes,serde`; see "The `no_std` binary" above).
-- `miri` and `sanitizers`: `scripts/miri.sh` and `scripts/sanitize.sh` on nightly, plus a step running the lib and `tests/basic.rs` legs under Miri for `s390x-unknown-linux-gnu` (big-endian) — see `scripts/miri.sh`'s `MIRI_TARGET` option above. Required, like every other job.
+- `miri` and `sanitizers`: `scripts/miri.sh` and `scripts/sanitize.sh` on nightly, plus a step running the lib and public-API (`tests/cord/`, `tests/cord_buffer.rs`) legs under Miri for `s390x-unknown-linux-gnu` (big-endian) — see `scripts/miri.sh`'s `MIRI_TARGET` option above. Required, like every other job.
 
 ## Conventions
 
@@ -188,8 +189,13 @@ Its `Cargo.lock` is committed, like the crate's own.
   slicing, balance, sharing — are the contract, not the shape (see README's
   "Relationship to abseil" section). When changing the rep layer, diff
   against the C++ source for intent, keep the ported tests aligned, and note
-  any resulting structural divergence in the commit; test names mirror the
-  C++ test names in `snake_case`.
+  any resulting structural divergence in the commit. The rep-layer
+  unit suites (`src/rep/*_tests.rs`) track abseil's internal test files
+  closely and keep their test names in `snake_case`, which makes diffing
+  against the C++ source easy. The public-API suites under `tests/` do not:
+  they are grouped by area and named after the Rust behavior they pin down,
+  because what is worth keeping from a C++ suite is the *case*, not its name
+  or its file boundary.
 - **`unsafe` discipline.** Raw-pointer code lives under `src/rep/` and in
   `src/rep.rs`'s typed handle layer; the `unsafe` remaining in
   `cord.rs`/`iter.rs`/`buffer.rs`/`inline_data.rs` is now almost entirely
