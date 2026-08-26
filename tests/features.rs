@@ -303,6 +303,8 @@ mod bytes_feature {
 #[cfg(feature = "serde")]
 mod serde_feature {
     use super::*;
+    use cord_rs::__internal as internal;
+    use cord_rs::MemoryAccounting;
 
     #[test]
     fn json_roundtrip() {
@@ -332,37 +334,223 @@ mod serde_feature {
         assert_eq!(back, msg);
     }
 
-    /// An iterator that reports an absurd, constant `size_hint` no matter how
-    /// many elements are actually left — standing in for a self-describing
-    /// format's attacker-controlled sequence-length prefix (a handful of
-    /// bytes can claim billions of elements).
-    struct LyingSizeHint<I>(I);
+    /// An iterator that reports whatever `size_hint` it is constructed with,
+    /// regardless of how many elements are actually left. Drives `visit_seq`
+    /// through `serde::de::value::SeqDeserializer`, whose `size_hint` reports
+    /// the wrapped iterator's bound verbatim whenever its lower and upper
+    /// bounds agree — exactly the shape of a self-describing format's
+    /// attacker-controlled or honest-but-absent sequence-length prefix.
+    struct Hinted<I> {
+        inner: I,
+        hint: Option<usize>,
+    }
 
-    impl<I: Iterator> Iterator for LyingSizeHint<I> {
+    impl<I: Iterator> Iterator for Hinted<I> {
         type Item = I::Item;
 
         fn next(&mut self) -> Option<Self::Item> {
-            self.0.next()
+            self.inner.next()
         }
 
         fn size_hint(&self) -> (usize, Option<usize>) {
-            (usize::MAX / 2, Some(usize::MAX / 2))
+            match self.hint {
+                Some(n) => (n, Some(n)),
+                None => (0, None),
+            }
+        }
+    }
+
+    /// Deserializes `bytes` as a sequence whose `size_hint` is `hint`.
+    fn from_seq(bytes: &[u8], hint: Option<usize>) -> Cord {
+        let iter = Hinted { inner: bytes.iter().copied(), hint };
+        let de = serde::de::value::SeqDeserializer::<_, serde::de::value::Error>::new(iter);
+        let cord: Cord = serde::Deserialize::deserialize(de).unwrap();
+        assert!(internal::validate(&cord).is_ok(), "{}", internal::dump(&cord, false));
+        cord
+    }
+
+    fn payload(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i % 251) as u8).collect()
+    }
+
+    // Miri interprets every byte pushed through `visit_seq`'s one-element-at-
+    // a-time `SeqAccess`; the full 100_000-byte case takes minutes under it,
+    // so it is scaled down. 9_000 still spans three chunks and a btree, so no
+    // coverage is lost.
+    const BIG: usize = if cfg!(miri) { 9_000 } else { 100_000 };
+
+    const SIZES: [usize; 9] = [0, 1, 15, 16, 511, 512, 4083, 4084, BIG];
+
+    // Scaled like `BIG`: enough full-size chunks ahead of a short tail to
+    // prove the tail's buffer is copied out to its own size class rather
+    // than adopted at the full `DEFAULT_MAX_CAPACITY` it grew into.
+    const TAIL_CHUNKS: usize = if cfg!(miri) { 2 } else { 24 };
+
+    /// The representation `visit_seq` is expected to produce for `len` bytes:
+    /// inline up to 15, one flat up to a full chunk, a btree beyond that —
+    /// the same shape `Cord::from(&[u8])` produces.
+    fn assert_native_shape(cord: &Cord, len: usize) {
+        if len <= internal::MAX_INLINE {
+            assert!(!internal::is_tree(cord), "{len} bytes should stay inline");
+        } else if len <= internal::MAX_FLAT_LENGTH {
+            assert!(internal::is_flat(cord), "{len} bytes should be one flat");
+        } else {
+            assert!(internal::is_btree(cord), "{len} bytes should be a btree");
         }
     }
 
     #[test]
-    fn visit_seq_caps_a_lying_size_hint() {
-        // `serde::de::value::SeqDeserializer::size_hint` reports the wrapped
-        // iterator's bound verbatim (as `Some` whenever its lower and upper
-        // bounds agree, which they do here), so this drives `Cord`'s
-        // `visit_seq` through `deserialize_byte_buf` with exactly the
-        // shape a lying self-describing-format hint would have. Before
-        // capping the hint, `Vec::with_capacity` was handed `usize::MAX / 2`
-        // directly and the process aborted on that allocation; capped, this
-        // completes immediately and yields the 3 real bytes.
-        let iter = LyingSizeHint([1u8, 2, 3].into_iter());
-        let deserializer = serde::de::value::SeqDeserializer::<_, serde::de::value::Error>::new(iter);
-        let cord: Cord = serde::Deserialize::deserialize(deserializer).unwrap();
-        assert_eq!(cord, Cord::from(vec![1u8, 2, 3]));
+    fn visit_seq_exact_hint() {
+        for len in SIZES {
+            let data = payload(len);
+            let cord = from_seq(&data, Some(len));
+            assert_eq!(cord, data, "len {len}");
+            assert_native_shape(&cord, len);
+            // An honest hint is the ideal case: the result costs no more than
+            // copying the same bytes in one go.
+            assert!(
+                cord.estimated_memory_usage(MemoryAccounting::Total)
+                    <= Cord::from(&data[..]).estimated_memory_usage(MemoryAccounting::Total),
+                "len {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn visit_seq_absent_hint() {
+        for len in SIZES {
+            let data = payload(len);
+            let cord = from_seq(&data, None);
+            assert_eq!(cord, data, "len {len}");
+            assert_native_shape(&cord, len);
+            assert_eq!(
+                cord.estimated_memory_usage(MemoryAccounting::Total),
+                Cord::from(&data[..]).estimated_memory_usage(MemoryAccounting::Total),
+                "len {len}: an absent hint should still land on the native shape"
+            );
+        }
+        // Lengths that land partway through (or just past) the geometric head
+        // ramp — neither finishing inside it nor filling a grown buffer
+        // exactly — depend on `commit`'s size-class rule, not the ramp
+        // itself, to still reach the ideal shape.
+        for len in [2200usize, 3000, 4000] {
+            let data = payload(len);
+            let cord = from_seq(&data, None);
+            assert_eq!(cord, data, "len {len}");
+            assert_eq!(
+                cord.estimated_memory_usage(MemoryAccounting::Total),
+                Cord::from(&data[..]).estimated_memory_usage(MemoryAccounting::Total),
+                "len {len}"
+            );
+        }
+        // A large payload's last, partially filled chunk must not pin the
+        // full-size buffer it grew into: once the head is committed, every
+        // further buffer is requested at `DEFAULT_MAX_CAPACITY` (the hint is
+        // absent), so a short tail relies on `commit`'s size-class rule to
+        // land on a right-sized flat instead of adopting a 4 KiB one.
+        let data = payload(TAIL_CHUNKS * internal::MAX_FLAT_LENGTH + 3000);
+        let cord = from_seq(&data, None);
+        assert_eq!(cord, data);
+        assert_eq!(
+            cord.estimated_memory_usage(MemoryAccounting::Total),
+            Cord::from(&data[..]).estimated_memory_usage(MemoryAccounting::Total),
+            "a large payload's short tail chunk must match Cord::from's shape"
+        );
+    }
+
+    #[test]
+    fn visit_seq_under_reporting_hint() {
+        // Hints that under-report (a truncated length prefix, an iterator
+        // adapter that only knows a lower bound) are trusted for the first
+        // buffer and then abandoned.
+        for len in SIZES {
+            let data = payload(len);
+            for hint in [len / 4, len.saturating_sub(1), 1] {
+                let cord = from_seq(&data, Some(hint));
+                assert_eq!(cord, data, "len {len} hint {hint}");
+                assert!(internal::validate(&cord).is_ok());
+            }
+        }
+        // Nothing is left over-allocated: a badly under-reported 4 KiB value
+        // is still a single chunk.
+        let data = payload(4083);
+        let cord = from_seq(&data, Some(1));
+        assert!(internal::is_flat(&cord));
+    }
+
+    #[test]
+    fn visit_seq_lying_huge_hint() {
+        // A self-describing format's length prefix is attacker-controlled: a
+        // nine-byte CBOR array header can claim `u64::MAX` elements, and
+        // `rmp-serde` reports an `Array32` count of 0xFFFF_FFFF verbatim.
+        // `CordBuffer::with_capacity` caps every request at
+        // `DEFAULT_MAX_CAPACITY`, so the lie costs at most one 4 KiB buffer,
+        // and nothing of it survives into the result — the geometric ramp
+        // never even starts, since a lying hint sizes the *first* buffer
+        // directly (`with_capacity(hint)`, itself capped).
+        let cord = from_seq(&[1, 2, 3], Some(usize::MAX / 2));
+        assert_eq!(cord, [1u8, 2, 3][..]);
+        assert!(!internal::is_tree(&cord), "3 bytes must still be inline");
+        assert_eq!(
+            cord.estimated_memory_usage(MemoryAccounting::Total),
+            core::mem::size_of::<Cord>(),
+            "a lying hint must not leave an oversized buffer behind"
+        );
+        // Same for a value large enough to need a tree.
+        let data = payload(5000);
+        let cord = from_seq(&data, Some(usize::MAX));
+        assert_eq!(cord, data);
+        assert_eq!(
+            cord.estimated_memory_usage(MemoryAccounting::Total),
+            Cord::from(&data[..]).estimated_memory_usage(MemoryAccounting::Total)
+        );
+    }
+
+    #[test]
+    fn visit_seq_over_reporting_hint() {
+        for len in [0usize, 16, 600] {
+            let data = payload(len);
+            let cord = from_seq(&data, Some(4 * len + 1000));
+            assert_eq!(cord, data, "len {len}");
+            assert_native_shape(&cord, len);
+            assert_eq!(
+                cord.estimated_memory_usage(MemoryAccounting::Total),
+                Cord::from(&data[..]).estimated_memory_usage(MemoryAccounting::Total),
+                "len {len}: an over-sized buffer must not be adopted as-is"
+            );
+        }
+    }
+
+    #[test]
+    fn visit_seq_chunks_are_full_size() {
+        // Large payloads come out as a chain of full-size chunks, not a ramp
+        // of growing ones: the geometric head ramp only ever runs before
+        // anything is committed, so it cannot leave a short chunk behind
+        // once the cord is no longer empty.
+        let data = payload(BIG);
+        for hint in [Some(data.len()), None, Some(usize::MAX / 2)] {
+            let cord = from_seq(&data, hint);
+            assert_eq!(cord, data);
+            let chunks: Vec<usize> = cord.chunks().map(<[u8]>::len).collect();
+            assert_eq!(chunks.len(), data.len().div_ceil(internal::MAX_FLAT_LENGTH), "hint {hint:?}");
+            for (i, n) in chunks.iter().enumerate() {
+                if i + 1 < chunks.len() {
+                    assert_eq!(*n, internal::MAX_FLAT_LENGTH, "hint {hint:?} chunk {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn visit_seq_json_array() {
+        // serde_json's `SeqAccess` has no `size_hint` at all, so a JSON array
+        // exercises the absent-hint path end to end.
+        for len in [0usize, 15, 16, 4083, 5000] {
+            let data = payload(len);
+            let json = serde_json::to_string(&data).unwrap();
+            let cord: Cord = serde_json::from_str(&json).unwrap();
+            assert_eq!(cord, data, "len {len}");
+            assert_native_shape(&cord, len);
+        }
     }
 }

@@ -170,6 +170,20 @@ pub(crate) fn new_large(len: usize) -> *mut CordRep {
     new_impl::<MAX_LARGE_FLAT_SIZE>(len)
 }
 
+/// The payload capacity a flat allocated by [`new`] for `len` bytes would
+/// have, without actually allocating one: `len` rounded up to the smallest
+/// size class that fits it (and at least `MIN_FLAT_LENGTH`). Lets a caller
+/// compare an already-allocated buffer's capacity against the size class its
+/// *contents* would round to, to decide whether the buffer is itself a
+/// larger size class than its data needs.
+///
+/// Only `serde_impl`'s `visit_seq` needs this today, hence the feature gate.
+#[cfg(feature = "serde")]
+#[inline]
+pub(crate) fn capacity_for(len: usize) -> usize {
+    round_up_for_tag((len + FLAT_OVERHEAD).max(MIN_FLAT_SIZE)) - FLAT_OVERHEAD
+}
+
 /// Deallocates a flat created by [`new`] / [`new_large`].
 ///
 /// # Safety

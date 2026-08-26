@@ -497,7 +497,7 @@ impl Cord {
     ///
     /// `0 < src.len() <= MAX_FLAT_LENGTH` must hold (`flat::create`'s own
     /// precondition on the else branch).
-    unsafe fn append_precise(&mut self, src: &[u8]) {
+    pub(crate) unsafe fn append_precise(&mut self, src: &[u8]) {
         debug_assert!(!src.is_empty());
         debug_assert!(src.len() <= MAX_FLAT_LENGTH);
         if self.remaining_inline_capacity() >= src.len() {
