@@ -1424,6 +1424,7 @@ impl Cord {
     }
 
     /// Returns a reference to the byte at `index`. Requires `index < len()`.
+    #[inline]
     fn byte_ref(&self, index: usize) -> &u8 {
         debug_assert!(index < self.len());
         let Some(mut rep) = self.tree_ref() else {
