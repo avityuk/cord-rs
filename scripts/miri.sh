@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the unit, API, model and feature tests under Miri with strict
-# provenance. Required before pushing (CI enforces it). Needs a nightly
-# toolchain (development only -- using the crate needs stable):
+# provenance, plus a release-mode rerun of the unit tests (see below).
+# Required before pushing (CI enforces it); takes about 35-45 min. Needs a
+# nightly toolchain (development only -- using the crate needs stable):
 #   rustup toolchain install nightly --component miri
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -16,6 +17,14 @@ cargo +nightly miri test --all-features --test cord_buffer "$@"
 MIRIFLAGS="$MIRIFLAGS -Zmiri-disable-isolation" cargo +nightly miri test --all-features --test model "$@"
 cargo +nightly miri test --all-features --test features "$@"
 cargo +nightly miri test --all-features --test panics "$@"
+
+# Required: a release-mode rerun of the unit tests, which exercise the rep
+# layer's debug_assert!-guarded contracts. In every leg above, a violated
+# debug_assert! panics before Miri ever reaches the unsafe operation it
+# guards, so the actual undefined behavior stays invisible to debug Miri;
+# release mode compiles those assertions away, so Miri reports the UB
+# itself instead of a panic.
+cargo +nightly miri test --release --all-features --lib "$@"
 
 # Optional: additionally execute the lib and public-API (`tests/cord/`,
 # `tests/cord_buffer.rs`) legs under Miri for a second, foreign target -- e.g.

@@ -76,7 +76,7 @@ addition to the gate (CI enforces all of them; they are faster to iterate on
 locally):
 
 ```sh
-scripts/miri.sh        # Miri with strict provenance: the unit tests and every integration suite (~30-40 min)
+scripts/miri.sh        # Miri with strict provenance: the unit tests (debug and release) and every integration suite (~35-45 min)
 scripts/sanitize.sh    # AddressSanitizer + ThreadSanitizer builds of the whole suite (~5 min)
 PROPTEST_CASES=3000 cargo test --all-features --release --test model   # longer model run (~10 s)
 ```

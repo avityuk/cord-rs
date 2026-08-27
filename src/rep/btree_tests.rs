@@ -3,7 +3,7 @@
 //! Test names mirror the C++ tests in `snake_case`. Parametrized C++ fixtures
 //! (`shared` / `first_shared, second_shared` / `height`) are ported as loops
 //! over all parameter values inside one test.
-#![allow(clippy::cast_possible_truncation, reason = "tests pack small known values into bytes")]
+#![expect(clippy::cast_possible_truncation, reason = "tests pack small known values into bytes")]
 
 use core::ptr::NonNull;
 
