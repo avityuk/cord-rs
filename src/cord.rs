@@ -115,6 +115,7 @@ const _: () = assert!(core::mem::size_of::<Cord>() == 16);
 // --- Free helpers on reps ---------------------------------------------------
 
 /// Creates a new flat or btree out of `data`. Requires non-empty data.
+#[inline]
 fn new_tree(data: &[u8], alloc_hint: usize) -> OwnedRep {
     debug_assert!(!data.is_empty());
     // SAFETY: `data` is non-empty (checked above), so both `flat::create`
@@ -839,6 +840,7 @@ impl Cord {
     /// Creates a cord by copying `data`.
     ///
     /// Equivalent to `Cord::from(data)`.
+    #[inline]
     #[must_use]
     pub fn copy_from_slice(data: &[u8]) -> Self {
         if data.len() <= MAX_INLINE {
