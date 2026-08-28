@@ -84,6 +84,12 @@ impl<'a> Chunks<'a> {
         }
     }
 
+    /// The longest contiguous run starting at the current position.
+    #[inline]
+    pub(crate) fn chunk(&self) -> &'a [u8] {
+        self.current_chunk
+    }
+
     /// Positions `self` at `tree`'s first chunk. Requires `tree`'s length to
     /// be non-zero (checked by the sole caller, `new`, before calling this).
     fn init_tree(&mut self, tree: RepRef<'a>) {
@@ -467,6 +473,12 @@ impl<'a> Cursor<'a> {
     #[inline]
     pub(crate) fn cord(&self) -> &'a Cord {
         self.cord
+    }
+
+    /// The underlying forward-only chunk position.
+    #[inline]
+    pub(crate) fn chunks_mut(&mut self) -> &mut Chunks<'a> {
+        &mut self.chunks
     }
 
     /// Number of bytes remaining after the cursor.

@@ -1515,7 +1515,7 @@ impl Cord {
             let mut needle_it = needle.chunks();
             needle_it.next();
             haystack_advanced.advance(needle_chunk.len());
-            if is_subcord_at(&mut haystack_advanced, needle_it) {
+            if is_subcord_at(haystack_advanced.chunks_mut(), needle_it) {
                 return Some(haystack.position());
             }
             haystack.advance(1);
@@ -1526,7 +1526,7 @@ impl Cord {
                 // Exactly `needle_size` bytes remain: the needle is either
                 // here or not at all.
                 let mut it = haystack.clone();
-                return is_subcord_at(&mut it, needle.chunks()).then(|| haystack.position());
+                return is_subcord_at(it.chunks_mut(), needle.chunks()).then(|| haystack.position());
             }
         }
     }
@@ -1565,8 +1565,8 @@ impl Cord {
         if my_size < suffix_size {
             return false;
         }
-        let mut position = self.cursor();
-        position.advance(my_size - suffix_size);
+        let mut position = self.chunks();
+        position.advance_bytes(my_size - suffix_size);
         is_subcord_at(&mut position, suffix.chunks())
     }
 
@@ -1778,10 +1778,10 @@ fn is_slice_at(mut position: Cursor<'_>, mut needle: &[u8]) -> bool {
 }
 
 /// Whether the bytes at `haystack` start with the chunks of `needle`,
-/// consuming matching bytes directly. The cursor position after `false` is
-/// unspecified; callers must pass a disposable cursor.
+/// consuming matching bytes directly. The haystack position after `false` is
+/// unspecified; callers must pass a disposable chunk iterator.
 #[inline]
-fn is_subcord_at(haystack: &mut Cursor<'_>, needle: Chunks<'_>) -> bool {
+fn is_subcord_at(haystack: &mut Chunks<'_>, needle: Chunks<'_>) -> bool {
     for mut needle_chunk in needle {
         while !needle_chunk.is_empty() {
             let haystack_chunk = haystack.chunk();
@@ -1793,7 +1793,7 @@ fn is_subcord_at(haystack: &mut Cursor<'_>, needle: Chunks<'_>) -> bool {
             if haystack_chunk[..n] != needle_chunk[..n] {
                 return false;
             }
-            haystack.advance(n);
+            haystack.advance_bytes(n);
             needle_chunk = &needle_chunk[n..];
         }
     }
