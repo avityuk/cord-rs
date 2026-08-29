@@ -296,6 +296,16 @@ Its `Cargo.lock` is committed, like the crate's own.
     ```
 
     The first six files are the upper layers; the rest are the rep layer.
+- **`#[inline]` propagation.** A private function on the hot path of an
+  `#[inline]` public function must itself be `#[inline]`. A public
+  function's body is only inlined into a downstream crate when its callees
+  are also available for inlining there; otherwise the "inlined" caller
+  still ends up making an out-of-line call back into this crate (this is
+  why `byte_ref`, `new_tree` and `copy_from_slice` carry `#[inline]`, and
+  why benchmarks — a separate crate — see the effect while crate-internal
+  code may not). `#[inline(always)]` stays reserved for measured cases,
+  paired with `#[expect(clippy::inline_always, reason = "...")]`, matching
+  the `substring_impl` precedent in `src/rep.rs`.
 - **Lints.** `clippy::pedantic` is on. Justify deliberate casts with
   `#[expect(clippy::..., reason = "...")]` (checked helpers such as
   `small_u8`, `height_to_isize`), not blanket `allow`s. Test files may allow the

@@ -475,7 +475,12 @@ impl<'a> Cursor<'a> {
         self.cord
     }
 
-    /// The underlying forward-only chunk position.
+    /// The underlying forward-only chunk position. Callers may only advance
+    /// the returned iterator (`advance_bytes`, or reading through it) —
+    /// never replace, reset or rebuild it: `Cursor` caches the cord's length
+    /// in `len` and derives `position()` from the iterator's
+    /// `bytes_remaining`, which stays consistent with `len` only under
+    /// forward movement.
     #[inline]
     pub(crate) fn chunks_mut(&mut self) -> &mut Chunks<'a> {
         &mut self.chunks
