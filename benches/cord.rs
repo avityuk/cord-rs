@@ -95,6 +95,33 @@ fn bench_clone(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_drop(c: &mut Criterion) {
+    let mut g = c.benchmark_group("drop");
+    let tree = fragmented(1 << 20, 1000);
+    let bytes = data(64 << 10);
+
+    g.bench_function("shared_btree_1MiB", |b| {
+        b.iter_batched(|| tree.clone(), drop, criterion::BatchSize::SmallInput);
+    });
+    g.bench_function("unique_btree_1MiB", |b| {
+        b.iter_batched(|| fragmented(1 << 20, 1000), drop, criterion::BatchSize::SmallInput);
+    });
+    g.bench_function("unique_global_64KiB", |b| {
+        b.iter_batched(|| Cord::from(bytes.clone()), drop, criterion::BatchSize::SmallInput);
+    });
+    g.bench_function("unique_substring_64KiB", |b| {
+        b.iter_batched(
+            || {
+                let base = Cord::from(bytes.clone());
+                base.slice(1..base.len() - 1)
+            },
+            drop,
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    g.finish();
+}
+
 fn bench_append(c: &mut Criterion) {
     let mut g = c.benchmark_group("append");
     for chunk in [1usize, 16, 100, 1000, 4096] {
@@ -477,6 +504,7 @@ criterion_group!(
     bench_access,
     bench_construct,
     bench_clone,
+    bench_drop,
     bench_append,
     bench_prepend,
     bench_slice,

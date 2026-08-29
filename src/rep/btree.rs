@@ -23,7 +23,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 
 use super::{
-    BTREE, CordRep, CordRepSubstring, EXTERNAL, FLAT, RepPtr, SUBSTRING, abort, edge_data, external, flat,
+    BTREE, CordRep, CordRepSubstring, EXTERNAL, FLAT, RepPtr, SUBSTRING, abort, edge_data, flat,
     is_data_edge, ref_rep, small_u8, substring_impl, unref,
 };
 
@@ -241,52 +241,6 @@ unsafe fn consume_copy<const IS_BACK: bool>(dst: *mut u8, s: &[u8], n: usize) ->
             let offset = s.len() - n;
             core::ptr::copy_nonoverlapping(s.as_ptr().add(offset), dst, n);
             &s[..offset]
-        }
-    }
-}
-
-/// Frees `substring` and, if this was its last reference, its child edge.
-///
-/// # Safety
-///
-/// `substring` must be a non-null pointer to a live `CordRepSubstring` whose
-/// reference count has just reached zero: the caller is relinquishing the
-/// last reference to it (not merely borrowing), so `substring` must not be
-/// read through any other pointer afterwards. Its `child` must be a live
-/// flat or external node.
-unsafe fn delete_substring(substring: *mut CordRepSubstring) {
-    unsafe {
-        let rep = (*substring).child;
-        if !rep.ref_dec() {
-            if rep.tag() >= FLAT {
-                flat::delete(rep);
-            } else {
-                debug_assert_eq!(rep.tag(), EXTERNAL);
-                external::CordRepExternal::delete(rep);
-            }
-        }
-        CordRepSubstring::delete(substring);
-    }
-}
-
-/// Deletes a leaf node data edge whose reference count has reached zero.
-/// Requires `is_data_edge(rep)`.
-///
-/// # Safety
-///
-/// `rep` must be a non-null pointer to a live data edge with no outstanding
-/// references: the caller is relinquishing the last reference to it, exactly
-/// as [`unref`](super::unref) does when its decrement reaches zero on a
-/// flat, external, or substring node.
-unsafe fn delete_leaf_edge(rep: *mut CordRep) {
-    unsafe {
-        debug_assert!(is_data_edge(rep));
-        if rep.tag() >= FLAT {
-            flat::delete(rep);
-        } else if rep.tag() == EXTERNAL {
-            external::CordRepExternal::delete(rep);
-        } else {
-            delete_substring(rep.cast());
         }
     }
 }
@@ -1173,7 +1127,7 @@ impl CordRepBtree {
                 0 => {
                     for edge in tree.edges() {
                         if !edge.ref_dec() {
-                            delete_leaf_edge(edge);
+                            super::destroy(edge);
                         }
                     }
                     Self::delete(tree);
@@ -1208,7 +1162,7 @@ impl CordRepBtree {
                         continue;
                     }
                     if SIZE == 1 {
-                        delete_leaf_edge(edge);
+                        super::destroy(edge);
                     } else {
                         Self::destroy(as_btree(edge));
                     }
