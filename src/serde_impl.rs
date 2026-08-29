@@ -10,7 +10,7 @@ use serde::ser::{Serialize, Serializer};
 
 use crate::buffer::CordBuffer;
 use crate::cord::Cord;
-use crate::rep::flat;
+use crate::rep::{MAX_INLINE, flat};
 
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 impl Serialize for Cord {
@@ -178,7 +178,12 @@ fn commit(cord: &mut Cord, buffer: CordBuffer) {
     if buffer.is_empty() {
         return;
     }
-    if flat::capacity_for(buffer.len()) < buffer.capacity() {
+    // A result short enough for the inline handle is always copied in: a
+    // `CordBuffer`'s own inline capacity is pointer-width dependent (seven
+    // bytes on 32-bit targets), so a hint of up to `MAX_INLINE` bytes may
+    // still have produced a heap buffer, and adopting it would make a flat
+    // out of a value `Cord::from(&[u8])` keeps inline.
+    if buffer.len() <= MAX_INLINE || flat::capacity_for(buffer.len()) < buffer.capacity() {
         // SAFETY: the buffer is non-empty (checked above) and its length is at
         // most `DEFAULT_MAX_CAPACITY`, which is `MAX_FLAT_LENGTH`.
         unsafe { cord.append_precise(&buffer) };
