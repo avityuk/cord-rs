@@ -147,7 +147,7 @@ fn append_buffer_from_an_empty_cord() {
 
 #[test]
 fn append_buffer_takes_over_inline_data() {
-    let inlined_size = core::mem::size_of::<CordBuffer>() - 1;
+    let inlined_size = internal::MAX_INLINE;
     for p in AppendBufferLimit::ALL {
         for size in [6, inlined_size - 3, inlined_size - 2, 1000] {
             let mut cord = Cord::from("Abc");

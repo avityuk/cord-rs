@@ -13,7 +13,9 @@ use std::io::Write;
 use common::internal;
 use cord_rs::{Cord, CordBuffer};
 
-const INLINED_SIZE: usize = core::mem::size_of::<CordBuffer>() - 1;
+/// `CordBuffer`'s inline capacity: 15 bytes on every target (matches
+/// `internal::MAX_INLINE`, `Cord`'s own inline capacity).
+const INLINED_SIZE: usize = internal::MAX_INLINE;
 const DEFAULT_MAX_CAPACITY: usize = CordBuffer::DEFAULT_MAX_CAPACITY;
 const MAX_BLOCK_SIZE: usize = CordBuffer::MAX_BLOCK_SIZE;
 const MAX_FLAT_SIZE: usize = 4096;
@@ -49,10 +51,27 @@ fn capacity_constants_match_the_flat_layout() {
     assert_eq!(CordBuffer::max_capacity_for(K1MB), K64KIB - FLAT_OVERHEAD);
 }
 
+/// `CordBuffer`'s inline capacity is 15 bytes on every target — unlike the
+/// old two-`usize`-word layout, it does not shrink to 7 on 32-bit. `capacity()
+/// == 15` is itself proof that a buffer never allocated: `MIN_FLAT_LENGTH >
+/// MAX_INLINE` (asserted in the rep layer), so a heap flat's capacity is
+/// always strictly greater than 15.
+#[test]
+fn inline_capacity_is_fifteen_on_every_target() {
+    assert_eq!(CordBuffer::new().capacity(), 15);
+    assert_eq!(INLINED_SIZE, 15);
+
+    let fifteen = CordBuffer::with_capacity(15);
+    assert_eq!(fifteen.capacity(), 15, "a 15-byte request must stay inline, not allocate");
+
+    let sixteen = CordBuffer::with_capacity(16);
+    assert!(sixteen.capacity() > 15, "a 16-byte request must not fit inline");
+}
+
 #[test]
 fn a_default_buffer_is_empty_and_inline() {
     let mut buffer = CordBuffer::new();
-    assert_eq!(buffer.capacity(), core::mem::size_of::<CordBuffer>() - 1);
+    assert_eq!(buffer.capacity(), INLINED_SIZE);
     assert_eq!(buffer.len(), 0);
     assert_eq!(buffer.spare_capacity_mut().len(), buffer.capacity());
     fill(&mut buffer, 0xCD);
@@ -67,7 +86,7 @@ fn a_default_buffer_is_empty_and_inline() {
 fn a_small_request_stays_inline_and_yields_an_inline_cord() {
     let mut buffer = CordBuffer::with_capacity(3);
     assert!(buffer.capacity() >= 3);
-    assert!(buffer.capacity() <= core::mem::size_of::<CordBuffer>());
+    assert!(buffer.capacity() <= INLINED_SIZE);
     assert_eq!(buffer.len(), 0);
     fill(&mut buffer, 0xCD);
 

@@ -178,11 +178,18 @@ fn commit(cord: &mut Cord, buffer: CordBuffer) {
     if buffer.is_empty() {
         return;
     }
-    // A result short enough for the inline handle is always copied in: a
-    // `CordBuffer`'s own inline capacity is pointer-width dependent (seven
-    // bytes on 32-bit targets), so a hint of up to `MAX_INLINE` bytes may
-    // still have produced a heap buffer, and adopting it would make a flat
-    // out of a value `Cord::from(&[u8])` keeps inline.
+    // A result short enough for the inline handle is always copied in, even
+    // when `buffer` itself is a flat: `flat::capacity_for` is constant
+    // (`MIN_FLAT_LENGTH`) for every length up to `MAX_INLINE` (both are below
+    // `MIN_FLAT_SIZE`, so the size-class floor swallows the actual length),
+    // and `CordBuffer::with_capacity` for a request in `(MAX_INLINE,
+    // MIN_FLAT_LENGTH]` allocates a flat of exactly that same capacity. So a
+    // hint that slightly over-promises (say 18, with only a handful of bytes
+    // actually available) leaves `capacity_for(buffer.len()) ==
+    // buffer.capacity()` — the "already right-sized" case the size-class
+    // rule below is designed to recognize — even though the value belongs
+    // inline, not in a flat at all. This is not a size-class question, so it
+    // is checked first, unconditionally.
     if buffer.len() <= MAX_INLINE || flat::capacity_for(buffer.len()) < buffer.capacity() {
         // SAFETY: the buffer is non-empty (checked above) and its length is at
         // most `DEFAULT_MAX_CAPACITY`, which is `MAX_FLAT_LENGTH`.

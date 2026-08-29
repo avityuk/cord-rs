@@ -12,10 +12,17 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::rep::flat::{self, FLAT_OVERHEAD, FlatRef, MAX_FLAT_LENGTH, MAX_LARGE_FLAT_SIZE, MIN_FLAT_LENGTH};
-use crate::rep::{CordRep, UniqueRep, small_u8};
+use crate::rep::{CordRep, MAX_INLINE, UniqueRep, small_u8};
 
-/// Inline (small buffer) capacity of a `CordBuffer`.
-const INLINE_CAPACITY: usize = core::mem::size_of::<usize>() * 2 - 1;
+/// Inline (small buffer) capacity of a `CordBuffer`: 15 bytes on every
+/// target. `CordBuffer` is a fixed 16-byte type regardless of pointer
+/// width — the two-word `Long`/`Short` layout below only needs `Long` to be
+/// exactly 16 bytes, not two pointer-widths, so the inline capacity does not
+/// shrink on 32-bit targets. Kept equal to [`MAX_INLINE`] (the inline
+/// capacity of `Cord` itself) so a buffer's contents never need special-
+/// casing to land inline once handed to a `Cord`; see the `INLINE_CAPACITY
+/// == MAX_INLINE` assertion below.
+const INLINE_CAPACITY: usize = MAX_INLINE;
 
 // Assume the cost of an "up-rounded" allocation to `ceil_pow2(size)` versus
 // the cost of allocating at least one extra flat <= 4KB: flat overhead (13)
@@ -24,12 +31,18 @@ const INLINE_CAPACITY: usize = core::mem::size_of::<usize>() * 2 - 1;
 // the slop needs to be at least double the cost offset: ~128 bytes.
 const MAX_PAGE_SLOP: usize = 128;
 
+/// `Long`'s trailing padding, sized so `Long` is exactly 16 bytes on any
+/// pointer width (8 on 64-bit, matching the old all-`usize` layout; 12 on
+/// 32-bit, wider than before so the struct — and with it `Rep`/`CordBuffer`
+/// — stays a fixed 16 bytes rather than shrinking to two pointer-widths).
+const LONG_PADDING: usize = 16 - core::mem::size_of::<*mut CordRep>();
+
 #[cfg(target_endian = "little")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Long {
     rep: *mut CordRep,
-    _padding: usize,
+    _padding: [u8; LONG_PADDING],
 }
 
 #[cfg(target_endian = "little")]
@@ -44,7 +57,7 @@ struct Short {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Long {
-    _padding: usize,
+    _padding: [u8; LONG_PADDING],
     rep: *mut CordRep,
 }
 
@@ -58,7 +71,13 @@ struct Short {
 
 /// The internal representation: either an inline buffer or a flat rep. The
 /// least significant byte of the (always even) rep pointer overlaps
-/// `raw_size`, whose low bit is set for the inline form.
+/// `raw_size`, whose low bit is set for the inline form. This holds on every
+/// pointer width and both endiannesses: little-endian, `rep` starts at
+/// offset 0, so its least significant byte *is* byte 0, same as `raw_size`;
+/// big-endian, `rep` occupies the last `size_of::<*mut CordRep>()` bytes (12
+/// through 15 on 32-bit, 8 through 15 on 64-bit), and a big-endian pointer's
+/// least significant byte is its last one — byte 15 — which is exactly where
+/// `Short`'s 15-byte `data` places `raw_size`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 union Rep {
@@ -66,8 +85,11 @@ union Rep {
     short: Short,
 }
 
-const _: () = assert!(core::mem::size_of::<Rep>() == 2 * core::mem::size_of::<usize>());
-const _: () = assert!(core::mem::size_of::<Short>() == core::mem::size_of::<Long>());
+const _: () = assert!(core::mem::size_of::<Rep>() == 16);
+const _: () = assert!(core::mem::size_of::<Short>() == 16);
+const _: () = assert!(core::mem::size_of::<Long>() == 16);
+const _: () = assert!(INLINE_CAPACITY == MAX_INLINE);
+const _: () = assert!(core::mem::align_of::<Long>() == core::mem::align_of::<*mut CordRep>());
 
 impl Short {
     #[inline]
@@ -433,7 +455,7 @@ impl CordBuffer {
         unsafe {
             crate::rep::debug_assert_unique_flat(rep);
         }
-        Self { rep: Rep { long: Long { rep, _padding: 0 } } }
+        Self { rep: Rep { long: Long { rep, _padding: [0; LONG_PADDING] } } }
     }
 
     /// Consumes the buffer, returning its flat rep (with the current length)
@@ -852,7 +874,8 @@ mod tests {
 
     #[test]
     fn layout() {
-        assert_eq!(core::mem::size_of::<CordBuffer>(), 2 * core::mem::size_of::<usize>());
+        assert_eq!(core::mem::size_of::<CordBuffer>(), 16);
+        assert_eq!(INLINE_CAPACITY, 15);
         let b = CordBuffer::new();
         assert!(b.rep.is_short());
         assert_eq!(b.capacity(), INLINE_CAPACITY);

@@ -478,6 +478,32 @@ mod serde_feature {
         assert!(internal::is_flat(&cord));
     }
 
+    /// A hint just above `MAX_INLINE` (so `with_capacity` allocates a flat,
+    /// not an inline buffer) that still lands in `flat`'s minimum size class
+    /// (`MIN_FLAT_LENGTH`) must not cause an at-most-`MAX_INLINE`-byte result
+    /// to be adopted as that flat: `flat::capacity_for` floors at
+    /// `MIN_FLAT_LENGTH` for every length up to `MAX_INLINE` too, so the
+    /// size-class rule alone would see the flat as "already right-sized" and
+    /// adopt it, even though the value belongs inline. Every hint in
+    /// `(MAX_INLINE, MIN_FLAT_LENGTH]`, paired with every actual length up to
+    /// `MAX_INLINE`, must still land inline.
+    #[test]
+    fn visit_seq_hint_in_min_flat_window_still_lands_inline() {
+        for hint in (internal::MAX_INLINE + 1)..=internal::MIN_FLAT_LENGTH {
+            for len in 0..=internal::MAX_INLINE {
+                let data = payload(len);
+                let cord = from_seq(&data, Some(hint));
+                assert_eq!(cord, data, "hint {hint} len {len}");
+                assert!(!internal::is_tree(&cord), "hint {hint} len {len} should stay inline");
+                assert_eq!(
+                    cord.estimated_memory_usage(MemoryAccounting::Total),
+                    Cord::from(&data[..]).estimated_memory_usage(MemoryAccounting::Total),
+                    "hint {hint} len {len}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn visit_seq_lying_huge_hint() {
         // A self-describing format's length prefix is attacker-controlled: a
