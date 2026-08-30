@@ -255,7 +255,15 @@ fn bench_iterate(c: &mut Criterion) {
             black_box(&tree).chunks().map(|c| c.iter().map(|&x| u64::from(x)).sum::<u64>()).sum::<u64>()
         });
     });
+    g.bench_function("chunks_rev_sum", |b| {
+        b.iter(|| {
+            black_box(&tree).chunks().rev().map(|c| c.iter().map(|&x| u64::from(x)).sum::<u64>()).sum::<u64>()
+        });
+    });
     g.bench_function("bytes_sum", |b| b.iter(|| black_box(&tree).bytes().map(u64::from).sum::<u64>()));
+    g.bench_function("bytes_rev_sum", |b| {
+        b.iter(|| black_box(&tree).bytes().rev().map(u64::from).sum::<u64>());
+    });
     g.bench_function("index_every_4KiB", |b| {
         b.iter(|| (0..tree.len()).step_by(4096).map(|i| u64::from(tree[i])).sum::<u64>());
     });

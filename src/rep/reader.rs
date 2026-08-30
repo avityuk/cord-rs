@@ -90,6 +90,22 @@ impl<'a> CordRepBtreeReader<'a> {
         }
     }
 
+    /// Initializes this reader at the last data edge of the same tree as
+    /// `other`. Used to create the lazy back half of a double-ended chunk
+    /// iterator without storing a second navigation stack until needed.
+    #[inline]
+    pub(crate) fn init_last_from(&mut self, other: &Self) -> &'a [u8] {
+        debug_assert!(other.is_some());
+        // SAFETY: `other`'s initialized reader guarantees its root is live
+        // and well-formed for `'a`; this reader borrows that same tree.
+        unsafe {
+            let tree = other.navigator.btree();
+            let edge = self.navigator.init_last(tree);
+            self.remaining = 0;
+            edge_data(edge)
+        }
+    }
+
     /// Navigates to and returns the next data edge, or an empty slice at EOF.
     #[inline]
     pub(crate) fn next(&mut self) -> &'a [u8] {
@@ -103,6 +119,21 @@ impl<'a> CordRepBtreeReader<'a> {
             let edge = self.navigator.next();
             debug_assert!(!edge.is_null());
             self.remaining -= edge.length();
+            edge_data(edge)
+        }
+    }
+
+    /// Navigates to and returns the previous data edge.
+    ///
+    /// The caller must not call this while positioned at the first edge.
+    #[inline]
+    pub(crate) fn previous(&mut self) -> &'a [u8] {
+        // SAFETY: initialization establishes a live tree for `'a`; the
+        // caller's remaining-byte accounting rules out the null result at
+        // the beginning of the tree.
+        unsafe {
+            let edge = self.navigator.previous();
+            debug_assert!(!edge.is_null());
             edge_data(edge)
         }
     }

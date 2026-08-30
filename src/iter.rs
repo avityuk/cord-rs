@@ -8,6 +8,8 @@
 
 use core::marker::PhantomData;
 
+use alloc::boxed::Box;
+
 use crate::cord::Cord;
 use crate::inline_data::InlineData;
 use crate::rep::reader::CordRepBtreeReader;
@@ -17,8 +19,9 @@ use crate::rep::{CordRepSubstring, MAX_BYTES_TO_COPY, MAX_INLINE, OwnedRep, RepR
 /// [`Cord::chunks`].
 ///
 /// Every yielded chunk is non-empty. The iterator holds a navigation stack
-/// proportional to the tree height (176 bytes on 64-bit platforms, less on
-/// 32-bit); prefer passing it by reference.
+/// proportional to the tree height (184 bytes on 64-bit platforms, less on
+/// 32-bit); prefer passing it by reference. Reverse iteration allocates a
+/// second navigation stack lazily on the first call to `next_back`.
 #[derive(Clone)]
 pub struct Chunks<'a> {
     /// A view of the bytes of the current chunk (possibly a suffix of the
@@ -39,14 +42,22 @@ pub struct Chunks<'a> {
     bytes_remaining: usize,
     /// Reader for btree cords; empty otherwise.
     btree_reader: CordRepBtreeReader<'a>,
+    /// Backward position, allocated only when reverse iteration is used.
+    back: Option<Box<BackChunks<'a>>>,
     _marker: PhantomData<&'a Cord>,
+}
+
+#[derive(Clone)]
+struct BackChunks<'a> {
+    current_chunk: &'a [u8],
+    btree_reader: CordRepBtreeReader<'a>,
 }
 
 // Keeps the size claim in the doc comment above honest. Pointer-width
 // scaled (the navigation stack is `MAX_DEPTH` pointers), so only checked on
 // 64-bit; smaller on 32-bit targets.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<Chunks<'static>>() == 176);
+const _: () = assert!(core::mem::size_of::<Chunks<'static>>() == 184);
 
 impl<'a> Chunks<'a> {
     /// Creates an iterator positioned at the first chunk of `cord`.
@@ -80,6 +91,7 @@ impl<'a> Chunks<'a> {
             leaf_offset: 0,
             bytes_remaining: 0,
             btree_reader: CordRepBtreeReader::new(),
+            back: None,
             _marker: PhantomData,
         }
     }
@@ -140,6 +152,10 @@ impl<'a> Chunks<'a> {
     /// Skips `n` bytes. Requires `n <= bytes_remaining`.
     pub(crate) fn advance_bytes(&mut self, n: usize) {
         debug_assert!(self.bytes_remaining >= n);
+        if self.back.is_some() {
+            self.advance_bytes_between_ends(n);
+            return;
+        }
         if n < self.current_chunk.len() {
             self.remove_chunk_prefix(n);
         } else if n != 0 {
@@ -149,6 +165,26 @@ impl<'a> Chunks<'a> {
                 self.bytes_remaining = 0;
                 self.current_chunk = &[];
             }
+        }
+    }
+
+    fn advance_bytes_between_ends(&mut self, mut n: usize) {
+        while n != 0 {
+            let available = self.current_chunk.len().min(self.bytes_remaining);
+            if n < available {
+                self.current_chunk = &self.current_chunk[n..];
+                self.bytes_remaining -= n;
+                self.leaf_offset += n;
+                return;
+            }
+            n -= available;
+            self.bytes_remaining -= available;
+            if self.bytes_remaining == 0 {
+                self.current_chunk = &[];
+                return;
+            }
+            debug_assert_eq!(available, self.current_chunk.len());
+            self.current_chunk = self.btree_reader.next();
         }
     }
 
@@ -312,14 +348,62 @@ impl<'a> Iterator for Chunks<'a> {
         if self.bytes_remaining == 0 {
             return None;
         }
-        let chunk = self.current_chunk;
-        self.step();
+        let n = self.current_chunk.len().min(self.bytes_remaining);
+        let chunk = &self.current_chunk[..n];
+        self.bytes_remaining -= n;
+        if self.bytes_remaining == 0 {
+            self.current_chunk = &[];
+        } else {
+            debug_assert_eq!(n, self.current_chunk.len());
+            // Bytes remain past a fully consumed chunk, which only a btree
+            // can supply: a single-chunk iterator's chunk always covers its
+            // whole remaining length. An uninitialized reader would hand
+            // back an empty chunk here and leave `bytes_remaining` stuck
+            // above zero, so a corrupted iterator panics (as `step` does)
+            // rather than yielding empty chunks forever.
+            if !self.btree_reader.is_some() {
+                unreachable!("next() on an invalid iterator");
+            }
+            self.current_chunk = self.btree_reader.next();
+        }
         Some(chunk)
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         if self.bytes_remaining == 0 { (0, Some(0)) } else { (1, Some(self.bytes_remaining)) }
+    }
+}
+
+impl<'a> DoubleEndedIterator for Chunks<'a> {
+    #[inline]
+    fn next_back(&mut self) -> Option<&'a [u8]> {
+        if self.bytes_remaining == 0 {
+            return None;
+        }
+
+        let back = self.back.get_or_insert_with(|| {
+            let mut reader = CordRepBtreeReader::new();
+            let current_chunk = if self.btree_reader.is_some() {
+                reader.init_last_from(&self.btree_reader)
+            } else {
+                self.current_chunk
+            };
+            Box::new(BackChunks { current_chunk, btree_reader: reader })
+        });
+        let n = back.current_chunk.len().min(self.bytes_remaining);
+        let split = back.current_chunk.len() - n;
+        let chunk = &back.current_chunk[split..];
+        self.bytes_remaining -= n;
+        if self.bytes_remaining == 0 {
+            self.current_chunk = &[];
+            back.current_chunk = &[];
+        } else if split == 0 {
+            back.current_chunk = back.btree_reader.previous();
+        } else {
+            back.current_chunk = &back.current_chunk[..split];
+        }
+        Some(chunk)
     }
 }
 
@@ -342,6 +426,7 @@ impl core::fmt::Debug for Chunks<'_> {
 pub struct Bytes<'a> {
     chunks: Chunks<'a>,
     current: core::slice::Iter<'a, u8>,
+    back_current: core::slice::Iter<'a, u8>,
 }
 
 impl<'a> Bytes<'a> {
@@ -349,13 +434,13 @@ impl<'a> Bytes<'a> {
     pub(crate) fn new(cord: &'a Cord) -> Self {
         let mut chunks = Chunks::new(cord);
         let current = chunks.next().unwrap_or(&[]).iter();
-        Self { chunks, current }
+        Self { chunks, current, back_current: [].iter() }
     }
 
     /// Bytes not yet yielded.
     #[inline]
     fn remaining(&self) -> usize {
-        self.current.as_slice().len() + self.chunks.bytes_remaining
+        self.current.as_slice().len() + self.chunks.bytes_remaining + self.back_current.as_slice().len()
     }
 }
 
@@ -367,10 +452,12 @@ impl Iterator for Bytes<'_> {
         if let Some(&byte) = self.current.next() {
             return Some(byte);
         }
-        let chunk = self.chunks.next()?;
-        self.current = chunk.iter();
-        // Chunks yields non-empty chunks, so this is always `Some`.
-        self.current.next().copied()
+        if let Some(chunk) = self.chunks.next() {
+            self.current = chunk.iter();
+            // Chunks yields non-empty chunks, so this is always `Some`.
+            return self.current.next().copied();
+        }
+        self.back_current.next().copied()
     }
 
     #[inline]
@@ -388,19 +475,43 @@ impl Iterator for Bytes<'_> {
         }
         let skip = n - cur.len();
         self.current = [].iter();
-        if skip >= self.chunks.bytes_remaining {
+        if skip < self.chunks.bytes_remaining {
+            self.chunks.advance_bytes(skip);
+            let chunk = self.chunks.next()?;
+            self.current = chunk.iter();
+            return self.current.next().copied();
+        }
+        let skip = skip - self.chunks.bytes_remaining;
+        if self.chunks.bytes_remaining != 0 {
             self.chunks.advance_bytes(self.chunks.bytes_remaining);
+        }
+        let back = self.back_current.as_slice();
+        if skip >= back.len() {
+            self.back_current = [].iter();
             return None;
         }
-        self.chunks.advance_bytes(skip);
-        let chunk = self.chunks.next()?;
-        self.current = chunk.iter();
-        self.current.next().copied()
+        self.back_current = back[skip..].iter();
+        self.back_current.next().copied()
     }
 
     #[inline]
     fn count(self) -> usize {
         self.remaining()
+    }
+}
+
+impl DoubleEndedIterator for Bytes<'_> {
+    #[inline]
+    fn next_back(&mut self) -> Option<u8> {
+        if let Some(&byte) = self.back_current.next_back() {
+            return Some(byte);
+        }
+        if let Some(chunk) = self.chunks.next_back() {
+            self.back_current = chunk.iter();
+            // Chunks yields non-empty chunks, so this is always `Some`.
+            return self.back_current.next_back().copied();
+        }
+        self.current.next_back().copied()
     }
 }
 

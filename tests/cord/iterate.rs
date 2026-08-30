@@ -160,6 +160,85 @@ fn chunks_walk_every_shape_in_order() {
     verify_chunk_iterator(&subcords, n_subcords);
 }
 
+fn verify_double_ended_iterators(cord: &Cord) {
+    let expected_chunks: Vec<&[u8]> = cord.chunks().collect();
+    let reversed_chunks: Vec<&[u8]> = cord.chunks().rev().collect();
+    assert_eq!(reversed_chunks, expected_chunks.iter().rev().copied().collect::<Vec<_>>());
+
+    let mut chunks = cord.chunks();
+    let (mut front, mut back) = (0, expected_chunks.len());
+    let mut take_front = true;
+    while front != back {
+        if take_front {
+            assert_eq!(chunks.next(), Some(expected_chunks[front]));
+            front += 1;
+        } else {
+            back -= 1;
+            assert_eq!(chunks.next_back(), Some(expected_chunks[back]));
+        }
+        take_front = !take_front;
+    }
+    assert_eq!(chunks.next(), None);
+    assert_eq!(chunks.next_back(), None);
+
+    // Cloning after initializing the lazy back position must give each
+    // iterator an independent navigation stack.
+    let mut chunks = cord.chunks();
+    let first_back = chunks.next_back();
+    let mut cloned = chunks.clone();
+    assert_eq!(cloned.next_back(), chunks.next_back());
+    assert_eq!(first_back, expected_chunks.last().copied());
+
+    let expected = cord.to_vec();
+    assert_eq!(cord.bytes().rev().collect::<Vec<_>>(), expected.iter().rev().copied().collect::<Vec<_>>());
+
+    let mut bytes = cord.bytes();
+    let (mut front, mut back) = (0, expected.len());
+    let mut take_front = true;
+    while front != back {
+        assert_eq!(bytes.len(), back - front);
+        if take_front {
+            assert_eq!(bytes.next(), Some(expected[front]));
+            front += 1;
+        } else {
+            back -= 1;
+            assert_eq!(bytes.next_back(), Some(expected[back]));
+        }
+        take_front = !take_front;
+    }
+    assert_eq!(bytes.next(), None);
+    assert_eq!(bytes.next_back(), None);
+
+    if expected.len() >= 4 {
+        let mut bytes = cord.bytes();
+        assert_eq!(bytes.next_back(), expected.last().copied());
+        assert_eq!(bytes.nth(expected.len() - 3), Some(expected[expected.len() - 3]));
+        assert_eq!(bytes.next(), Some(expected[expected.len() - 2]));
+        assert_eq!(bytes.next(), None);
+    }
+}
+
+#[test]
+fn chunks_and_bytes_are_double_ended_over_every_shape() {
+    verify_double_ended_iterators(&Cord::new());
+    verify_double_ended_iterators(&Cord::from("inline cord"));
+
+    let data: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+    let flat = Cord::copy_from_slice(&data[..1000]);
+    assert!(internal::is_flat(&flat));
+    verify_double_ended_iterators(&flat);
+
+    let external = internal::make_external(&data);
+    let substring = external.slice(123..4321);
+    assert!(internal::is_substring(&substring));
+    verify_double_ended_iterators(&substring);
+
+    let tree = common::make_fragmented_cord(data.chunks(137));
+    assert!(internal::is_btree(&tree));
+    verify_double_ended_iterators(&tree);
+    verify_double_ended_iterators(&tree.slice(73..tree.len() - 91));
+}
+
 #[test]
 fn cursor_read_cord_on_a_single_data_edge() {
     let mut rng = common::Rng::new(17);

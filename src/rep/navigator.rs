@@ -181,13 +181,6 @@ impl CordRepBtreeNavigator {
     ///
     /// Same contract as [`init_first`](Self::init_first).
     #[inline]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "backward navigation kept for API completeness, no production caller yet"
-        )
-    )]
     pub(crate) unsafe fn init_last(&mut self, tree: *mut CordRepBtree) -> *mut CordRep {
         unsafe { self.init::<BACK>(tree) }
     }
@@ -333,14 +326,6 @@ impl CordRepBtreeNavigator {
     ///
     /// Same navigator-validity contract as [`current`](Self::current).
     #[inline]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "backward navigation kept for API completeness, no production caller yet; \
-                      covers its sole callee, previous_up, too"
-        )
-    )]
     pub(crate) unsafe fn previous(&mut self) -> *mut CordRep {
         unsafe {
             // SAFETY: per the contract above, `self.node[0]` is a live leaf and
@@ -404,13 +389,6 @@ impl CordRepBtreeNavigator {
     /// Same navigator-validity contract as [`current`](Self::current).
     /// Callers must additionally ensure `self.index[0] ==
     /// self.node[0].begin()` (i.e. the leaf is exhausted backward).
-    ///
-    /// No `expect(dead_code)` here: its only caller, [`previous`](Self::previous),
-    /// already carries one. Once rustc's dead-code pass marks `previous`
-    /// dead, it reports the warning only at that root and folds callees
-    /// reachable exclusively through it (like this one) into the same dead
-    /// subtree without a warning of their own — so this fn's own `expect`
-    /// would never see its lint fire and would be rejected as unfulfilled.
     unsafe fn previous_up(&mut self) -> *mut CordRep {
         unsafe {
             // SAFETY: the contract above guarantees every node on the current
