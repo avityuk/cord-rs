@@ -17,7 +17,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::{CordRep, EXTERNAL, RepPtr};
+use super::{CordRep, EXTERNAL, OwnedRep, RepPtr, RepRef, RepView};
 
 /// Function that releases the referenced storage and frees its external node.
 type ReleaserInvoker = unsafe fn(*mut CordRepExternal);
@@ -272,6 +272,49 @@ impl CordRepExternal {
         Box::into_raw(node).cast()
     }
 
+    /// Whether `rep` is backed by the compact global-allocation external
+    /// representation. `RepRef`-taking wrapper around
+    /// [`ExternalRef::is_global`] for callers that haven't already narrowed
+    /// `rep` to an external node.
+    #[inline]
+    pub(crate) fn is_global(rep: RepRef<'_>) -> bool {
+        matches!(rep.view(), RepView::External(ext) if ext.is_global())
+    }
+
+    /// Recovers the allocation from a uniquely owned global external rep.
+    ///
+    /// # Safety
+    ///
+    /// `rep` must be a refcount-one rep for which [`is_global`](Self::is_global)
+    /// returned true. This call consumes its final reference.
+    pub(crate) unsafe fn into_global_vec(rep: OwnedRep) -> Vec<u8> {
+        debug_assert!(rep.as_ref().ref_is_one());
+        debug_assert!(Self::is_global(rep.as_ref()));
+
+        let node = rep.into_raw().cast::<CordRepExternalGlobal>();
+        // Copy the raw parts before freeing the metadata node. Dropping this
+        // Box does not invoke `releaser_invoker`: it is a plain function
+        // pointer field, and `CordRepExternalGlobal` has no Drop impl.
+        // SAFETY: `is_global` — checked by the caller per this fn's contract
+        // and debug-asserted above — proves `node`'s concrete layout is
+        // `CordRepExternalGlobal`, so the cast above and this header field
+        // read are in bounds.
+        let base = unsafe { (*node).ext.base.cast_mut() };
+        // SAFETY: see above.
+        let len = unsafe { (*node).ext.rep.length };
+        // SAFETY: see above — the same proven layout makes the trailing
+        // `allocation_size` field readable too.
+        let capacity = unsafe { (*node).allocation_size };
+        debug_assert!(len <= capacity);
+        // SAFETY: `node` came from Box::into_raw in create_global and is
+        // uniquely owned by this call. Its separately allocated payload is
+        // deliberately transferred into the Vec below instead of released.
+        unsafe { drop(Box::from_raw(node)) };
+        // SAFETY: GlobalBytes recorded the original global allocation's exact
+        // `(base, len, capacity)` and this call now owns that allocation.
+        unsafe { Vec::from_raw_parts(base, len, capacity) }
+    }
+
     /// Drops the owner and deallocates the rep. Requires `rep.is_external()`.
     ///
     /// # Safety
@@ -307,9 +350,11 @@ impl CordRepExternal {
 /// from `Box::into_raw`, whose reference count has just reached zero; `ext`
 /// must not be used again afterwards.
 unsafe fn release<O>(ext: *mut CordRepExternal) {
-    // SAFETY: `ext` points to a live external header per this function's
-    // contract, so its representation marker may be read.
-    debug_assert_ne!(unsafe { (*ext).rep.storage[0] }, GLOBAL_EXTERNAL);
+    // SAFETY: `ext` points to a live external rep per this function's
+    // contract, satisfying `ExternalRef::from_raw`'s precondition; the
+    // handle is used only for this statement and reads nothing but the
+    // representation marker.
+    debug_assert!(!unsafe { ExternalRef::from_raw(ext) }.is_global());
     // SAFETY: `ext` is the live, uniquely owned `ext` field of a
     // `CordRepExternalImpl<O>` box per this fn's contract, so casting back
     // to the enclosing `CordRepExternalImpl<O>` (repr(C), `ext` is the first
@@ -326,9 +371,11 @@ unsafe fn release<O>(ext: *mut CordRepExternal) {
 /// `ext` must point to a uniquely owned live `CordRepExternalGlobal` whose
 /// reference count has reached zero.
 unsafe fn release_global(ext: *mut CordRepExternal) {
-    // SAFETY: `ext` points to a live external header per this function's
-    // contract, so its representation marker may be read.
-    debug_assert_eq!(unsafe { (*ext).rep.storage[0] }, GLOBAL_EXTERNAL);
+    // SAFETY: `ext` points to a live external rep per this function's
+    // contract, satisfying `ExternalRef::from_raw`'s precondition; the
+    // handle is used only for this statement and reads nothing but the
+    // representation marker.
+    debug_assert!(unsafe { ExternalRef::from_raw(ext) }.is_global());
     let node = ext.cast::<CordRepExternalGlobal>();
     // Copy everything needed before either allocation is released.
     let base = unsafe { (*ext).base.cast_mut() };
@@ -402,21 +449,32 @@ impl<'a> ExternalRef<'a> {
         unsafe { core::slice::from_raw_parts((*self.ptr.as_ptr()).base, len) }
     }
 
+    /// Whether this external node is backed by the compact
+    /// global-allocation representation (as opposed to a generic
+    /// [`StableBytes`] owner). The single home for the
+    /// `storage[0] == GLOBAL_EXTERNAL` marker test; see
+    /// [`CordRepExternal::is_global`] for the `RepRef`-taking wrapper used
+    /// where no `ExternalRef` handle exists yet.
+    #[inline]
+    pub(crate) fn is_global(self) -> bool {
+        // SAFETY: `self`'s invariant (struct doc) guarantees `self.ptr` is a
+        // live external rep for the call's duration; this only reads the
+        // representation marker byte.
+        unsafe { (*self.ptr.as_ptr()).rep.storage[0] == GLOBAL_EXTERNAL }
+    }
+
     /// The size this external node contributes to memory-usage accounting:
     /// the fixed per-node overhead ([`EXTERNAL_REP_SIZE`]) plus the owned
     /// allocation size when known, or the referenced length otherwise.
     #[inline]
     pub(crate) fn allocated_size(self) -> usize {
-        // SAFETY: constructors reserve `storage[0] == GLOBAL_EXTERNAL` for
-        // `CordRepExternalGlobal`, so the marker proves the concrete layout
-        // and makes its trailing `allocation_size` field readable.
-        let payload_size = unsafe {
-            let ext = self.ptr.as_ptr();
-            if (*ext).rep.storage[0] == GLOBAL_EXTERNAL {
-                (*ext.cast::<CordRepExternalGlobal>()).allocation_size
-            } else {
-                (*ext).rep.length
-            }
+        let payload_size = if self.is_global() {
+            // SAFETY: `is_global` proves this node's concrete layout is
+            // `CordRepExternalGlobal`, so its trailing `allocation_size`
+            // field is readable.
+            unsafe { (*self.ptr.as_ptr().cast::<CordRepExternalGlobal>()).allocation_size }
+        } else {
+            self.len()
         };
         payload_size + EXTERNAL_REP_SIZE
     }

@@ -5,6 +5,7 @@ mod common;
 
 mod compare;
 mod construct;
+mod convert;
 mod edit;
 mod iterate;
 mod memory;

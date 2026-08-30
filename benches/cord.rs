@@ -122,6 +122,48 @@ fn bench_drop(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_convert(c: &mut Criterion) {
+    let mut g = c.benchmark_group("convert");
+    let bytes = data(1 << 20);
+    g.throughput(Throughput::Bytes(bytes.len() as u64));
+    g.bench_function("into_vec_global_unique", |b| {
+        b.iter_batched(
+            || Cord::from(bytes.clone()),
+            |cord| Vec::<u8>::from(black_box(cord)),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    g.bench_function("into_string_global_unique", |b| {
+        b.iter_batched(
+            || Cord::from(String::from_utf8(vec![b'x'; 1 << 20]).unwrap()),
+            |cord| String::try_from(black_box(cord)).unwrap(),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    let flat = Cord::copy_from_slice(&bytes[..4000]);
+    g.throughput(Throughput::Bytes(flat.len() as u64));
+    g.bench_function("into_vec_flat", |b| {
+        b.iter_batched(
+            || flat.clone(),
+            |cord| Vec::<u8>::from(black_box(cord)),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    let fragmented = fragmented(1 << 20, 1000);
+    g.throughput(Throughput::Bytes(fragmented.len() as u64));
+    g.bench_function("into_vec_fragmented", |b| {
+        b.iter_batched(
+            || fragmented.clone(),
+            |cord| Vec::<u8>::from(black_box(cord)),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    g.bench_function("to_vec_fragmented", |b| b.iter(|| black_box(&fragmented).to_vec()));
+    g.finish();
+}
+
 fn bench_append(c: &mut Criterion) {
     let mut g = c.benchmark_group("append");
     for chunk in [1usize, 16, 100, 1000, 4096] {
@@ -513,6 +555,7 @@ criterion_group!(
     bench_construct,
     bench_clone,
     bench_drop,
+    bench_convert,
     bench_append,
     bench_prepend,
     bench_slice,

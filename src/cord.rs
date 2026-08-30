@@ -2194,28 +2194,50 @@ impl core::str::FromStr for Cord {
     }
 }
 
+/// Converts a cord into contiguous bytes, stealing a uniquely owned adopted
+/// global allocation when possible. The returned vector's capacity may exceed
+/// its length when the original allocation had spare capacity.
 impl From<Cord> for Vec<u8> {
     #[inline]
-    fn from(cord: Cord) -> Self {
+    fn from(mut cord: Cord) -> Self {
+        if let Some(root) = cord.tree_ref()
+            && root.ref_is_one()
+            && CordRepExternal::is_global(root)
+        {
+            let owned = cord.data.take_tree().expect("tree_ref returned Some");
+            // SAFETY: `owned` is the same node as `root` above — `take_tree`
+            // hands back `cord.data`'s tree pointer as-is, without touching
+            // the refcount — so the checks just performed on `root` (a
+            // refcount-one compact global external) still describe `owned`,
+            // and `take_tree` transfers this call the final owned reference.
+            return unsafe { CordRepExternal::into_global_vec(owned) };
+        }
         cord.to_vec()
     }
 }
 
+/// Converts a cord into a boxed slice. Routes through the `Vec<u8>`
+/// conversion, so a reclaimed allocation whose capacity already equals its
+/// length (a `Box<[u8]>`-adopted node, or an exactly-sized `Vec`) converts
+/// without copying; every other case shrinks the vector at worst.
 impl From<Cord> for Box<[u8]> {
     #[inline]
     fn from(cord: Cord) -> Self {
-        cord.to_vec().into_boxed_slice()
+        Vec::from(cord).into_boxed_slice()
     }
 }
 
 impl TryFrom<Cord> for String {
     type Error = FromUtf8Error;
 
-    /// Copies the bytes into a `String`, failing if they are not valid UTF-8.
+    /// Converts the bytes into a `String`, failing if they are not valid UTF-8.
+    /// A uniquely owned adopted global allocation is reused without copying,
+    /// but its bytes are still validated as UTF-8. The result's capacity may
+    /// exceed its length when the reclaimed allocation had spare capacity.
     /// For a lossy conversion use `String::from_utf8_lossy(&cord.to_vec())`.
     #[inline]
     fn try_from(cord: Cord) -> Result<Self, Self::Error> {
-        String::from_utf8(cord.to_vec())
+        String::from_utf8(Vec::from(cord))
     }
 }
 
