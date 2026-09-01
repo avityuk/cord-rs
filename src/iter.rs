@@ -15,15 +15,21 @@ use crate::inline_data::InlineData;
 use crate::rep::reader::CordRepBtreeReader;
 use crate::rep::{CordRepSubstring, MAX_BYTES_TO_COPY, MAX_INLINE, OwnedRep, RepRef, RepView};
 
-/// Iterator over the contiguous chunks of a [`Cord`], created by
-/// [`Cord::chunks`].
+/// A forward-only chunk position: every field the public [`Chunks`] had
+/// before lazy reverse iteration gave it a lazily
+/// allocated `back` field. All fields here are `Copy`, so cloning one is a
+/// memcpy and dropping it is a no-op — properties `Chunks` itself lost once
+/// `back` gave it drop glue and a branching `Clone`.
 ///
-/// Every yielded chunk is non-empty. The iterator holds a navigation stack
-/// proportional to the tree height (184 bytes on 64-bit platforms, less on
-/// 32-bit); prefer passing it by reference. Reverse iteration allocates a
-/// second navigation stack lazily on the first call to `next_back`.
+/// Every hot internal path that never needs reverse iteration — [`Cursor`],
+/// `find`/`ends_with`/comparisons and sub-cord extraction in `cord.rs` — is
+/// built directly on this type instead of the public `Chunks`, so
+/// constructing, cloning or dropping one of these positions (which `Cursor`
+/// does per search candidate in `find_impl`) stays as cheap as it was before
+/// double-ended iteration existed. Kept crate-private: the public iterator
+/// remains `Chunks`.
 #[derive(Clone)]
-pub struct Chunks<'a> {
+pub(crate) struct ForwardChunks<'a> {
     /// A view of the bytes of the current chunk (possibly a suffix of the
     /// current data edge when used by a [`Cursor`]). Empty at the end.
     current_chunk: &'a [u8],
@@ -42,15 +48,50 @@ pub struct Chunks<'a> {
     bytes_remaining: usize,
     /// Reader for btree cords; empty otherwise.
     btree_reader: CordRepBtreeReader<'a>,
-    /// Backward position, allocated only when reverse iteration is used.
-    back: Option<Box<BackChunks<'a>>>,
     _marker: PhantomData<&'a Cord>,
 }
+
+impl core::fmt::Debug for ForwardChunks<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ForwardChunks")
+            .field("bytes_remaining", &self.bytes_remaining)
+            .finish_non_exhaustive()
+    }
+}
+
+// The size `Chunks` itself had before lazy reverse iteration
+// added the `back` field. Pointer-width scaled (the navigation stack is
+// `MAX_DEPTH` pointers), so only checked on 64-bit; smaller on 32-bit
+// targets.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<ForwardChunks<'static>>() == 176);
+
+// Every field above is `Copy`, so this type has no `Drop` impl and needs
+// none — cloning it is a memcpy and dropping it is a no-op. This is exactly
+// the property that keeps `Cursor` (which embeds one of these) cheap to
+// clone per search candidate in `find_impl`.
+const _: () = assert!(!core::mem::needs_drop::<ForwardChunks<'static>>());
 
 #[derive(Clone)]
 struct BackChunks<'a> {
     current_chunk: &'a [u8],
     btree_reader: CordRepBtreeReader<'a>,
+}
+
+/// Iterator over the contiguous chunks of a [`Cord`], created by
+/// [`Cord::chunks`].
+///
+/// Every yielded chunk is non-empty. The iterator holds a navigation stack
+/// proportional to the tree height (184 bytes on 64-bit platforms, less on
+/// 32-bit); prefer passing it by reference. Reverse iteration allocates a
+/// second navigation stack lazily on the first call to `next_back`.
+#[derive(Clone)]
+pub struct Chunks<'a> {
+    /// The forward position: everything `Chunks` needs until reverse
+    /// iteration is actually used.
+    front: ForwardChunks<'a>,
+    /// Backward position, allocated only when reverse iteration is used.
+    back: Option<Box<BackChunks<'a>>>,
 }
 
 // Keeps the size claim in the doc comment above honest. Pointer-width
@@ -59,8 +100,8 @@ struct BackChunks<'a> {
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(core::mem::size_of::<Chunks<'static>>() == 184);
 
-impl<'a> Chunks<'a> {
-    /// Creates an iterator positioned at the first chunk of `cord`.
+impl<'a> ForwardChunks<'a> {
+    /// Creates a position at the first chunk of `cord`.
     pub(crate) fn new(cord: &'a Cord) -> Self {
         let mut it = Self::empty();
         if let Some(tree) = cord.tree_ref() {
@@ -75,7 +116,7 @@ impl<'a> Chunks<'a> {
         it
     }
 
-    /// An iterator over a single slice.
+    /// A position over a single slice.
     pub(crate) fn single(slice: &'a [u8]) -> Self {
         let mut it = Self::empty();
         it.current_chunk = slice;
@@ -83,7 +124,7 @@ impl<'a> Chunks<'a> {
         it
     }
 
-    /// An exhausted iterator.
+    /// An exhausted position.
     pub(crate) fn empty() -> Self {
         Self {
             current_chunk: &[],
@@ -91,7 +132,6 @@ impl<'a> Chunks<'a> {
             leaf_offset: 0,
             bytes_remaining: 0,
             btree_reader: CordRepBtreeReader::new(),
-            back: None,
             _marker: PhantomData,
         }
     }
@@ -152,10 +192,6 @@ impl<'a> Chunks<'a> {
     /// Skips `n` bytes. Requires `n <= bytes_remaining`.
     pub(crate) fn advance_bytes(&mut self, n: usize) {
         debug_assert!(self.bytes_remaining >= n);
-        if self.back.is_some() {
-            self.advance_bytes_between_ends(n);
-            return;
-        }
         if n < self.current_chunk.len() {
             self.remove_chunk_prefix(n);
         } else if n != 0 {
@@ -165,26 +201,6 @@ impl<'a> Chunks<'a> {
                 self.bytes_remaining = 0;
                 self.current_chunk = &[];
             }
-        }
-    }
-
-    fn advance_bytes_between_ends(&mut self, mut n: usize) {
-        while n != 0 {
-            let available = self.current_chunk.len().min(self.bytes_remaining);
-            if n < available {
-                self.current_chunk = &self.current_chunk[n..];
-                self.bytes_remaining -= n;
-                self.leaf_offset += n;
-                return;
-            }
-            n -= available;
-            self.bytes_remaining -= available;
-            if self.bytes_remaining == 0 {
-                self.current_chunk = &[];
-                return;
-            }
-            debug_assert_eq!(available, self.current_chunk.len());
-            self.current_chunk = self.btree_reader.next();
         }
     }
 
@@ -294,16 +310,17 @@ impl<'a> Chunks<'a> {
         }
 
         // A single data edge. `current_leaf` is always set here for a
-        // `Chunks` built from a `Cord` (`Chunks::new` -> `init_tree` sets it
-        // whenever `btree_reader` stays empty and the cord holds a tree, and
-        // nothing clears it afterwards) — the only path that can reach
-        // `read_bytes` at all, since `Cursor` (this fn's sole caller via
-        // `Cursor::read_cord`) is only ever built over a `Cord` by `Cursor::new`.
-        // `Chunks::single` (used by `CordLike::chunks`, e.g. `&[u8]`) leaves
-        // `current_leaf` unset, but a `Cursor` is never built over one, so
-        // that state can't reach here; `expect` (not the unchecked cousin)
-        // keeps that a debug-and-release-checked invariant rather than one
-        // provable only by tracing every call site.
+        // `ForwardChunks` built from a `Cord` (`ForwardChunks::new` ->
+        // `init_tree` sets it whenever `btree_reader` stays empty and the
+        // cord holds a tree, and nothing clears it afterwards) — the only
+        // path that can reach `read_bytes` at all, since `Cursor` (this fn's
+        // sole caller via `Cursor::read_cord`) is only ever built over a
+        // `Cord` by `Cursor::new`. `ForwardChunks::single` (used by
+        // `CordLike::chunks`, e.g. `&[u8]`) leaves `current_leaf` unset, but
+        // a `Cursor` is never built over one, so that state can't reach
+        // here; `expect` (not the unchecked cousin) keeps that a
+        // debug-and-release-checked invariant rather than one provable only
+        // by tracing every call site.
         let leaf = self.current_leaf.expect("read_bytes: single data edge with no current_leaf");
         if n == leaf.len() {
             // Reading the entire edge: share it.
@@ -338,6 +355,60 @@ impl<'a> Chunks<'a> {
         self.leaf_offset += n;
         subcord
     }
+
+    /// Returns the current chunk and advances past it, or `None` at the
+    /// end. The fast forward-only path `Chunks::next` had before lazy
+    /// reverse iteration — no `back` to check.
+    #[inline]
+    pub(crate) fn next_chunk(&mut self) -> Option<&'a [u8]> {
+        if self.bytes_remaining == 0 {
+            return None;
+        }
+        let chunk = self.current_chunk;
+        self.step();
+        Some(chunk)
+    }
+}
+
+impl<'a> Chunks<'a> {
+    /// Creates an iterator positioned at the first chunk of `cord`.
+    pub(crate) fn new(cord: &'a Cord) -> Self {
+        Self { front: ForwardChunks::new(cord), back: None }
+    }
+
+    /// An iterator over a single slice.
+    pub(crate) fn single(slice: &'a [u8]) -> Self {
+        Self { front: ForwardChunks::single(slice), back: None }
+    }
+
+    /// Skips `n` bytes. Requires `n <= bytes_remaining`.
+    pub(crate) fn advance_bytes(&mut self, n: usize) {
+        if self.back.is_some() {
+            self.advance_bytes_between_ends(n);
+        } else {
+            self.front.advance_bytes(n);
+        }
+    }
+
+    fn advance_bytes_between_ends(&mut self, mut n: usize) {
+        while n != 0 {
+            let available = self.front.current_chunk.len().min(self.front.bytes_remaining);
+            if n < available {
+                self.front.current_chunk = &self.front.current_chunk[n..];
+                self.front.bytes_remaining -= n;
+                self.front.leaf_offset += n;
+                return;
+            }
+            n -= available;
+            self.front.bytes_remaining -= available;
+            if self.front.bytes_remaining == 0 {
+                self.front.current_chunk = &[];
+                return;
+            }
+            debug_assert_eq!(available, self.front.current_chunk.len());
+            self.front.current_chunk = self.front.btree_reader.next();
+        }
+    }
 }
 
 impl<'a> Iterator for Chunks<'a> {
@@ -345,58 +416,62 @@ impl<'a> Iterator for Chunks<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<&'a [u8]> {
-        if self.bytes_remaining == 0 {
+        if self.back.is_none() {
+            // The fast path: no second position to meet in the middle with.
+            return self.front.next_chunk();
+        }
+        if self.front.bytes_remaining == 0 {
             return None;
         }
-        let n = self.current_chunk.len().min(self.bytes_remaining);
-        let chunk = &self.current_chunk[..n];
-        self.bytes_remaining -= n;
-        if self.bytes_remaining == 0 {
-            self.current_chunk = &[];
+        let n = self.front.current_chunk.len().min(self.front.bytes_remaining);
+        let chunk = &self.front.current_chunk[..n];
+        self.front.bytes_remaining -= n;
+        if self.front.bytes_remaining == 0 {
+            self.front.current_chunk = &[];
         } else {
-            debug_assert_eq!(n, self.current_chunk.len());
+            debug_assert_eq!(n, self.front.current_chunk.len());
             // Bytes remain past a fully consumed chunk, which only a btree
             // can supply: a single-chunk iterator's chunk always covers its
             // whole remaining length. An uninitialized reader would hand
             // back an empty chunk here and leave `bytes_remaining` stuck
             // above zero, so a corrupted iterator panics (as `step` does)
             // rather than yielding empty chunks forever.
-            if !self.btree_reader.is_some() {
+            if !self.front.btree_reader.is_some() {
                 unreachable!("next() on an invalid iterator");
             }
-            self.current_chunk = self.btree_reader.next();
+            self.front.current_chunk = self.front.btree_reader.next();
         }
         Some(chunk)
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        if self.bytes_remaining == 0 { (0, Some(0)) } else { (1, Some(self.bytes_remaining)) }
+        if self.front.bytes_remaining == 0 { (0, Some(0)) } else { (1, Some(self.front.bytes_remaining)) }
     }
 }
 
 impl<'a> DoubleEndedIterator for Chunks<'a> {
     #[inline]
     fn next_back(&mut self) -> Option<&'a [u8]> {
-        if self.bytes_remaining == 0 {
+        if self.front.bytes_remaining == 0 {
             return None;
         }
 
         let back = self.back.get_or_insert_with(|| {
             let mut reader = CordRepBtreeReader::new();
-            let current_chunk = if self.btree_reader.is_some() {
-                reader.init_last_from(&self.btree_reader)
+            let current_chunk = if self.front.btree_reader.is_some() {
+                reader.init_last_from(&self.front.btree_reader)
             } else {
-                self.current_chunk
+                self.front.current_chunk
             };
             Box::new(BackChunks { current_chunk, btree_reader: reader })
         });
-        let n = back.current_chunk.len().min(self.bytes_remaining);
+        let n = back.current_chunk.len().min(self.front.bytes_remaining);
         let split = back.current_chunk.len() - n;
         let chunk = &back.current_chunk[split..];
-        self.bytes_remaining -= n;
-        if self.bytes_remaining == 0 {
-            self.current_chunk = &[];
+        self.front.bytes_remaining -= n;
+        if self.front.bytes_remaining == 0 {
+            self.front.current_chunk = &[];
             back.current_chunk = &[];
         } else if split == 0 {
             back.current_chunk = back.btree_reader.previous();
@@ -411,7 +486,7 @@ impl core::iter::FusedIterator for Chunks<'_> {}
 
 impl core::fmt::Debug for Chunks<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Chunks").field("bytes_remaining", &self.bytes_remaining).finish_non_exhaustive()
+        f.debug_struct("Chunks").field("bytes_remaining", &self.front.bytes_remaining).finish_non_exhaustive()
     }
 }
 
@@ -440,7 +515,7 @@ impl<'a> Bytes<'a> {
     /// Bytes not yet yielded.
     #[inline]
     fn remaining(&self) -> usize {
-        self.current.as_slice().len() + self.chunks.bytes_remaining + self.back_current.as_slice().len()
+        self.current.as_slice().len() + self.chunks.front.bytes_remaining + self.back_current.as_slice().len()
     }
 }
 
@@ -475,15 +550,15 @@ impl Iterator for Bytes<'_> {
         }
         let skip = n - cur.len();
         self.current = [].iter();
-        if skip < self.chunks.bytes_remaining {
+        if skip < self.chunks.front.bytes_remaining {
             self.chunks.advance_bytes(skip);
             let chunk = self.chunks.next()?;
             self.current = chunk.iter();
             return self.current.next().copied();
         }
-        let skip = skip - self.chunks.bytes_remaining;
-        if self.chunks.bytes_remaining != 0 {
-            self.chunks.advance_bytes(self.chunks.bytes_remaining);
+        let skip = skip - self.chunks.front.bytes_remaining;
+        if self.chunks.front.bytes_remaining != 0 {
+            self.chunks.advance_bytes(self.chunks.front.bytes_remaining);
         }
         let back = self.back_current.as_slice();
         if skip >= back.len() {
@@ -557,7 +632,7 @@ impl core::iter::FusedIterator for Bytes<'_> {}
 /// ```
 #[derive(Clone, Debug)]
 pub struct Cursor<'a> {
-    chunks: Chunks<'a>,
+    chunks: ForwardChunks<'a>,
     len: usize,
     /// The cord the cursor was built over. Unused by any forward-only
     /// operation; kept so a backward `std::io::Seek` can rebuild `chunks`
@@ -567,11 +642,17 @@ pub struct Cursor<'a> {
     cord: &'a Cord,
 }
 
+// `ForwardChunks` has no drop glue (asserted above) and `Cursor`'s other
+// fields are a `usize` and (with `std`) a shared reference, neither of which
+// ever does; this is exactly the property that keeps a `Cursor` cheap to
+// clone per search candidate in `find_impl`.
+const _: () = assert!(!core::mem::needs_drop::<Cursor<'static>>());
+
 impl<'a> Cursor<'a> {
     #[inline]
     pub(crate) fn new(cord: &'a Cord) -> Self {
         Self {
-            chunks: Chunks::new(cord),
+            chunks: ForwardChunks::new(cord),
             len: cord.len(),
             #[cfg(feature = "std")]
             cord,
@@ -587,13 +668,13 @@ impl<'a> Cursor<'a> {
     }
 
     /// The underlying forward-only chunk position. Callers may only advance
-    /// the returned iterator (`advance_bytes`, or reading through it) —
+    /// the returned position (`advance_bytes`, or reading through it) —
     /// never replace, reset or rebuild it: `Cursor` caches the cord's length
-    /// in `len` and derives `position()` from the iterator's
+    /// in `len` and derives `position()` from the position's
     /// `bytes_remaining`, which stays consistent with `len` only under
     /// forward movement.
     #[inline]
-    pub(crate) fn chunks_mut(&mut self) -> &mut Chunks<'a> {
+    pub(crate) fn chunks_mut(&mut self) -> &mut ForwardChunks<'a> {
         &mut self.chunks
     }
 
@@ -718,6 +799,6 @@ impl<'a> Cursor<'a> {
     #[inline]
     #[must_use]
     pub fn chunks(&self) -> Chunks<'a> {
-        self.chunks.clone()
+        Chunks { front: self.chunks.clone(), back: None }
     }
 }

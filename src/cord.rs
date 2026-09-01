@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 
 use crate::buffer::{ConsumedBuffer, CordBuffer};
 use crate::inline_data::{InlineData, Repr};
-use crate::iter::{Bytes, Chunks, Cursor};
+use crate::iter::{Bytes, Chunks, Cursor, ForwardChunks};
 use crate::rep::btree::{BtreePtr, CordRepBtree, as_btree};
 use crate::rep::external::{CordRepExternal, GlobalBytes, StableBytes};
 use crate::rep::flat::{self, MAX_FLAT_LENGTH};
@@ -558,7 +558,8 @@ impl Cord {
                     unsafe { tree.data() },
                 ),
                 Some(_) => {
-                    for chunk in src.chunks() {
+                    let mut it = ForwardChunks::new(src);
+                    while let Some(chunk) = it.next_chunk() {
                         self.append_slice(chunk);
                     }
                 }
@@ -595,7 +596,8 @@ impl Cord {
                     unsafe { tree.data() },
                 ),
                 Some(_) => {
-                    for chunk in src.chunks() {
+                    let mut it = ForwardChunks::new(&src);
+                    while let Some(chunk) = it.next_chunk() {
                         self.append_slice(chunk);
                     }
                 }
@@ -790,7 +792,8 @@ impl Cord {
             return;
         }
         let mut dst = dst;
-        for chunk in self.chunks() {
+        let mut it = ForwardChunks::new(self);
+        while let Some(chunk) = it.next_chunk() {
             let (head, tail) = dst.split_at_mut(chunk.len());
             head.write_copy_of_slice(chunk);
             dst = tail;
@@ -1196,7 +1199,7 @@ impl Cord {
             return Cord::from_inline(&self.data.inline_slice()[pos..pos + new_size]);
         };
         if new_size <= MAX_INLINE {
-            let mut it = self.chunks();
+            let mut it = ForwardChunks::new(self);
             it.advance_bytes(pos);
             // `it` is discarded right here, so the final positioning
             // update would be dead work.
@@ -1338,7 +1341,8 @@ impl Cord {
         }
         let mut dst = dst;
         let result = self.len().min(dst.len());
-        for chunk in self.chunks() {
+        let mut it = ForwardChunks::new(self);
+        while let Some(chunk) = it.next_chunk() {
             let n = chunk.len().min(dst.len());
             if n == 0 {
                 break;
@@ -1565,7 +1569,7 @@ impl Cord {
         if my_size < suffix_size {
             return false;
         }
-        let mut position = self.chunks();
+        let mut position = ForwardChunks::new(self);
         position.advance_bytes(my_size - suffix_size);
         is_subcord_at(&mut position, suffix.chunks())
     }
@@ -1641,22 +1645,22 @@ impl Cord {
         compared_size: usize,
         mut size_to_compare: usize,
     ) -> Ordering {
-        fn advance<'a>(it: &mut Chunks<'a>, chunk: &mut &'a [u8]) -> bool {
+        fn advance<'a>(mut next: impl FnMut() -> Option<&'a [u8]>, chunk: &mut &'a [u8]) -> bool {
             if !chunk.is_empty() {
                 return true;
             }
-            match it.next() {
-                Some(next) => {
-                    *chunk = next;
+            match next() {
+                Some(next_chunk) => {
+                    *chunk = next_chunk;
                     true
                 }
                 None => false,
             }
         }
-        let mut lhs_it = self.chunks();
+        let mut lhs_it = ForwardChunks::new(self);
         let mut rhs_it = rhs.chunks();
         // `compared_size` is inside both first chunks.
-        let mut lhs_chunk: &[u8] = lhs_it.next().unwrap_or(&[]);
+        let mut lhs_chunk: &[u8] = lhs_it.next_chunk().unwrap_or(&[]);
         let mut rhs_chunk: &[u8] = rhs_it.next().unwrap_or(&[]);
         debug_assert!(compared_size <= lhs_chunk.len());
         debug_assert!(compared_size <= rhs_chunk.len());
@@ -1664,7 +1668,7 @@ impl Cord {
         rhs_chunk = &rhs_chunk[compared_size..];
         size_to_compare -= compared_size;
 
-        while advance(&mut lhs_it, &mut lhs_chunk) && advance(&mut rhs_it, &mut rhs_chunk) {
+        while advance(|| lhs_it.next_chunk(), &mut lhs_chunk) && advance(|| rhs_it.next(), &mut rhs_chunk) {
             let n = lhs_chunk.len().min(rhs_chunk.len());
             debug_assert!(size_to_compare >= n);
             size_to_compare -= n;
@@ -1779,9 +1783,14 @@ fn is_slice_at(mut position: Cursor<'_>, mut needle: &[u8]) -> bool {
 
 /// Whether the bytes at `haystack` start with the chunks of `needle`,
 /// consuming matching bytes directly. The haystack position after `false` is
-/// unspecified; callers must pass a disposable chunk iterator.
+/// unspecified; callers must pass a disposable chunk position. `haystack` is
+/// the crate-private, `Copy`-field forward position (never the public
+/// `Chunks`) since every caller builds a disposable one for this; `needle`
+/// stays generic over any chunk iterator so a `Chunks` from a generic
+/// `CordLike` needle (the only kind available for a non-`Cord` needle) still
+/// works.
 #[inline]
-fn is_subcord_at(haystack: &mut Chunks<'_>, needle: Chunks<'_>) -> bool {
+fn is_subcord_at<'a>(haystack: &mut ForwardChunks<'_>, needle: impl Iterator<Item = &'a [u8]>) -> bool {
     for mut needle_chunk in needle {
         while !needle_chunk.is_empty() {
             let haystack_chunk = haystack.chunk();
@@ -1917,8 +1926,8 @@ impl Hash for Cord {
         // Re-block the chunks so the write sequence only depends on the data.
         let mut buffer = [0u8; BLOCK];
         let mut filled = 0;
-        for chunk in self.chunks() {
-            let mut chunk = chunk;
+        let mut it = ForwardChunks::new(self);
+        while let Some(mut chunk) = it.next_chunk() {
             while !chunk.is_empty() {
                 let n = chunk.len().min(BLOCK - filled);
                 buffer[filled..filled + n].copy_from_slice(&chunk[..n]);
@@ -2014,7 +2023,8 @@ impl fmt::Debug for Cord {
     /// on [`to_vec`](Self::to_vec) for lossy).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("b\"")?;
-        for chunk in self.chunks() {
+        let mut it = ForwardChunks::new(self);
+        while let Some(chunk) = it.next_chunk() {
             write!(f, "{}", chunk.escape_ascii())?;
         }
         f.write_str("\"")

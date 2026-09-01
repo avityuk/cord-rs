@@ -67,7 +67,8 @@ impl io::Read for Cursor<'_> {
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
         let n = self.remaining();
         buf.reserve(n);
-        for chunk in self.chunks() {
+        let mut it = self.chunks_mut().clone();
+        while let Some(chunk) = it.next_chunk() {
             buf.extend_from_slice(chunk);
         }
         self.advance(n);
