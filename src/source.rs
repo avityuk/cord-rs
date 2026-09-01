@@ -240,6 +240,12 @@ pub trait CordLike: sealed::LikeSealed {
     /// The first contiguous chunk (empty if empty).
     #[doc(hidden)]
     fn first_chunk(&self) -> &[u8];
+    /// The complete contents as one contiguous chunk, when available.
+    #[doc(hidden)]
+    #[inline]
+    fn single_chunk(&self) -> Option<&[u8]> {
+        None
+    }
     /// Iterator over the contiguous chunks.
     #[doc(hidden)]
     fn chunks(&self) -> Chunks<'_>;
@@ -261,6 +267,10 @@ impl CordLike for Cord {
     #[inline]
     fn first_chunk(&self) -> &[u8] {
         Cord::first_chunk(self)
+    }
+    #[inline]
+    fn single_chunk(&self) -> Option<&[u8]> {
+        Cord::as_contiguous(self)
     }
     #[inline]
     fn chunks(&self) -> Chunks<'_> {
@@ -290,6 +300,11 @@ macro_rules! impl_slice_like {
                 $slice
             }
             #[inline]
+            fn single_chunk(&self) -> Option<&[u8]> {
+                let $v = self;
+                Some($slice)
+            }
+            #[inline]
             fn chunks(&self) -> Chunks<'_> {
                 let $v = self;
                 Chunks::single($slice)
@@ -317,6 +332,10 @@ impl<const N: usize> CordLike for [u8; N] {
         self
     }
     #[inline]
+    fn single_chunk(&self) -> Option<&[u8]> {
+        Some(self)
+    }
+    #[inline]
     fn chunks(&self) -> Chunks<'_> {
         Chunks::single(self)
     }
@@ -331,6 +350,10 @@ impl<T: CordLike + ?Sized> CordLike for &T {
     #[inline]
     fn first_chunk(&self) -> &[u8] {
         T::first_chunk(self)
+    }
+    #[inline]
+    fn single_chunk(&self) -> Option<&[u8]> {
+        T::single_chunk(self)
     }
     #[inline]
     fn chunks(&self) -> Chunks<'_> {
@@ -354,6 +377,10 @@ impl CordLike for bytes::Bytes {
     #[inline]
     fn first_chunk(&self) -> &[u8] {
         self
+    }
+    #[inline]
+    fn single_chunk(&self) -> Option<&[u8]> {
+        Some(self)
     }
     #[inline]
     fn chunks(&self) -> Chunks<'_> {

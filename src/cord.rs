@@ -1571,7 +1571,11 @@ impl Cord {
         }
         let mut position = ForwardChunks::new(self);
         position.advance_bytes(my_size - suffix_size);
-        is_subcord_at(&mut position, suffix.chunks())
+        if let Some(chunk) = suffix.single_chunk() {
+            is_subcord_at(&mut position, core::iter::once(chunk))
+        } else {
+            is_subcord_at(&mut position, suffix.chunks())
+        }
     }
 
     /// Compares the cord with `rhs` lexicographically as sequences of
