@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Andrey Vityuk"]
-description = "A Rust port of abseil's absl::Cord: a rope-like byte sequence with O(log n) append/prepend/slicing and shared substructure."
+description = "Fast Rust library providing a rope-like byte sequence with cheap cloning, slicing, appending, prepending, and zero-copy buffer adoption"
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/avityuk/cord-rs"
 documentation = "https://docs.rs/cord-rs"
-keywords = ["cord", "rope", "bytes", "abseil", "no_std"]
+keywords = ["cord", "rope", "bytes", "no_std"]
 categories = ["data-structures", "memory-management", "no-std"]
 # Explicit allowlist (cleaner than exclude here): ships the crate itself,
 # its tests/benches, and the scripts CONTRIBUTING.md documents in detail;

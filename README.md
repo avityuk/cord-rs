@@ -47,7 +47,8 @@ their lifetime or cross API boundaries:
   `advance`, `truncate` are O(log n) and reuse existing buffers — e.g.
   prepending a header to a wire-format message, or repeatedly appending
   payloads.
-- **Cheap sharing**: `clone` is a reference-count bump; sub-cords share the
+- **Cheap sharing**: cloning is O(1) — inline values copy the 16-byte handle,
+  while tree-backed values increment one reference count; sub-cords share the
   underlying memory.
 - **Zero-copy ingestion**: large `Vec<u8>`, `String`, `Box<[u8]>`,
   `Arc<[u8]>`, `Cow::Owned` and `bytes::Bytes` values are adopted rather than
@@ -75,8 +76,9 @@ mutating one cord never changes another. What is unusual is how cheaply that
 is implemented — the underlying buffers are reference counted and shared, and
 are only copied when sharing would otherwise become visible.
 
-- **`clone` is a reference-count bump.** No bytes are copied and nothing is
-  allocated, whatever the cord's size.
+- **Cloning is O(1).** Inline cords copy their 16-byte handle; tree-backed
+  cords increment one reference count. Cloning never allocates or copies a
+  tree-backed cord's payload.
 - **Mutation is copy-on-write, at chunk granularity.** `append` writes into a
   buffer's spare capacity only when this cord is the sole owner of that buffer
   and of every tree node above it; if anything on the path is shared, the
@@ -88,10 +90,10 @@ are only copied when sharing would otherwise become visible.
 - **Slices share memory.** `slice`, `get(range)`, `split_off` and `split_to`
   return cords referencing the same buffers as their source; results of 15
   bytes or fewer are copied into the 16-byte handle instead. Sharing means a
-  sub-cord keeps its *whole* source buffer alive: a 90-byte slice of a 100 KB
-  cord still accounts for 100 KB, and `make_contiguous` will not change that
-  (the slice is already contiguous). To release the rest, copy out with
-  `Cord::from(slice.to_vec())`.
+  sub-cord keeps its *whole* backing buffer alive: a 90-byte slice of a single
+  100 KB buffer still accounts for 100 KB, and `make_contiguous` will not
+  change that (the slice is already contiguous). To release the rest, copy out
+  with `Cord::from(slice.to_vec())`.
 - **Thread safety.** `Cord` is `Send + Sync` and has the thread-safety of any
   Rust value: shared references from many threads are fine, mutation needs
   `&mut`. Reference counts are atomic, shared chunks are immutable, and
@@ -125,52 +127,52 @@ assert!(
 
 ## Zero-copy ingestion with `CordBuffer`
 
-A `CordBuffer` is a writable chunk of memory that a cord can adopt without
-copying. It is the way to get bytes from a socket, a file or a decompressor
-into a cord without staging them in an intermediate `Vec`: allocate a buffer,
-write into it, hand it to the cord.
+A `CordBuffer` is writable storage in the cord's native chunk format. Once it
+is filled, appending a heap-backed buffer transfers its allocation directly
+into the cord without copying the payload. A sufficiently large `Vec<u8>` can
+also be adopted without copying, but it remains an external buffer and needs a
+separate metadata allocation; `CordBuffer` becomes a flat cord chunk directly
+and can reuse spare capacity from the cord's existing tail.
 
 ```rust
 use std::io::{self, Read};
 use cord_rs::{Cord, CordBuffer};
 
-/// Reads up to `n` bytes from `src` into a cord, without copying them twice.
+/// Reads up to `n` bytes from `src` directly into cord storage.
 fn read_into_cord<R: Read>(mut src: R, mut n: usize) -> io::Result<Cord> {
     let mut cord = Cord::new();
-    let mut first = true;
     while n > 0 {
-        // The first buffer reuses whatever spare capacity `cord` already has;
-        // after that we know the tail is full, so skip the inspection.
-        let mut buffer = if first {
-            cord.take_append_buffer(n)
-        } else {
-            CordBuffer::with_capacity(n)
-        };
-        first = false;
-
-        let len = buffer.len();
+        let mut buffer = CordBuffer::with_capacity(n);
         let take = buffer.available().min(n);
+
         // `Read` wants initialized memory: zero the region, read into it,
         // then trim back to what was actually read.
         buffer.extend(std::iter::repeat_n(0u8, take));
-        let read = src.read(&mut buffer.as_mut_slice()[len..])?;
-        buffer.truncate(len + read);
+        let read = src.read(buffer.as_mut_slice())?;
         if read == 0 {
             break;
         }
-        cord.append(buffer); // adopted, not copied
+
+        buffer.truncate(read);
+        cord.append(buffer); // transfers the chunk without copying its payload
         n -= read;
     }
     Ok(cord)
 }
+
+let input = vec![b'x'; 10_000];
+let cord = read_into_cord(&input[..], input.len()).unwrap();
+assert_eq!(cord, input);
 ```
 
 `buffer.extend(...)` + `truncate` keeps the loop entirely safe at the cost of
-one `memset` per buffer. To skip that, write into the uninitialized spare
-capacity directly with `spare_capacity_mut` and commit the length with the
-`unsafe` `set_len`, exactly as with `Vec`. For sources that hand you bytes
-rather than take a buffer, the safe `put_slice`, `Extend`, `std::io::Write`
-(and `bytes::BufMut` with the `bytes` feature) all work.
+one `memset` per read. A producer whose API explicitly accepts uninitialized
+output memory (or otherwise guarantees that it only writes to the destination)
+can instead use `spare_capacity_mut` and commit the initialized prefix with the
+`unsafe` `set_len`, exactly as with `Vec`; a general `std::io::Read` cannot.
+For sources that hand you bytes rather than take a destination buffer, the safe
+`put_slice`, `Extend`, `std::io::Write` (and `bytes::BufMut` with the `bytes`
+feature) all work.
 
 Buffers created with `CordBuffer::with_capacity` are capped at
 `CordBuffer::DEFAULT_MAX_CAPACITY` (4083 bytes on 64-bit: a 4 KiB allocation
@@ -257,15 +259,15 @@ Cargo features:
 The crate has one required dependency, [`memchr`], used for substring search
 (`find` and `contains`).
 
-## Relationship to abseil's `absl::Cord`
+## Relationship to Abseil's `absl::Cord`
 
-`cord-rs` is a port of [`absl::Cord`][absl-cord] — the same data structure
-Google uses for protobuf `bytes`/`string` fields and RPC payloads — with some
-changes along the way: an idiomatic Rust API, and internals that started from
-abseil's design (16-byte handle with inline storage, size-classed buffers, a
-shallow b-tree, the same sharing thresholds and growth policy) and evolve
-independently where that makes the crate simpler or the trees smaller. The
-Cordz sampling / profiling layer and the CRC checksum node are not ported.
+`cord-rs` is a Rust port of [`absl::Cord`][absl-cord], a rope-like byte
+container used in systems that assemble and share large byte sequences. It has
+an idiomatic Rust API, while its internals started from Abseil's design (a
+16-byte handle with inline storage, size-classed buffers, a shallow b-tree, and
+the same sharing thresholds and growth policy) and evolve independently where
+that makes the crate simpler or the trees smaller. The Cordz sampling /
+profiling layer and the CRC checksum node are not ported.
 
 <details>
 <summary>abseil → cord-rs API mapping</summary>
