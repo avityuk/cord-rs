@@ -85,7 +85,7 @@ impl Rng {
     }
 }
 
-/// `absl::MakeFragmentedCord`: every fragment becomes its own external node.
+/// Builds a cord where every fragment becomes its own external node.
 pub(crate) fn make_fragmented_cord<I, S>(fragments: I) -> Cord
 where
     I: IntoIterator<Item = S>,

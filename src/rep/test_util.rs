@@ -1,8 +1,7 @@
 //! Test helpers shared by the rep test suites.
 //!
-//! Port of abseil's `cord_rep_test_util.h` plus the tree builders from
-//! `cord_rep_btree_test.cc` (`MakeHexFlat`, `MakeLeaf`, `MakeTree`,
-//! `CreateTree`, `CreateTreeReverse`, `GetLeafEdges`).
+//! Includes tree builders for hex flats, leaves, forward and reverse trees,
+//! and leaf-edge collection.
 //!
 //! All builders follow the rep reference counting conventions: they adopt
 //! the reps they are given and return a new reference to the caller.

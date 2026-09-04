@@ -1,7 +1,5 @@
 //! Forward reader over the data edges of a btree, tracking remaining bytes.
 //!
-//! Port of abseil's `cord_rep_btree_reader.{h,cc}`.
-
 use core::marker::PhantomData;
 
 use super::btree::{BtreePtr, BtreeRef, CordRepBtree};

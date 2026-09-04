@@ -16,9 +16,10 @@ use cord_rs::{Cord, CordBuffer};
 // Small values live inline; no allocation.
 let mut cord = Cord::from("hello");
 
-// Append / prepend / slice are O(log n) and share memory.
+// Append and prepend from byte- and string-like sources.
 cord.append(" world");
 cord.prepend(">> ");
+// This small slice is copied inline; larger slices share backing storage.
 let world = cord.slice(9..);
 assert_eq!(world, "world");
 
@@ -26,7 +27,7 @@ assert_eq!(world, "world");
 cord.append(vec![b'!'; 4096]);
 
 // Zero-copy building through CordBuffer (e.g. read from a socket).
-let mut buffer = CordBuffer::with_capacity(1024);
+let mut buffer = CordBuffer::with_capacity(32);
 buffer.put_slice(b" tail");
 cord.append(buffer);
 
@@ -219,9 +220,10 @@ fn parse_frame(cord: &Cord) -> Option<(u8, Cord)> {
     Some((header[0], cursor.read_cord(len)))
 }
 
-let mut framed = Cord::from(&[1u8, 0, 0, 0, 3][..]);
-framed.append("abc");
-assert_eq!(parse_frame(&framed), Some((1, Cord::from("abc"))));
+let payload = [b'x'; 32];
+let mut framed = Cord::from(&[1u8, 0, 0, 0, 32][..]);
+framed.append(&payload[..]);
+assert_eq!(parse_frame(&framed), Some((1, Cord::from(&payload[..]))));
 ```
 
 A `Cursor` implements `std::io::Read`, `BufRead` and `Seek` (and `bytes::Buf`

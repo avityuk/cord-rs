@@ -13,7 +13,7 @@ keywords = ["cord", "rope", "bytes", "no_std"]
 categories = ["data-structures", "memory-management", "no-std"]
 # Explicit allowlist (cleaner than exclude here): ships the crate itself,
 # its tests/benches, and the scripts CONTRIBUTING.md documents in detail;
-# excludes dev-only files (CLAUDE.md, rustfmt.toml) and CI config (.github).
+# excludes dev-only files (rustfmt.toml) and CI config (.github).
 include = [
     "src/**",
     "tests/**",

@@ -1,7 +1,7 @@
 //! External reps: nodes referencing separately owned byte storage.
 //!
 //! General owners (`Arc`, `bytes::Bytes`, static data, ...) are stored beside
-//! the external header, mirroring abseil's `CordRepExternalImpl<Releaser>`.
+//! the external header.
 //! Standard global byte allocations (`Vec<u8>`, `String`, `Box<[u8]>`) use a
 //! compact node containing only the allocation size and share one releaser.
 //! When the reference count drops to zero, both storage and node are released.
@@ -48,8 +48,7 @@ struct CordRepExternalGlobal {
     allocation_size: usize,
 }
 
-/// Size used for memory accounting of an external node (abseil similarly
-/// accounts `sizeof(CordRepExternalImpl<intptr_t>)`). This is exact for the
+/// Size used for memory accounting of an external node. This is exact for the
 /// compact global node and remains approximate for arbitrary generic owners.
 pub(crate) const EXTERNAL_REP_SIZE: usize = core::mem::size_of::<CordRepExternalGlobal>();
 

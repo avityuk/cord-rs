@@ -3,8 +3,7 @@
 //! `InlineData` holds either up to 15 bytes of inline data or a pointer to a
 //! tree ([`CordRep`]). Byte zero is the control byte: for inline data it holds
 //! `size << 1` (bit zero clear); for a tree it is `1` (bit zero set), followed
-//! by 7 padding bytes and the rep pointer. Port of abseil's
-//! `cord_internal::InlineData` with the Cordz sampling pointer removed.
+//! by 7 padding bytes and the rep pointer.
 //!
 //! Invariant: bytes beyond the inline size are always zero. Several fast paths
 //! (`compare`, `is_same`) rely on it.
@@ -138,8 +137,8 @@ impl InlineData {
         let mut this = Self::new();
         // SAFETY: `data.len() <= MAX_INLINE` (asserted above) and the
         // destination is the 15-byte tail; `NULLIFY_TAIL` zero-fills
-        // `tail[len..]`, so all 15 bytes end up written — abseil's fused
-        // copy-and-zero, one branchless dance instead of copy + fill.
+        // `tail[len..]`, so all 15 bytes end up written in one branchless
+        // copy-and-zero operation instead of a copy followed by a fill.
         unsafe {
             crate::rep::small_memmove::<true>(this.tail_mut().as_mut_ptr(), data.as_ptr(), data.len());
         }

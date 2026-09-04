@@ -57,12 +57,11 @@ pub enum MemoryAccounting {
 /// shared across API boundaries, e.g. wire-format messages that need a header
 /// prepended or a payload appended.
 ///
-/// `Cord` is a port of abseil's [`absl::Cord`], preserving its representation
-/// and its optimizations:
+/// The representation provides:
 ///
 /// * `size_of::<Cord>() == 16` with a 15 byte small-value optimization.
-/// * O(log n) append, prepend and slicing; O(1) clone (a reference count
-///   bump).
+/// * O(log n) append, prepend and slicing; O(1) clone (a handle copy for
+///   inline cords or one reference-count increment for tree-backed cords).
 /// * Amortized in-place appends into spare capacity of privately owned
 ///   buffers; small values are copied instead of shared to keep memory
 ///   overhead low.
@@ -77,12 +76,12 @@ pub enum MemoryAccounting {
 /// `Cord` is `Send + Sync`, with the thread safety of an ordinary Rust
 /// value: any number of threads may hold `&Cord` at once, including clones
 /// of the same cord, while mutating one requires `&mut Cord`. This holds
-/// together with cheap cloning because a clone is a reference-count bump —
-/// clones share the underlying buffers but behave as independent values,
-/// since a buffer is only ever written in place while exactly one cord
-/// references it, reference counts are atomic, and buffers shared between
-/// cords are never modified. See the README's "Sharing and mutation"
-/// section for the full picture.
+/// together with cheap cloning because tree-backed clones increment one
+/// reference count — clones share the underlying buffers but behave as
+/// independent values, since a buffer is only ever written in place while
+/// exactly one cord references it, reference counts are atomic, and buffers
+/// shared between cords are never modified. See the README's "Sharing and
+/// mutation" section for the full picture.
 ///
 /// # Bounds checking
 ///
@@ -93,12 +92,11 @@ pub enum MemoryAccounting {
 /// # Limits
 ///
 /// A buffer or tree node can be referenced at most ~2^30 times (an `i32`
-/// count, as in abseil): exceeding it aborts the process rather than risking
+/// count): exceeding it aborts the process rather than risking
 /// a use-after-free on overflow, exactly like `Arc`. This is not reachable
 /// with ordinary use — only pathological self-sharing (repeatedly appending
 /// a cord to itself) drives a single node's count that high.
 ///
-/// [`absl::Cord`]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
 #[repr(transparent)]
 pub struct Cord {
     pub(crate) data: InlineData,
@@ -449,7 +447,7 @@ impl Cord {
             }
         }
 
-        // Keep abseil's 10% growth rate.
+        // Limit spare tail capacity to roughly 10% of the cord's length.
         // SAFETY: `append_data`'s raw result carries the reference that
         // `force_btree`'s consumed input transferred in; adopted here and
         // installed below.
@@ -819,11 +817,8 @@ impl Cord {
 
     /// Creates a cord referencing static data without copying it.
     ///
-    /// Values of 15 bytes or less are stored inline instead. Unlike
-    /// abseil's `MakeCordFromExternal`, which takes a releaser callback and
-    /// warns that passing one which does nothing is likely a bug, this
-    /// takes an owning `&'static` reference directly, so that particular
-    /// mistake isn't expressible here.
+    /// Values of 15 bytes or less are stored inline instead. The `'static`
+    /// lifetime makes the storage validity explicit in the type.
     ///
     /// ```
     /// use cord_rs::Cord;
@@ -1072,9 +1067,8 @@ impl Cord {
             return;
         }
         if tree.is_btree() {
-            // SAFETY: standard rep manipulation; see abseil's
-            // `RemovePrefix`. `sub_tree` returns a fresh reference;
-            // `unref` releases `self`'s original one.
+            // SAFETY: `sub_tree` returns a fresh reference covering the
+            // requested suffix; `unref` releases `self`'s original one.
             let owned = unsafe {
                 let raw = tree.as_ptr();
                 let sub = CordRepBtree::sub_tree(as_btree(raw), n, tree.len() - n);
@@ -1134,9 +1128,8 @@ impl Cord {
             return;
         }
         if tree.is_btree() {
-            // SAFETY: standard rep manipulation; see abseil's
-            // `RemoveSuffix`. `remove_suffix` adopts `tree`'s reference
-            // (no separate `unref` needed).
+            // SAFETY: `remove_suffix` adopts `tree`'s reference and returns
+            // the shortened tree, so no separate `unref` is needed.
             let owned =
                 unsafe { OwnedRep::from_raw(CordRepBtree::remove_suffix(as_btree(tree.as_ptr()), n)) };
             self.data.set_tree(owned);
@@ -1873,10 +1866,9 @@ impl Clone for Cord {
             self.data = source.data;
             return;
         }
-        // Reference counting as in abseil's `AssignSlow`: increment
-        // `source`'s tree (if any) before releasing `self`'s old one, so a
-        // tree shared between `self` and `source` never drops to zero
-        // mid-reassignment.
+        // Increment `source`'s tree (if any) before releasing `self`'s old
+        // one, so a tree shared between `self` and `source` never drops to
+        // zero mid-reassignment.
         let old = self.data.take_tree();
         match source.tree_ref() {
             Some(src_tree) => self.data.set_tree(src_tree.to_owned()),

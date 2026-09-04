@@ -1,5 +1,3 @@
-//! Port of abseil's `cord_rep_btree_navigator_test.cc`.
-
 use core::ptr::NonNull;
 
 use alloc::vec::Vec;

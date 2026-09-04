@@ -1,8 +1,6 @@
 //! Internal representation nodes ("reps") that back a non-inline [`Cord`].
 //!
-//! This module and its submodules are the `unsafe` core of the crate and are a
-//! close port of abseil's `absl/strings/internal/cord_internal.h`,
-//! `cord_rep_flat.h`, `cord_data_edge.h` and friends.
+//! This module and its submodules are the `unsafe` core of the crate.
 //!
 //! # Layout
 //!
@@ -64,9 +62,10 @@ pub(crate) const MAX_INLINE: usize = 15;
 
 // --- Node tags -------------------------------------------------------------
 //
-// Numeric values mirror abseil's `CordRepKind`; `2` (CRC) and `4` (RING) are
-// intentionally unused. `FLAT == EXTERNAL + 1` lets `is_data_edge` test both
-// with a single `tag >= EXTERNAL` comparison.
+// Values `2` (checksum) and `4` (ring) are intentionally unused because this
+// crate does not implement those node kinds. `FLAT == EXTERNAL + 1` lets
+// `is_data_edge` test both data-edge kinds with one `tag >= EXTERNAL`
+// comparison.
 
 /// Tag of a [`CordRepSubstring`].
 pub(crate) const SUBSTRING: u8 = 1;
@@ -89,8 +88,8 @@ const REF_INCREMENT: i32 = 1 << NUM_FLAGS;
 
 /// Compact atomic reference count with an "immortal" flag in the low bit.
 ///
-/// Mirrors abseil's `RefcountAndFlags`. The count is stored shifted left by
-/// one; bit zero marks reps that must never be destroyed.
+/// The count is stored shifted left by one; bit zero marks reps that must
+/// never be destroyed.
 #[repr(transparent)]
 pub(crate) struct Refcount(AtomicI32);
 
@@ -391,8 +390,7 @@ pub(crate) unsafe fn debug_assert_unique_flat(rep: *mut CordRep) {
 ///
 /// `rep` must be a non-null pointer to a live rep. This does not consume an
 /// existing reference: the returned pointer is a *new*, additional reference
-/// on `rep` (mirrors abseil's `CordRep::Ref`), on top of whatever reference
-/// the caller already held.
+/// on `rep`, on top of whatever reference the caller already held.
 #[inline]
 pub(crate) unsafe fn ref_rep(rep: *mut CordRep) -> *mut CordRep {
     debug_assert!(!rep.is_null());
@@ -488,8 +486,7 @@ pub(crate) struct CordRepSubstring {
 /// `make_substring_from`/`resize_edge`, and [`navigator`]'s `substring`/
 /// `substring_from`): builds a `CordRepSubstring` covering `n` bytes starting
 /// `offset` bytes into `rep`, following (at most) one level of
-/// substring-of-substring flattening exactly like abseil's
-/// `CordRepBtree::MakeSubstring` does. This function never applies the
+/// substring-of-substring flattening. This function never applies the
 /// `n == 0` / `n == rep.length()` / `offset == 0` shortcuts its callers rely
 /// on — it always allocates — so those load-bearing early returns stay in
 /// each thin wrapper, at the call site that knows whether they apply.

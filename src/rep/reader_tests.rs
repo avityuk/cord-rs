@@ -1,5 +1,3 @@
-//! Port of abseil's `cord_rep_btree_reader_test.cc`.
-
 use alloc::vec;
 use alloc::vec::Vec;
 

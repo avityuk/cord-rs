@@ -1,5 +1,4 @@
-//! Memory usage estimation for cord trees. Port of abseil's
-//! `cord_analysis.{h,cc}`.
+//! Memory usage estimation for cord trees.
 
 use alloc::collections::BTreeSet;
 

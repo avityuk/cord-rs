@@ -1,5 +1,3 @@
-//! Port of abseil's `cord_data_edge_test.cc`.
-
 use super::btree::{BtreePtr, CordRepBtree};
 use super::test_util::*;
 use super::{edge_data, is_data_edge, unref};

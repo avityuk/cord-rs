@@ -11,8 +11,6 @@
 //! a tree or rep adopt a reference on it; functions returning one transfer a
 //! reference back to the caller.
 //!
-//! Port of abseil's `cord_rep_btree.{h,cc}`.
-
 use core::fmt;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -2188,7 +2186,7 @@ impl CordRepBtree {
     /// with `n <= this.length()` and `offset <= this.length() - n`,
     /// borrowed for the returned slice's lifetime `'a` exactly as
     /// [`as_flat`](Self::as_flat).
-    #[cfg_attr(not(test), expect(dead_code, reason = "abseil parity, exercised only by ported tests"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "internal test support"))]
     pub(crate) unsafe fn as_flat_range<'a>(
         this: *mut CordRepBtree,
         mut offset: usize,
@@ -2224,10 +2222,7 @@ impl CordRepBtree {
     ///
     /// `this` must be a non-null pointer to a live, well-formed btree node
     /// with `offset < this.length()`; it is borrowed.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "abseil parity (GetCharacter), exercised only by ported tests")
-    )]
+    #[cfg_attr(not(test), expect(dead_code, reason = "internal test support"))]
     pub(crate) unsafe fn get_byte(this: *mut CordRepBtree, mut offset: usize) -> u8 {
         unsafe {
             debug_assert!(offset < this.length());

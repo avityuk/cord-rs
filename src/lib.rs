@@ -1,6 +1,5 @@
 //! A rope-like byte sequence with O(log n) append, prepend and slicing, O(1)
-//! cloning, and a 16 byte footprint with 15 bytes of inline storage — a port
-//! of abseil's [`absl::Cord`], with some changes along the way.
+//! cloning, and a 16 byte footprint with 15 bytes of inline storage.
 //!
 //! # When to use a `Cord`
 //!
@@ -20,9 +19,10 @@
 //! let mut cord = Cord::from("hello");
 //! assert_eq!(cord.len(), 5);
 //!
-//! // Appending, prepending and slicing share memory and stay O(log n).
+//! // Append and prepend from byte- and string-like sources.
 //! cord.append(" world");
 //! cord.prepend(">> ");
+//! // This small slice is copied inline; larger slices share backing storage.
 //! let world = cord.slice(9..);
 //! assert_eq!(world, "world");
 //!
@@ -31,7 +31,7 @@
 //! assert_eq!(cord.len(), 3 + 11 + 4096);
 //!
 //! // Zero-copy building through `CordBuffer`.
-//! let mut buffer = CordBuffer::with_capacity(1024);
+//! let mut buffer = CordBuffer::with_capacity(32);
 //! buffer.put_slice(b" tail");
 //! cord.append(buffer);
 //!
@@ -53,12 +53,6 @@
 //! referenced by a single cord are grown in place; buffers shared between
 //! cords are never modified.
 //!
-//! The implementation started from abseil's design — the same heuristics
-//! (copy-vs-share thresholds, amortized growth, buffer size classes) — and
-//! evolves independently where that keeps the crate simpler or the trees
-//! smaller. The Cordz sampling layer and the CRC checksum node were not
-//! ported.
-//!
 //! # Features
 //!
 //! * `std` (default) — `std::io` integration: `Read`/`BufRead`/`Seek` on
@@ -73,7 +67,6 @@
 //!   conversions with `bytes::Bytes`.
 //! * `serde` — `Serialize` / `Deserialize` for [`Cord`] as a byte sequence.
 //!
-//! [`absl::Cord`]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -280,8 +273,7 @@ pub mod __internal {
     pub const EXTERNAL_NODE_SIZE: usize = rep::external::EXTERNAL_REP_SIZE;
 
     /// Creates a cord holding `data` in a single external node regardless of
-    /// its size (mirrors abseil's `MakeCordFromExternal` in tests). An empty
-    /// `data` yields an empty cord.
+    /// its size. An empty `data` yields an empty cord.
     #[must_use]
     pub fn make_external(data: &[u8]) -> Cord {
         if data.is_empty() {
@@ -294,8 +286,8 @@ pub mod __internal {
     }
 
     /// Creates a cord holding a substring node over the flat or external node
-    /// of `src` (mirrors abseil's `CordTestPeer::MakeSubstring`). Requires
-    /// `src` to hold a single flat or external node and `0 < len < src.len()`.
+    /// of `src`. Requires `src` to hold a single flat or external node and
+    /// `0 < len < src.len()`.
     ///
     /// # Panics
     ///

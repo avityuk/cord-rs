@@ -616,10 +616,8 @@ impl core::iter::FusedIterator for Bytes<'_> {}
 /// [`read_cord`](Self::read_cord), [`advance`](Self::advance) or
 /// [`peek`](Self::peek) here.
 ///
-/// A cursor borrows its cord, so unlike abseil's `CharIterator` — whose docs
-/// have to warn that it is invalidated by any mutation of the cord while
-/// it's alive — the borrow checker rules that out at compile time: a cord
-/// simply cannot be mutated while a cursor over it exists.
+/// A cursor borrows its cord, so the borrow checker prevents the cord from
+/// being mutated while the cursor exists.
 ///
 /// ```
 /// use cord_rs::Cord;

@@ -2,8 +2,7 @@
 //!
 //! A navigator keeps a stack of `(node, index)` pairs from the root to the
 //! current leaf edge and can move forward / backward, seek to an offset, skip
-//! bytes, and read a sub range into a new tree. Port of abseil's
-//! `cord_rep_btree_navigator.{h,cc}`.
+//! bytes, and read a sub range into a new tree.
 
 use core::ptr::NonNull;
 
@@ -152,8 +151,8 @@ impl CordRepBtreeNavigator {
         not(test),
         expect(
             dead_code,
-            reason = "navigator API completeness (mirrors abseil's Reset()), no production \
-                      caller yet; exercised by the ported navigator tests"
+            reason = "navigator API completeness; no production caller yet; exercised by \
+                      internal tests"
         )
     )]
     pub(crate) fn reset(&mut self) {
@@ -233,8 +232,8 @@ impl CordRepBtreeNavigator {
         not(test),
         expect(
             dead_code,
-            reason = "navigator API completeness (mirrors abseil's InitOffset()), no production \
-                      caller yet; exercised by the ported navigator tests"
+            reason = "navigator API completeness; no production caller yet; exercised by \
+                      internal tests"
         )
     )]
     pub(crate) unsafe fn init_offset(&mut self, tree: *mut CordRepBtree, offset: usize) -> NavPosition {
@@ -517,8 +516,7 @@ impl CordRepBtreeNavigator {
             // exclusively owned nodes of capacity `MAX_CAPACITY`; `subtree_end`
             // only increments once per edge consumed by this read, and the
             // read never spans more than `MAX_CAPACITY` edges below a node it
-            // itself just allocated (mirroring the same accounting abseil's
-            // `cord_rep_btree_navigator.cc` `Read()` uses), so every
+            // itself just allocated, so every
             // `subtree.set_edge_ptr(subtree_end, ...)` call below stays within
             // `set_edge_ptr`'s `index < capacity()` bound, even though
             // `subtree_end` runs ahead of `subtree`'s `end` cursor (bumped

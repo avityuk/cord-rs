@@ -7,8 +7,6 @@
 //! * 64 byte steps for sizes in `(512, 8 KiB]`
 //! * 4 KiB steps for sizes in `(8 KiB, 256 KiB]`
 //!
-//! Port of abseil's `cord_rep_flat.h`.
-
 use core::alloc::Layout;
 use core::marker::PhantomData;
 use core::mem::{align_of, offset_of};

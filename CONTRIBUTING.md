@@ -20,8 +20,8 @@ needs nothing beyond stable ≥ 1.95.
 | `src/lib.rs` | Crate docs, re-exports, hidden `__internal` test hooks |
 | `src/cord.rs`, `buffer.rs`, `iter.rs`, `source.rs`, `io.rs` | Public API (`Cord`, `CordBuffer`, iterators/cursor, input & comparison traits, std io/fmt) |
 | `src/inline_data.rs` | The 16-byte inline/tree union behind `Cord` |
-| `src/rep.rs`, `src/rep/*.rs` | The `unsafe` rep layer ported from abseil (`flat`, `external`, `btree`, `navigator`, `reader`, `analysis`) |
-| `src/rep/*_tests.rs`, `src/rep/test_util.rs` | Ports of abseil's internal test suites (unit tests: they need `pub(crate)` access) |
+| `src/rep.rs`, `src/rep/*.rs` | The `unsafe` rep layer (`flat`, `external`, `btree`, `navigator`, `reader`, `analysis`) |
+| `src/rep/*_tests.rs`, `src/rep/test_util.rs` | Internal rep-layer test suites (unit tests: they need `pub(crate)` access) |
 | `src/bytes_impl.rs`, `src/serde_impl.rs` | Feature-gated integrations |
 | `tests/` | Public-API suites, by area: `cord/` (one binary — `construct.rs`, `edit.rs`, `slice.rs`, `compare.rs`, `iterate.rs`, `memory.rs`, `stress.rs` for heavy structural workloads), `cord_buffer.rs` (the `CordBuffer` API), `panics.rs` (documented panic paths), plus `model.rs` (proptest vs `Vec<u8>` oracle), `features.rs` (the optional integrations) and `common/mod.rs` (helpers shared by the test binaries) |
 | `benches/cord.rs` | Criterion benchmarks |
@@ -178,24 +178,16 @@ Its `Cargo.lock` is committed, like the crate's own.
 
 ## Conventions
 
-- **A port, not a fidelity claim.** The rep layer started from abseil's
-  `absl/strings/internal/cord_*` (layouts, constants, algorithms, the
-  adopt/transfer reference-counting convention: functions taking a rep adopt
-  a reference, functions returning one transfer it) and stays close to it by
-  default — but the crate is a port *with changes*, not a bit-for-bit clone.
-  Tree *shape* may diverge from abseil's when that minimizes the tree or is
-  neutral (never more nodes, sharing preserved or improved, content
-  identical, `validate()` still holds); the properties — O(1) clone, cheap
-  slicing, balance, sharing — are the contract, not the shape (see README's
-  "Relationship to abseil" section). When changing the rep layer, diff
-  against the C++ source for intent, keep the ported tests aligned, and note
-  any resulting structural divergence in the commit. The rep-layer
-  unit suites (`src/rep/*_tests.rs`) track abseil's internal test files
-  closely and keep their test names in `snake_case`, which makes diffing
-  against the C++ source easy. The public-API suites under `tests/` do not:
-  they are grouped by area and named after the Rust behavior they pin down,
-  because what is worth keeping from a C++ suite is the *case*, not its name
-  or its file boundary.
+- **Preserve properties, not exact tree shape.** Rep functions taking a rep
+  adopt a reference and functions returning one transfer it. Tree shape may
+  change when that minimizes the tree or is neutral, provided it never adds
+  nodes, preserves or improves sharing, keeps content identical, and passes
+  `validate()`. The contract is O(1) clone, cheap slicing, balance and sharing,
+  not a particular arrangement of nodes. Note meaningful structural changes
+  in the commit. Rep-layer unit tests live under `src/rep/*_tests.rs`; public
+  API tests under `tests/` are grouped by behavior. Tests can use
+  `cord_rs::__internal::validate` to check structural invariants and
+  `cord_rs::__internal::dump` to inspect a tree while debugging.
 - **`unsafe` discipline.** Raw-pointer code lives under `src/rep/` and in
   `src/rep.rs`'s typed handle layer; the `unsafe` remaining in
   `cord.rs`/`iter.rs`/`buffer.rs`/`inline_data.rs` is now almost entirely

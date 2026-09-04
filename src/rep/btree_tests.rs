@@ -1,8 +1,7 @@
-//! Port of abseil's `cord_rep_btree_test.cc`.
+//! Internal btree tests.
 //!
-//! Test names mirror the C++ tests in `snake_case`. Parametrized C++ fixtures
-//! (`shared` / `first_shared, second_shared` / `height`) are ported as loops
-//! over all parameter values inside one test.
+//! Parameterized fixtures (`shared` / `first_shared, second_shared` /
+//! `height`) are expressed as loops over all parameter values inside one test.
 #![expect(clippy::cast_possible_truncation, reason = "tests pack small known values into bytes")]
 
 use core::ptr::NonNull;
