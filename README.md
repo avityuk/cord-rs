@@ -348,9 +348,13 @@ sanitizers) additionally needs a nightly toolchain.
 
 ## License
 
-Apache-2.0, like abseil. See `LICENSE` and `NOTICE`; the algorithms, data
-layouts and much of the documentation derive from the Abseil C++ Common
-Libraries, Copyright The Abseil Authors.
+Licensed under the Apache License, Version 2.0.
+
+This crate is an independent Rust port of portions of Abseil's `absl::Cord`.
+Portions of the implementation and documentation are derived from the
+Apache-2.0-licensed Abseil C++ Common Libraries, Copyright The Abseil Authors.
+This project is not affiliated with or endorsed by the Abseil project. See
+`LICENSE` and `NOTICE`.
 
 [absl-cord]: https://github.com/abseil/abseil-cpp/blob/master/absl/strings/cord.h
 [`bytes`]: https://crates.io/crates/bytes
