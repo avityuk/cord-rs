@@ -1,6 +1,6 @@
 [package]
 name = "cord-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Andrey Vityuk"]
@@ -28,9 +28,9 @@ include = [
 [features]
 default = ["std"]
 # `std::io` integration (`Read`/`BufRead`/`Seek` on `Cursor`, `Write` on
-# `Cord`, `CordBuffer` and `CordWriter`), plus each optional dependency's own
-# `std` feature. Without it the crate is `no_std` and needs only `alloc` (a
-# global allocator).
+# `Cord` and `CordBuffer`), plus each optional dependency's own `std` feature.
+# When `bytes` is also enabled, `CordWriter` implements `Write`. Without
+# `std`, the crate is `no_std` and needs only `alloc` (a global allocator).
 std = ["memchr/std", "bytes?/std", "serde?/std"]
 # `bytes::Buf` for `Cord` and `Cursor`, `bytes::BufMut` for `CordWriter` and
 # `CordBuffer`, and zero-copy conversions between `Cord` and `bytes::Bytes`.

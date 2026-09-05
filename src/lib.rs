@@ -56,15 +56,16 @@
 //! # Features
 //!
 //! * `std` (default) — `std::io` integration: `Read`/`BufRead`/`Seek` on
-//!   [`Cursor`](crate::iter::Cursor), and `Write` on [`Cord`], `CordBuffer`
-//!   and `CordWriter`. Building with `default-features = false` gives a
-//!   `no_std` + `alloc` crate (any global allocator); everything else —
-//!   including `core::fmt::Write` for [`Cord`] — stays available. `no_std`
-//!   targets need 32-bit and pointer-width atomics (`target_has_atomic =
-//!   "32"` and `"ptr"`).
+//!   [`Cursor`](crate::iter::Cursor), and `Write` on [`Cord`] and
+//!   `CordBuffer`. Building with `default-features = false` gives a `no_std`
+//!   + `alloc` crate (any global allocator); everything else — including
+//!   `core::fmt::Write` for [`Cord`] — stays available. `no_std` targets need
+//!   32-bit and pointer-width atomics (`target_has_atomic = "32"` and
+//!   `"ptr"`).
 //! * `bytes` — `bytes::Buf` for [`Cord`] and [`Cursor`](crate::iter::Cursor),
 //!   `bytes::BufMut` for `CordWriter` and `CordBuffer`, and zero-copy
-//!   conversions with `bytes::Bytes`.
+//!   conversions with `bytes::Bytes`. With both `bytes` and `std` enabled,
+//!   `CordWriter` also implements `std::io::Write`.
 //! * `serde` — `Serialize` / `Deserialize` for [`Cord`] as a byte sequence.
 //!
 #![no_std]

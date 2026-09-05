@@ -250,14 +250,15 @@ and `bytes::Bytes`; `get` is the non-panicking form for both.
 Cargo features:
 
 - `std` (default): `std::io` integration: `Read`/`BufRead`/`Seek` on `Cursor`,
-  `Write` on `Cord`, `CordBuffer` and `CordWriter`, plus the dependencies' own
-  `std` features (`memchr`'s runtime SIMD detection). Disable it for a
+  `Write` on `Cord` and `CordBuffer`, plus the dependencies' own `std` features
+  (`memchr`'s runtime SIMD detection). Disable it for a
   `no_std` + `alloc` build: `cord-rs = { version = "0.1", default-features =
   false }`; everything else, including `core::fmt::Write` for `Cord`, stays
   available. `no_std` targets need 32-bit and pointer-width atomics.
 - `bytes`: `bytes::Buf` for `Cord` and `Cursor`, `bytes::BufMut` for
   `CordWriter` and `CordBuffer`, and zero-copy conversions with
-  `bytes::Bytes`.
+  `bytes::Bytes`. With both `bytes` and `std` enabled, `CordWriter` also
+  implements `std::io::Write`.
 - `serde`: `Serialize` / `Deserialize` for `Cord` as a byte sequence.
 
 The crate has one required dependency, [`memchr`], used for substring search
