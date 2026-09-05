@@ -3,10 +3,136 @@
 #![expect(clippy::cast_possible_truncation, reason = "tests juggle small integers freely")]
 
 use std::borrow::Cow;
+use std::cell::Cell;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use crate::common::{self, internal};
 use cord_rs::Cord;
+
+struct TrackedOwner {
+    data: Box<[u8]>,
+    calls: Arc<AtomicUsize>,
+    drops: Arc<AtomicUsize>,
+    panic: bool,
+}
+
+impl TrackedOwner {
+    fn new(data: impl Into<Box<[u8]>>, calls: &Arc<AtomicUsize>, drops: &Arc<AtomicUsize>) -> Self {
+        Self { data: data.into(), calls: calls.clone(), drops: drops.clone(), panic: false }
+    }
+}
+
+impl AsRef<[u8]> for TrackedOwner {
+    fn as_ref(&self) -> &[u8] {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        assert!(!self.panic, "test-triggered AsRef panic");
+        &self.data
+    }
+}
+
+impl Drop for TrackedOwner {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct SendOnlyOwner {
+    data: [u8; 32],
+    not_sync: Cell<usize>,
+}
+
+impl AsRef<[u8]> for SendOnlyOwner {
+    fn as_ref(&self) -> &[u8] {
+        self.not_sync.set(self.not_sync.get() + 1);
+        &self.data
+    }
+}
+
+fn counters() -> (Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)))
+}
+
+#[test]
+fn from_owner_preserves_nonempty_storage_and_drops_empty_storage() {
+    let (calls, drops) = counters();
+    let data = vec![9; 5].into_boxed_slice();
+    let data_ptr = data.as_ptr();
+    let cord = Cord::from_owner(TrackedOwner::new(data, &calls, &drops));
+    assert!(internal::is_external(&cord), "even a small explicit owner is retained");
+    assert_eq!(cord.as_contiguous().unwrap().as_ptr(), data_ptr);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    drop(cord);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+    let (calls, drops) = counters();
+    let cord = Cord::from_owner(TrackedOwner::new(Vec::new(), &calls, &drops));
+    assert!(cord.is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn from_owner_lifetime_tracks_external_references_not_inline_slices() {
+    let (calls, drops) = counters();
+    let cord = Cord::from_owner(TrackedOwner::new(vec![3; 64], &calls, &drops));
+    let clone = cord.clone();
+    let shared_slice = cord.slice(1..63);
+    let inline_slice = cord.slice(0..15);
+
+    drop(cord);
+    drop(clone);
+    assert_eq!(drops.load(Ordering::SeqCst), 0, "large slice retains the owner");
+    drop(shared_slice);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(inline_slice, &[3; 15]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn from_owner_is_panic_safe_and_custom_owner_conversion_copies() {
+    let (calls, drops) = counters();
+    let mut owner = TrackedOwner::new(vec![4; 32], &calls, &drops);
+    owner.panic = true;
+    let result = catch_unwind(AssertUnwindSafe(|| Cord::from_owner(owner)));
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+    let (calls, drops) = counters();
+    let data = vec![5; 32].into_boxed_slice();
+    let owner_ptr = data.as_ptr();
+    let cord = Cord::from_owner(TrackedOwner::new(data, &calls, &drops));
+    let copied = Vec::from(cord);
+    assert_eq!(copied, vec![5; 32]);
+    assert_ne!(copied.as_ptr(), owner_ptr);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn from_owner_supports_transfer_and_send_only_owners() {
+    let (calls, drops) = counters();
+    let mut cord = Cord::from("middle");
+    cord.append(Cord::from_owner(TrackedOwner::new(vec![b'r'; 512], &calls, &drops)));
+    cord.prepend(Cord::from_owner(TrackedOwner::new(vec![b'l'; 512], &calls, &drops)));
+    let bytes = cord.to_vec();
+    assert_eq!(&bytes[..512], &[b'l'; 512]);
+    assert_eq!(&bytes[cord.len() - 512..], &[b'r'; 512]);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    drop(cord);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
+
+    let cord = Arc::new(Cord::from_owner(SendOnlyOwner { data: [8; 32], not_sync: Cell::new(0) }));
+    let first = cord.clone();
+    let second = cord.clone();
+    let first = std::thread::spawn(move || assert_eq!(first.as_contiguous().unwrap(), &[8; 32]));
+    let second = std::thread::spawn(move || assert_eq!(second.as_contiguous().unwrap(), &[8; 32]));
+    first.join().unwrap();
+    second.join().unwrap();
+}
 
 #[test]
 fn flat_lengths_round_trip() {

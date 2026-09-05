@@ -49,9 +49,9 @@
 //! from 32 bytes to 4 KiB by default, or up to 64 KiB when built through
 //! [`CordBuffer::with_capacity_and_block_size`], see its docs for the sizing
 //! trade-offs), *external* buffers owned by user values (`Vec<u8>`,
-//! `Arc<[u8]>`, `&'static [u8]`, ...), or *substrings* of those. Buffers
-//! referenced by a single cord are grown in place; buffers shared between
-//! cords are never modified.
+//! `Arc<[u8]>`, custom [`Cord::from_owner`] values, ...), or *substrings* of
+//! those. Buffers referenced by a single cord are grown in place; buffers
+//! shared between cords are never modified.
 //!
 //! # Features
 //!

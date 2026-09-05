@@ -51,7 +51,8 @@ their lifetime or cross API boundaries:
 - **Cheap sharing**: cloning is O(1) — inline values copy the 16-byte handle,
   while tree-backed values increment one reference count; sub-cords share the
   underlying memory.
-- **Zero-copy ingestion**: large `Vec<u8>`, `String`, `Box<[u8]>`,
+- **Zero-copy ingestion**: custom owners via `Cord::from_owner`, and large
+  `Vec<u8>`, `String`, `Box<[u8]>`,
   `Arc<[u8]>`, `Cow::Owned` and `bytes::Bytes` values are adopted rather than
   copied, as is `&'static [u8]` via `Cord::from_static`; `CordBuffer` lets I/O
   write into memory that becomes part of the cord directly.
@@ -98,8 +99,9 @@ are only copied when sharing would otherwise become visible.
 - **Thread safety.** `Cord` is `Send + Sync` and has the thread-safety of any
   Rust value: shared references from many threads are fine, mutation needs
   `&mut`. Reference counts are atomic, shared chunks are immutable, and
-  external buffers must be owned by a `Send + Sync` value, so passing a clone
-  to another thread needs no lock and no copy.
+  external owners are `Send` and are accessed only during construction and
+  final destruction, so passing a clone to another thread needs no lock and
+  no copy.
 - **Accounting.** `cord.estimated_memory_usage(mode)` reports approximate
   bytes held, with three modes: `Total` charges every cord for all memory it
   can reach (two cords sharing one 8 KiB buffer are charged ~8 KiB each),
@@ -278,7 +280,7 @@ profiling layer and the CRC checksum node are not ported.
 | ------------------------------------- | ----------------------------------------------- |
 | `Cord(string_view)`                   | `Cord::from(&[u8])`, `From<&str>`, `copy_from_slice` |
 | `Cord(std::string&&)`                 | `From<Vec<u8>>`, `From<String>`, `From<Box<[u8]>>`, `From<Arc<[u8]>>` |
-| `MakeCordFromExternal(...)`           | `Cord::from_static`, `From<Arc<[u8]>>`, `From<bytes::Bytes>` |
+| `MakeCordFromExternal(...)`           | `Cord::from_owner`, `Cord::from_static`, `From<Arc<[u8]>>`, `From<bytes::Bytes>` |
 | `Append` / `Prepend`                  | `append` / `prepend` (any [`CordSource`])       |
 | `Append(CordBuffer)`                  | `append(buffer)`                                |
 | `GetAppendBuffer`                     | `take_append_buffer`, `take_append_buffer_with` |
@@ -305,8 +307,9 @@ panic and `get` returns `None`, following `Vec` and `bytes::Bytes`.
 
 `MakeCordFromExternal` takes a releaser callback, and abseil warns that a
 releaser which does nothing is "likely a bug". cord-rs instead takes an owning
-value — `&'static [u8]`, `Arc<[u8]>`, `Vec<u8>`, `bytes::Bytes` — so the
-lifetime is carried by the type and that mistake cannot be made.
+value — through `Cord::from_owner`, `&'static [u8]`, `Arc<[u8]>`, `Vec<u8>` or
+`bytes::Bytes` — so the lifetime is carried by the type and that mistake cannot
+be made.
 
 </details>
 

@@ -1024,8 +1024,10 @@ impl Clone for OwnedRep {
 }
 
 // SAFETY: mirrors `Cord`'s own `unsafe impl Send`/`Sync` (see cord.rs):
-// nodes shared between cords/handles are immutable, reference counts are
-// atomic, and external owners are required to be `Send + Sync`.
+// nodes shared between cords/handles are immutable and reference counts are
+// atomic. External owners are `Send`, are consulted only during construction,
+// and are exclusively dropped after their final reference is released; shared
+// access reads only the cached immutable byte view.
 unsafe impl Send for OwnedRep {}
 // SAFETY: see `Send` above.
 unsafe impl Sync for OwnedRep {}

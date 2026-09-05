@@ -13,6 +13,14 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 
 const SIZES: [usize; 5] = [8, 100, 4 << 10, 64 << 10, 1 << 20];
 
+struct BenchOwner(Box<[u8]>);
+
+impl AsRef<[u8]> for BenchOwner {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 fn data(n: usize) -> Vec<u8> {
     (0..n).map(|i| (i * 31 % 251) as u8).collect()
 }
@@ -71,11 +79,50 @@ fn bench_construct(c: &mut Criterion) {
     for size in SIZES {
         let bytes = data(size);
         g.throughput(Throughput::Bytes(size as u64));
+        // Criterion drops values returned by these first four routines after
+        // timing, so they isolate construction latency.
         g.bench_with_input(BenchmarkId::new("from_slice", size), &bytes, |b, bytes| {
             b.iter(|| Cord::from(black_box(&bytes[..])));
         });
         g.bench_with_input(BenchmarkId::new("from_vec", size), &bytes, |b, bytes| {
             b.iter_batched(|| bytes.clone(), |v| Cord::from(black_box(v)), criterion::BatchSize::SmallInput);
+        });
+        g.bench_with_input(BenchmarkId::new("from_box", size), &bytes, |b, bytes| {
+            b.iter_batched(
+                || bytes.clone().into_boxed_slice(),
+                |v| Cord::from(black_box(v)),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+        g.bench_with_input(BenchmarkId::new("from_owner", size), &bytes, |b, bytes| {
+            b.iter_batched(
+                || BenchOwner(bytes.clone().into_boxed_slice()),
+                |owner| Cord::from_owner(black_box(owner)),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+        // Explicitly dropping inside the routine measures the complete
+        // construction-and-release lifecycle for owned inputs.
+        g.bench_with_input(BenchmarkId::new("from_vec_and_drop", size), &bytes, |b, bytes| {
+            b.iter_batched(
+                || bytes.clone(),
+                |v| drop(black_box(Cord::from(black_box(v)))),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+        g.bench_with_input(BenchmarkId::new("from_box_and_drop", size), &bytes, |b, bytes| {
+            b.iter_batched(
+                || bytes.clone().into_boxed_slice(),
+                |v| drop(black_box(Cord::from(black_box(v)))),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+        g.bench_with_input(BenchmarkId::new("from_owner_and_drop", size), &bytes, |b, bytes| {
+            b.iter_batched(
+                || BenchOwner(bytes.clone().into_boxed_slice()),
+                |owner| drop(black_box(Cord::from_owner(black_box(owner)))),
+                criterion::BatchSize::SmallInput,
+            );
         });
         g.bench_with_input(BenchmarkId::new("vec_from_slice", size), &bytes, |b, bytes| {
             b.iter(|| black_box(&bytes[..]).to_vec());

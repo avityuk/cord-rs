@@ -41,6 +41,27 @@ struct CordRepExternalImpl<O> {
     owner: O,
 }
 
+/// Owns a raw generic external node while its cached byte view is being
+/// initialized. This keeps construction unwind-safe without converting the
+/// raw allocation back into a `Box` on the successful path.
+struct ExternalNodeGuard<O>(*mut CordRepExternalImpl<O>);
+
+impl<O> ExternalNodeGuard<O> {
+    fn into_raw(self) -> *mut CordRepExternalImpl<O> {
+        let node = self.0;
+        core::mem::forget(self);
+        node
+    }
+}
+
+impl<O> Drop for ExternalNodeGuard<O> {
+    fn drop(&mut self) {
+        // SAFETY: the guard is created from exactly one `Box::into_raw`
+        // result and is either forgotten by `into_raw` or dropped once.
+        unsafe { drop(Box::from_raw(self.0)) }
+    }
+}
+
 /// External node owning a raw allocation made by Rust's global allocator.
 #[repr(C)]
 struct CordRepExternalGlobal {
@@ -238,6 +259,49 @@ impl CordRepExternal {
         node.cast()
     }
 
+    /// Creates an external rep whose byte storage is exposed by `owner`.
+    ///
+    /// The owner is placed at its final heap address before `as_ref` is
+    /// called. Returns `None` for an empty byte view, dropping the owner.
+    /// Otherwise the owner is retained by the returned non-empty rep and
+    /// dropped when that rep is destroyed.
+    pub(crate) fn create_owner<O>(owner: O) -> Option<*mut CordRep>
+    where
+        O: AsRef<[u8]> + Send + 'static,
+    {
+        let node = Box::into_raw(Box::new(CordRepExternalImpl {
+            ext: CordRepExternal {
+                rep: CordRep::new(0, EXTERNAL),
+                base: core::ptr::null(),
+                releaser_invoker: release::<O>,
+            },
+            owner,
+        }));
+        let guard = ExternalNodeGuard(node);
+
+        // Convert the box to raw before deriving `base`: under strict
+        // provenance, `Box::into_raw` retags the whole allocation and would
+        // invalidate an earlier pointer into an owner stored inline. `guard`
+        // restores RAII cleanup if `as_ref` panics or the view is empty. The
+        // short scope ends the borrow before the header is initialized.
+        let (base, length) = {
+            // SAFETY: `guard` owns the live node, and construction has not
+            // exposed it anywhere else.
+            let bytes: &[u8] = unsafe { (*node).owner.as_ref() };
+            (bytes.as_ptr(), bytes.len())
+        };
+        if length == 0 {
+            return None;
+        }
+        // SAFETY: `guard` still owns this live, exclusively accessible node;
+        // the header fields are disjoint from the retained owner byte view.
+        unsafe {
+            (*node).ext.rep.length = length;
+            (*node).ext.base = base;
+        }
+        Some(guard.into_raw().cast())
+    }
+
     /// Creates an external rep owning a standard global byte allocation.
     ///
     /// The payload and node are deallocated when the rep is destroyed.
@@ -319,10 +383,11 @@ impl CordRepExternal {
     /// # Safety
     ///
     /// `rep` must be a non-null pointer to a live external rep (tag ==
-    /// `EXTERNAL`) originally produced by [`create`](Self::create) or
+    /// `EXTERNAL`) originally produced by [`create`](Self::create),
+    /// [`create_owner`](Self::create_owner), or
     /// [`create_global`](Self::create_global), whose reference count has just
-    /// reached zero, transferring final ownership to this call; `rep` must
-    /// not be used again afterwards.
+    /// reached zero, transferring final ownership to this call; `rep` must not
+    /// be used again afterwards.
     #[inline]
     pub(crate) unsafe fn delete(rep: *mut CordRep) {
         debug_assert!(unsafe { rep.is_external() });
@@ -345,9 +410,10 @@ impl CordRepExternal {
 ///
 /// `ext` must be a non-null pointer to the `ext` field of a live, uniquely
 /// owned `CordRepExternalImpl<O>` (i.e. the same `O` this fn was
-/// monomorphized for by [`CordRepExternal::create`]) originally obtained
-/// from `Box::into_raw`, whose reference count has just reached zero; `ext`
-/// must not be used again afterwards.
+/// monomorphized for by [`CordRepExternal::create`] or
+/// [`CordRepExternal::create_owner`]) originally obtained from
+/// `Box::into_raw`, whose reference count has just reached zero; `ext` must
+/// not be used again afterwards.
 unsafe fn release<O>(ext: *mut CordRepExternal) {
     // SAFETY: `ext` points to a live external rep per this function's
     // contract, satisfying `ExternalRef::from_raw`'s precondition; the
@@ -440,11 +506,13 @@ impl<'a> ExternalRef<'a> {
     )]
     pub(crate) fn data(self) -> &'a [u8] {
         let len = self.len();
-        // SAFETY: `self`'s invariant makes `self.ptr` a live external rep
-        // for `'a`. Generic nodes derive `base` from a final-position owner
-        // whose `StableBytes` contract keeps it valid; global nodes retain
-        // sole ownership of the live raw allocation. Both keep `len` bytes
-        // readable for as long as the node itself, i.e. `'a`.
+        // SAFETY: `self`'s invariant makes `self.ptr` a live external rep for
+        // `'a`. Generic nodes derive `base` from an owner after it reaches its
+        // final address and retain that owner; their constructor or
+        // `StableBytes` contract keeps `len` bytes readable for the node's
+        // lifetime. Global nodes retain sole ownership of their raw
+        // allocation. Thus every representation keeps `len` readable bytes
+        // alive for at least `'a`.
         unsafe { core::slice::from_raw_parts((*self.ptr.as_ptr()).base, len) }
     }
 
@@ -496,9 +564,12 @@ impl<'a> ExternalRef<'a> {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use alloc::vec;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
 
@@ -512,6 +583,84 @@ mod tests {
         fn drop(&mut self) {
             self.1.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    struct AsRefOwner {
+        data: [u8; 32],
+        calls: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+        panic: bool,
+    }
+
+    impl AsRef<[u8]> for AsRefOwner {
+        fn as_ref(&self) -> &[u8] {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert!(!self.panic, "test-triggered AsRef panic");
+            &self.data
+        }
+    }
+
+    impl Drop for AsRefOwner {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn owner_is_borrowed_once_after_reaching_its_final_address() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let rep = CordRepExternal::create_owner(AsRefOwner {
+            data: [7; 32],
+            calls: calls.clone(),
+            drops: drops.clone(),
+            panic: false,
+        })
+        .unwrap();
+
+        // SAFETY: `rep` came from `create_owner` with this concrete owner
+        // type and remains live until the matching `unref` below.
+        unsafe {
+            let node = rep.cast::<CordRepExternalImpl<AsRefOwner>>();
+            assert_eq!(super::super::edge_data(rep).as_ptr(), (*node).owner.data.as_ptr());
+            assert_eq!(super::super::edge_data(rep), &[7; 32]);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            super::super::unref(rep);
+        }
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn empty_or_panicking_owner_is_dropped_once() {
+        struct EmptyOwner(Arc<AtomicUsize>);
+        impl AsRef<[u8]> for EmptyOwner {
+            fn as_ref(&self) -> &[u8] {
+                &[]
+            }
+        }
+        impl Drop for EmptyOwner {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let empty_drops = Arc::new(AtomicUsize::new(0));
+        assert!(CordRepExternal::create_owner(EmptyOwner(empty_drops.clone())).is_none());
+        assert_eq!(empty_drops.load(Ordering::SeqCst), 1);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _ = CordRepExternal::create_owner(AsRefOwner {
+                data: [0; 32],
+                calls: calls.clone(),
+                drops: drops.clone(),
+                panic: true,
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -65,8 +65,8 @@ pub enum MemoryAccounting {
 /// * Amortized in-place appends into spare capacity of privately owned
 ///   buffers; small values are copied instead of shared to keep memory
 ///   overhead low.
-/// * Zero-copy adoption of large `Vec<u8>` / `String` / `Arc<[u8]>` /
-///   `&'static [u8]` values.
+/// * Zero-copy adoption of custom [`Cord::from_owner`] values and large
+///   `Vec<u8>` / `String` / `Arc<[u8]>` / `&'static [u8]` values.
 ///
 /// Cords should not be used for general string data: they have more overhead
 /// than `Vec<u8>` and random access is O(log n).
@@ -103,8 +103,10 @@ pub struct Cord {
 }
 
 // SAFETY: a cord is either inline data or a pointer to reference counted
-// nodes. Nodes shared between cords are immutable, reference counts are
-// atomic, and external owners are required to be `Send + Sync`.
+// nodes. Nodes shared between cords are immutable and reference counts are
+// atomic. External owners are `Send`, are consulted only while constructing
+// a node, and are exclusively dropped after its final reference is released;
+// shared access reads only the cached immutable byte view.
 unsafe impl Send for Cord {}
 unsafe impl Sync for Cord {}
 
@@ -813,6 +815,51 @@ impl Cord {
     #[must_use]
     pub const fn new() -> Self {
         Self { data: InlineData::new() }
+    }
+
+    /// Creates a cord backed by the byte storage exposed by `owner`, without
+    /// copying those bytes into a separate payload allocation.
+    ///
+    /// The owner is moved into the cord and retained while any cord references
+    /// its storage. It is dropped after the final such reference is released.
+    /// The byte view is obtained during construction and cached; traversal
+    /// does not call [`AsRef::as_ref`] again.
+    ///
+    /// Every non-empty owner is retained at construction, including owners
+    /// exposing 15 bytes or less. An owner exposing an empty slice is dropped
+    /// immediately and produces an empty cord. Later cord operations still
+    /// follow the usual copying and coalescing policies: for example, a small
+    /// slice can be copied inline, after which that slice does not retain the
+    /// owner.
+    ///
+    /// Use the ordinary [`From`] implementations for `Vec<u8>`, `String` and
+    /// `Box<[u8]>`; their compact representation can transfer a uniquely owned
+    /// allocation back into a `Vec<u8>`, while converting a custom-owner cord
+    /// to `Vec<u8>` or `String` copies its bytes.
+    ///
+    /// [`Self::estimated_memory_usage`] counts the exposed bytes and an
+    /// approximate external-node overhead. It cannot account for other
+    /// allocations or metadata retained inside an arbitrary owner.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cord_rs::Cord;
+    ///
+    /// let cord = Cord::from_owner([b'x'; 32]);
+    /// assert_eq!(cord, &[b'x'; 32]);
+    /// ```
+    #[must_use]
+    pub fn from_owner<O>(owner: O) -> Self
+    where
+        O: AsRef<[u8]> + Send + 'static,
+    {
+        let Some(rep) = CordRepExternal::create_owner(owner) else {
+            return Self::new();
+        };
+        // SAFETY: `create_owner` returned a fresh, non-empty external rep and
+        // transferred its sole reference to this call.
+        Self::from_owned_rep(unsafe { OwnedRep::from_raw(rep) })
     }
 
     /// Creates a cord referencing static data without copying it.

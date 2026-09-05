@@ -21,11 +21,13 @@ const SLOTS: usize = 4;
 enum Op {
     AppendSlice { t: usize, data: Vec<u8> },
     AppendOwned { t: usize, data: Vec<u8> },
+    AppendOwner { t: usize, data: Vec<u8> },
     AppendCord { t: usize, s: usize },
     AppendOwnedClone { t: usize, s: usize },
     AppendBuffer { t: usize, data: Vec<u8>, reuse: bool },
     PrependSlice { t: usize, data: Vec<u8> },
     PrependOwned { t: usize, data: Vec<u8> },
+    PrependOwner { t: usize, data: Vec<u8> },
     PrependCord { t: usize, s: usize },
     PrependOwnedClone { t: usize, s: usize },
     Advance { t: usize, frac: f64 },
@@ -34,10 +36,20 @@ enum Op {
     SplitOff { t: usize, s: usize, frac: f64 },
     SplitTo { t: usize, s: usize, frac: f64 },
     Clone { t: usize, s: usize },
+    FromOwner { t: usize, data: Vec<u8> },
     Clear { t: usize },
     MakeContiguous { t: usize },
     CursorRead { t: usize, s: usize, a: f64, b: f64 },
     ExtendBytes { t: usize, data: Vec<u8> },
+}
+
+#[derive(Debug)]
+struct ModelOwner(Box<[u8]>);
+
+impl AsRef<[u8]> for ModelOwner {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 fn data() -> impl Strategy<Value = Vec<u8>> {
@@ -61,11 +73,13 @@ fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
         (slot(), data()).prop_map(|(t, data)| Op::AppendSlice { t, data }),
         (slot(), data()).prop_map(|(t, data)| Op::AppendOwned { t, data }),
+        (slot(), data()).prop_map(|(t, data)| Op::AppendOwner { t, data }),
         (slot(), slot()).prop_map(|(t, s)| Op::AppendCord { t, s }),
         (slot(), slot()).prop_map(|(t, s)| Op::AppendOwnedClone { t, s }),
         (slot(), data(), any::<bool>()).prop_map(|(t, data, reuse)| Op::AppendBuffer { t, data, reuse }),
         (slot(), data()).prop_map(|(t, data)| Op::PrependSlice { t, data }),
         (slot(), data()).prop_map(|(t, data)| Op::PrependOwned { t, data }),
+        (slot(), data()).prop_map(|(t, data)| Op::PrependOwner { t, data }),
         (slot(), slot()).prop_map(|(t, s)| Op::PrependCord { t, s }),
         (slot(), slot()).prop_map(|(t, s)| Op::PrependOwnedClone { t, s }),
         (slot(), frac()).prop_map(|(t, frac)| Op::Advance { t, frac }),
@@ -74,6 +88,7 @@ fn op() -> impl Strategy<Value = Op> {
         (slot(), slot(), frac()).prop_map(|(t, s, frac)| Op::SplitOff { t, s, frac }),
         (slot(), slot(), frac()).prop_map(|(t, s, frac)| Op::SplitTo { t, s, frac }),
         (slot(), slot()).prop_map(|(t, s)| Op::Clone { t, s }),
+        (slot(), data()).prop_map(|(t, data)| Op::FromOwner { t, data }),
         slot().prop_map(|t| Op::Clear { t }),
         slot().prop_map(|t| Op::MakeContiguous { t }),
         (slot(), slot(), frac(), frac()).prop_map(|(t, s, a, b)| Op::CursorRead { t, s, a, b }),
@@ -192,7 +207,7 @@ proptest! {
     #![proptest_config(ProptestConfig {
         cases: if cfg!(miri) { 8 } else { 200 },
         failure_persistence: if cfg!(miri) {
-            Some(Box::new(proptest::test_runner::FileFailurePersistence::Off))
+            None
         } else {
             ProptestConfig::default().failure_persistence
         },
@@ -210,6 +225,7 @@ proptest! {
             let t = match op {
                 Op::AppendSlice { t, data } => { cords[*t].append(&data[..]); oracles[*t].extend_from_slice(data); *t }
                 Op::AppendOwned { t, data } => { cords[*t].append(data.clone()); oracles[*t].extend_from_slice(data); *t }
+                Op::AppendOwner { t, data } => { cords[*t].append(Cord::from_owner(ModelOwner(data.clone().into_boxed_slice()))); oracles[*t].extend_from_slice(data); *t }
                 Op::AppendCord { t, s } => { let src = cords[*s].clone(); cords[*t].append(&src); let o = oracles[*s].clone(); oracles[*t].extend_from_slice(&o); *t }
                 Op::AppendOwnedClone { t, s } => { let src = cords[*s].clone(); cords[*t].append(src); let o = oracles[*s].clone(); oracles[*t].extend_from_slice(&o); *t }
                 Op::AppendBuffer { t, data, reuse } => {
@@ -221,6 +237,7 @@ proptest! {
                 }
                 Op::PrependSlice { t, data } => { cords[*t].prepend(&data[..]); let mut o = data.clone(); o.extend_from_slice(&oracles[*t]); oracles[*t] = o; *t }
                 Op::PrependOwned { t, data } => { cords[*t].prepend(data.clone()); let mut o = data.clone(); o.extend_from_slice(&oracles[*t]); oracles[*t] = o; *t }
+                Op::PrependOwner { t, data } => { cords[*t].prepend(Cord::from_owner(ModelOwner(data.clone().into_boxed_slice()))); let mut o = data.clone(); o.extend_from_slice(&oracles[*t]); oracles[*t] = o; *t }
                 Op::PrependCord { t, s } => { let src = cords[*s].clone(); cords[*t].prepend(&src); let mut o = oracles[*s].clone(); o.extend_from_slice(&oracles[*t]); oracles[*t] = o; *t }
                 Op::PrependOwnedClone { t, s } => { let src = cords[*s].clone(); cords[*t].prepend(src); let mut o = oracles[*s].clone(); o.extend_from_slice(&oracles[*t]); oracles[*t] = o; *t }
                 Op::Advance { t, frac } => { let n = index(*frac, oracles[*t].len()); cords[*t].advance(n); oracles[*t].drain(..n); *t }
@@ -241,6 +258,7 @@ proptest! {
                     cords[*t] = head; oracles[*t] = ohead; *t
                 }
                 Op::Clone { t, s } => { cords[*t] = cords[*s].clone(); oracles[*t] = oracles[*s].clone(); *t }
+                Op::FromOwner { t, data } => { cords[*t] = Cord::from_owner(ModelOwner(data.clone().into_boxed_slice())); oracles[*t] = data.clone(); *t }
                 Op::Clear { t } => { cords[*t].clear(); oracles[*t].clear(); *t }
                 Op::MakeContiguous { t } => { let flat = cords[*t].make_contiguous().to_vec(); assert_eq!(flat, oracles[*t], "step {step}: make_contiguous"); *t }
                 Op::CursorRead { t, s, a, b } => {
